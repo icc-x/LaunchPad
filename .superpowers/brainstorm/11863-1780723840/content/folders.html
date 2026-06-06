@@ -1,0 +1,126 @@
+<h2>文件夹系统设计</h2>
+<p class="subtitle">文件夹创建 · 展开弹窗 · 内部分页 · 编辑与删除</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">文件夹外观（网格中）</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #4ecdc4;">网格中的文件夹 Cell</span>
+┌────────────────────┐
+│                    │
+│   ┌────────────┐   │
+│   │ ┌──┬──┐    │   │
+│   │ │📱│📧│    │   │  ← 预览: 最多显示
+│   │ ├──┼──┤    │   │     9个子应用图标
+│   │ │🎮│📷│    │   │     (3×3 缩略图)
+│   │ └──┴──┘    │   │
+│   │  毛玻璃底  │   │  ← 圆角矩形背景
+│   └────────────┘   │     NSVisualEffectView
+│                    │
+│    "Utilities"     │  ← 文件夹名称
+│                    │     可编辑 (双击)
+└────────────────────┘
+
+<span style="color: #ffd93d;">预览图标生成:</span>
+• 取文件夹内前 9 个 app 图标
+• 按 3×3 网格缩小排列
+• 作为文件夹的"封面图"
+• 子应用变化时自动更新
+      </pre>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">文件夹展开弹窗</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #6bcb77;">FolderOverlayView</span>
+┌────────────────────────────────────┐
+│ (暗化背景, 点击关闭)               │
+│                                    │
+│        ┌──────────────────────┐    │
+│        │   ┌──────────────┐   │    │
+│        │   │ "Utilities"  │   │    │  ← 标题可编辑
+│        │   └──────────────┘   │    │
+│        │                      │    │
+│        │  ┌───┬───┬───┬───┐   │    │
+│        │  │📱│📧│🎮│📷│   │    │  ← 子应用网格
+│        │  ├───┼───┼───┼───┤   │    │     最多 35 个/页
+│        │  │🌐│🎵│📝│⚙️│   │    │
+│        │  └───┴───┴───┴───┘   │    │
+│        │                      │    │
+│        │        ● ○ ○         │    │  ← 内部分页
+│        └──────────────────────┘    │
+│                                    │
+└────────────────────────────────────┘
+
+<span style="color: #ffd93d;">弹窗尺寸:</span>
+• 宽度 = 屏幕宽度 × 0.6
+• 高度 = 根据内容自适应 (最大屏幕高度×0.7)
+• 居中显示, 圆角 20px
+• 背景: NSVisualEffectView (.hudWindow)
+• 出现动画: scale 0.8→1.0 + fade in
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>文件夹生命周期</h3>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">文件夹操作流程</div>
+  <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+    <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #ff6b6b;">创建:</span>  编辑模式下拖拽 App A 到 App B 上方 (hover 0.8s)
+        → 系统自动创建新文件夹, 将 A 和 B 放入
+        → 文件夹自动命名为 "Utilities" (基于 category 推测, 或 "New Folder")
+        → 其余图标重排让位
+
+<span style="color: #ff6b6b;">添加:</span>  编辑模式下拖拽 App 到文件夹上 (hover 0.8s)
+        → App 追加到文件夹末尾
+        → 文件夹预览图更新
+
+<span style="color: #ff6b6b;">移出:</span>  展开文件夹 → 编辑模式 → 拖拽子应用到弹窗外
+        → 应用移回主网格, 插入到当前页末尾
+        → 如果文件夹只剩 1 个应用, 自动解散文件夹
+
+<span style="color: #ff6b6b;">重命名:</span> 正常模式下双击文件夹名称
+        → NSTextField 变为可编辑
+        → Enter 确认 / ESC 取消
+
+<span style="color: #ff6b6b;">删除:</span>  编辑模式下点击文件夹 ✕
+        → 弹出确认: "解散文件夹? 子应用将移回主网格"
+        → 确认后所有子应用移出, 文件夹删除
+
+<span style="color: #ff6b6b;">打开:</span>  正常模式下点击文件夹
+        → FolderOverlayView 弹出
+        → 背景网格暗化但可见
+        → ESC 或点击暗化区域关闭
+    </pre>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>关键实现细节</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d; width: 160px;">数据模型</td>
+      <td style="padding: 8px;">文件夹在 items 表中 type=7 (group)，子应用的 parent_id 指向文件夹的 item.id。文件夹内子应用有独立的 ordering 字段</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">内部分页</td>
+      <td style="padding: 8px;">文件夹内最多 35 个应用/页（7×5），超出时文件夹弹窗内显示页码点，支持滑动翻页。与主网格分页逻辑复用同一组件</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">预览图生成</td>
+      <td style="padding: 8px;">取前 9 个子应用图标，缩小到 40% 后按 3×3 排列，用 <code>NSImage(size:drawIn:)</code> 合成一张预览图。缓存到 image_cache 表</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">搜索中的文件夹</td>
+      <td style="padding: 8px;">搜索时如果文件夹名称匹配，整个文件夹作为结果项显示。如果文件夹内有 app 匹配，该 app 也单独出现在搜索结果中（标记所属文件夹）</td>
+    </tr>
+  </table>
+</div>

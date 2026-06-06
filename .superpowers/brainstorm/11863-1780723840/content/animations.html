@@ -1,0 +1,192 @@
+<h2>动画系统设计</h2>
+<p class="subtitle">开/关动画 · 应用启动 · 页面过渡 · Spring Timing</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">开/关动画</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #6bcb77;">Show Animation (展开)</span>
+
+  t=0.0s          t=0.15s         t=0.35s
+  ┌──────┐        ┌──────────┐    ┌──────────────┐
+  │      │        │          │    │              │
+  │ 缩略 │  ───→  │  放大中  │ ──→│  完整网格    │
+  │      │        │          │    │              │
+  └──────┘        └──────────┘    └──────────────┘
+
+  • scale: 0.5 → 1.0
+  • opacity: 0.3 → 1.0
+  • blur: 渐进模糊背景
+  • timing: <span style="color: #ffd93d;">spring(damping: 0.75)</span>
+
+<span style="color: #6bcb77;">Hide Animation (收起)</span>
+
+  t=0.0s          t=0.15s         t=0.25s
+  ┌──────────────┐ ┌──────────┐   ┌──────┐
+  │              │ │          │   │      │
+  │  完整网格    │─→│  缩小中  │──→│ 消失 │
+  │              │ │          │   │      │
+  └──────────────┘ └──────────┘   └──────┘
+
+  • scale: 1.0 → 0.5
+  • opacity: 1.0 → 0.0
+  • timing: <span style="color: #ffd93d;">easeOut(0.25s)</span>
+
+<span style="color: #ffd93d;">注: 如果 Reduce Motion 开启</span>
+<span style="color: #ffd93d;">    → 改为纯 fade in/out (0.2s)</span>
+      </pre>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">应用启动动画</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #6bcb77;">Click → Launch</span>
+
+  t=0.0s            t=0.2s           t=0.4s
+  ┌────────────┐   ┌──────────┐    ┌────┐
+  │            │   │          │    │    │
+  │  ┌────┐    │──→│ ┌────┐  │──→ │ APP│
+  │  │📱  │    │   │ │📱  │  │    │    │
+  │  │Saf │    │   │ │    │  │    │    │
+  │  └────┘    │   │ └────┘  │    └────┘
+  │            │   │          │    窗口已打开
+  └────────────┘   └──────────┘
+
+  1. 点击图标 → 高亮反馈 (scale 0.95 → 1.0)
+  2. 图标放大 + 淡出 (scale → 2.0, opacity → 0)
+  3. 同时 LaunchPad 整体淡出
+  4. NSWorkspace.open() 启动应用
+  5. 关闭 LaunchPad 窗口
+
+<span style="color: #ffd93d;">timing: easeOut(0.3s)</span>
+<span style="color: #ffd93d;">同时播放 2+3</span>
+
+<span style="color: #ff6b6b;">已启动应用:</span>
+  • 图标下方显示小圆点 (运行指示)
+  • 再次点击: activate 已有窗口
+  • 不重复播放启动动画
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>页面过渡动画</h3>
+</div>
+
+<div class="mockup">
+  <div class="mockup-header">翻页与图标入场动画</div>
+  <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+    <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #4ecdc4;">翻页动画 (Page Transition)</span>
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│  ┌─────────────┐                                │
+│  │ ← Page 0    │  ──→  ┌─────────────┐          │
+│  │             │        │    Page 1 → │          │
+│  └─────────────┘        └─────────────┘          │
+│                                                 │
+│  • 整体水平平移 (与手指/鼠标方向一致)            │
+│  • duration: 0.35s                              │
+│  • timing: easeInOut                            │
+│  • 松手时已完成 >50% → 自动翻到目标页            │
+│  • 松手时 <50% → 弹回当前页                     │
+└─────────────────────────────────────────────────┘
+
+<span style="color: #4ecdc4;">图标入场动画 (首次加载 / 翻页进入)</span>
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│  t=0.0          t=0.1    t=0.2    t=0.3         │
+│  ┌──┐           ┌──┐     ┌──┐     ┌──┐          │
+│  │  │ y:+30px   │  │     │  │     │📱│ y:0       │
+│  │  │ α:0       │  │     │  │     │  │ α:1       │
+│  └──┘           └──┘     └──┘     └──┘          │
+│       ↑                                        │
+│  每个图标依次延迟                                │
+│  delay = colIndex * 0.02s                       │
+│  → 从左到右"铺开"效果                           │
+│                                                 │
+│  timing: spring(damping: 0.8)                   │
+│  Reduce Motion: 直接显示, 无动画                │
+└─────────────────────────────────────────────────┘
+    </pre>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>动画参数汇总</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333; background: rgba(255,255,255,0.05);">
+      <td style="padding: 8px; font-weight: bold;">动画</td>
+      <td style="padding: 8px; font-weight: bold;">Duration</td>
+      <td style="padding: 8px; font-weight: bold;">Timing</td>
+      <td style="padding: 8px; font-weight: bold;">Reduce Motion 替代</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">窗口展开</td>
+      <td style="padding: 8px;">0.35s</td>
+      <td style="padding: 8px;">Spring(damping: 0.75)</td>
+      <td style="padding: 8px;">Fade 0.2s</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">窗口收起</td>
+      <td style="padding: 8px;">0.25s</td>
+      <td style="padding: 8px;">EaseOut</td>
+      <td style="padding: 8px;">Fade 0.2s</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">应用启动</td>
+      <td style="padding: 8px;">0.3s</td>
+      <td style="padding: 8px;">EaseOut</td>
+      <td style="padding: 8px;">即时切换</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">翻页</td>
+      <td style="padding: 8px;">0.35s</td>
+      <td style="padding: 8px;">EaseInOut</td>
+      <td style="padding: 8px;">即时切换</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">图标入场</td>
+      <td style="padding: 8px;">0.3s/个</td>
+      <td style="padding: 8px;">Spring(damping: 0.8)</td>
+      <td style="padding: 8px;">直接显示</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px;">抖动模式</td>
+      <td style="padding: 8px;">0.13s 循环</td>
+      <td style="padding: 8px;">Autoreverse</td>
+      <td style="padding: 8px;">缩放脉冲</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px;">文件夹展开</td>
+      <td style="padding: 8px;">0.25s</td>
+      <td style="padding: 8px;">Spring(damping: 0.8)</td>
+      <td style="padding: 8px;">Fade 0.15s</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>动画引擎实现</h3>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>NSAnimationContext + Core Animation（推荐）</h3>
+      <p>用 <code>NSAnimationContext.runAnimationGroup</code> 做 view 级动画，CABasicAnimation 做 layer 级动画（抖动）。Spring timing 用 <code>CASpringAnimation</code>。原生 API，无额外依赖。</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>自定义 Animator 类封装</h3>
+      <p>封装一个 <code>LaunchPadAnimator</code> 工具类，内部用 CADisplayLink 驱动，统一管理所有动画的 timing、生命周期和 Reduce Motion 回退。更可控但工作量更大。</p>
+    </div>
+  </div>
+</div>

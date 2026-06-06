@@ -1,0 +1,109 @@
+<h2>窗口与背景层设计</h2>
+<p class="subtitle">全屏覆盖窗口 · 毛玻璃背景 · 全局热键 · 窗口生命周期</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">窗口层级结构</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+NSWindow (level: .screenSaver)
+┌─────────────────────────────┐
+│ NSVisualEffectView          │
+│ • blending: .behindWindow   │
+│ • material: .hudWindow      │
+│ • state: .followsWinActive  │
+│ • maskToBounds: true        │
+│ ┌─────────────────────────┐ │
+│ │  ContentView (NSView)   │ │
+│ │  ┌───────────────────┐  │ │
+│ │  │   SearchBar       │  │ │
+│ │  │   (顶部居中)       │  │ │
+│ │  └───────────────────┘  │ │
+│ │                         │ │
+│ │  ┌───────────────────┐  │ │
+│ │  │   PageScrollView  │  │ │
+│ │  │   (NSScrollView)  │  │ │
+│ │  │   ┌───┬───┬───┐   │  │ │
+│ │  │   │ 📱│ 📧│ 📁│   │  │ │
+│ │  │   ├───┼───┼───┤   │  │ │
+│ │  │   │ 🎮│ 📷│ 🌐│   │  │ │
+│ │  │   └───┴───┴───┘   │  │ │
+│ │  └───────────────────┘  │ │
+│ │                         │ │
+│ │  ┌───────────────────┐  │ │
+│ │  │   PageControl     │  │ │
+│ │  │   ● ○ ○ ○         │  │ │
+│ │  └───────────────────┘  │ │
+│ └─────────────────────────┘ │
+└─────────────────────────────┘
+      </pre>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">热键与生命周期</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #ff6b6b;">HotkeyManager</span>
+┌───────────────────────────┐
+│ CGEventTap (全局)         │
+│ • flagsChanged 监听       │
+│ • Option+Space 组合键     │
+│ • 需要辅助功能权限        │
+│                           │
+│ NSEvent.addLocalMonitor   │
+│ • 应用内键盘事件          │
+│ • ESC / 方向键 / Enter   │
+│ • 字符输入 → 搜索        │
+└───────────┬───────────────┘
+            │ toggle()
+            ▼
+<span style="color: #6bcb77;">LaunchPadWindowController</span>
+┌───────────────────────────┐
+│ States:                   │
+│ • hidden  → 窗口不可见    │
+│ • opening → 播放展开动画  │
+│ • visible → 正常交互      │
+│ • closing → 播放收起动画  │
+│                           │
+│ show():                   │
+│  1. setFrame(screenFrame) │
+│  2. makeKeyAndOrderFront  │
+│  3. play open animation   │
+│  4. state = .visible      │
+│                           │
+│ hide():                   │
+│  1. play close animation  │
+│  2. orderOut(nil)         │
+│  3. state = .hidden       │
+└───────────────────────────┘
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>关键实现细节</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d; width: 140px;">窗口层级</td>
+      <td style="padding: 8px;">使用 <code>.screenSaver</code> 级别，确保覆盖所有窗口（包括全屏应用）。设置 <code>isOpaque = false</code> + <code>backgroundColor = .clear</code> 保持透明</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">毛玻璃</td>
+      <td style="padding: 8px;">NSVisualEffectView 作为 contentView 的第一层子视图。<code>.behindWindow</code> blending 让它采样桌面壁纸。如果用户开启「降低透明度」，回退为纯色背景</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">全局热键</td>
+      <td style="padding: 8px;">CGEventTap 监听 flagsChanged 事件。首次使用需引导用户在「系统设置 → 隐私 → 辅助功能」中授权。提供 fallback：菜单栏图标右键菜单</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">多显示器</td>
+      <td style="padding: 8px;">在当前活跃屏幕（鼠标所在屏幕）上显示。监听 <code>NSApplication.didChangeScreenParametersNotification</code> 处理显示器热插拔</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">关闭行为</td>
+      <td style="padding: 8px;">ESC 键关闭 · 点击空白区域关闭 · 点击应用启动后关闭 · 热键再次按下切换</td>
+    </tr>
+  </table>
+</div>
