@@ -1,0 +1,550 @@
+import Testing
+import Foundation
+import CoreGraphics
+@testable import LaunchPad
+
+// MARK: - State Machine Tests
+
+@Suite("DragController state machine")
+struct DragControllerTests {
+
+    // MARK: - DragState enum definition verification
+
+    @Test("DragState contains all necessary states")
+    func dragState_hasAllCases() {
+        let allStates: [DragController.DragState] = [.idle, .jiggling, .dragging]
+        #expect(allStates.count == 3)
+    }
+
+    @Test("DraggingSubstate contains overEdge and overIcon")
+    func draggingSubstate_hasBothCases() {
+        let substates: [DragController.DraggingSubstate] = [.none, .overEdge, .overIcon(targetId: 0)]
+        #expect(substates.count == 3)
+    }
+
+    // MARK: - State transitions: idle -> jiggling
+
+    @Test("idle state long press 0.5s with movement < 10px -> transitions to jiggling")
+    func idle_to_jiggling_onLongPress() {
+        let controller = DragController()
+        #expect(controller.state == .idle)
+
+        controller.handleLongPress(movementDistance: 5)
+        #expect(controller.state == .jiggling)
+    }
+
+    // MARK: - State transitions: jiggling -> dragging
+
+    @Test("jiggling state drag start -> transitions to dragging")
+    func jiggling_to_dragging_onDragStart() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        #expect(controller.state == .jiggling)
+
+        controller.handleDragStart()
+        #expect(controller.state == .dragging)
+        #expect(controller.draggingSubstate == .none)
+    }
+
+    // MARK: - State transitions: dragging -> idle (drop)
+
+    @Test("dragging state drop -> executes drop and transitions back to idle")
+    func dragging_to_idle_onDrop() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        #expect(controller.state == .dragging)
+
+        controller.handleDrop()
+        #expect(controller.state == .idle)
+        #expect(controller.draggingSubstate == .none)
+    }
+
+    // MARK: - State transitions: dragging + ESC -> idle
+
+    @Test("dragging state ESC -> cancels drag and transitions back to idle")
+    func dragging_to_idle_onCancel() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        #expect(controller.state == .dragging)
+
+        controller.handleCancel()
+        #expect(controller.state == .idle)
+    }
+
+    // MARK: - State transitions: jiggling + ESC -> idle
+
+    @Test("jiggling state ESC -> transitions back to idle")
+    func jiggling_to_idle_onEscape() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        #expect(controller.state == .jiggling)
+
+        controller.handleCancel()
+        #expect(controller.state == .idle)
+    }
+
+    // MARK: - Drag substate transitions
+
+    @Test("Dragging over screen edge -> substate becomes overEdge")
+    func dragging_overEdge_substate() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+
+        controller.updateDragHover(location: .screenEdge)
+        #expect(controller.draggingSubstate == .overEdge)
+    }
+
+    @Test("Dragging over icon -> substate becomes overIcon")
+    func dragging_overIcon_substate() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+
+        controller.updateDragHover(location: .overIcon(targetId: 42))
+        #expect(controller.draggingSubstate == .overIcon(targetId: 42))
+    }
+
+    @Test("Dragging leaves edge/icon -> substate resets to none")
+    func dragging_substate_reset_onLeave() {
+        let controller = DragController()
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+
+        controller.updateDragHover(location: .screenEdge)
+        #expect(controller.draggingSubstate == .overEdge)
+
+        controller.updateDragHover(location: .empty)
+        #expect(controller.draggingSubstate == .none)
+    }
+
+    // MARK: - Boundary conditions
+
+    @Test("Long press 0.49s interrupted -> stays idle (time boundary)")
+    func longPress_interrupted_beforeThreshold_staysIdle() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+        #expect(controller.state == .idle)
+
+        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        mockScheduler.advance(by: 0.49)
+        controller.handlePressEnded()
+
+        #expect(controller.state == .idle)
+    }
+
+    @Test("Drag cancel restores original order")
+    func drag_cancel_restoresOriginalOrder() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+
+        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
+        controller.beginEditing(originalOrder: originalOrder)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        controller.simulateReorder(from: 0, to: 3)
+        #expect(controller.currentOrder != originalOrder)
+
+        controller.handleCancel()
+        #expect(controller.currentOrder == originalOrder)
+    }
+
+    @Test("idle state cancel is no-op")
+    func idle_cancel_noop() {
+        let controller = DragController()
+        #expect(controller.state == .idle)
+
+        controller.handleCancel()
+        #expect(controller.state == .idle)
+    }
+
+    @Test("idle state handleDrop is no-op")
+    func idle_drop_noop() {
+        let controller = DragController()
+        controller.handleDrop()
+        #expect(controller.state == .idle)
+    }
+}
+
+// MARK: - Long Press Detection Tests
+
+@Suite("DragController long press detection")
+struct DragControllerLongPressTests {
+
+    @Test("Hold 0.5s with movement < 10px -> enters jiggling")
+    func longPress_0_5s_lowMovement_entersJiggling() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        controller.handleDragMoved(to: CGPoint(x: 205, y: 205))
+        mockScheduler.advance(by: 0.5)
+
+        #expect(controller.state == .jiggling)
+    }
+
+    @Test("Hold 0.5s with movement > 10px -> enters dragging")
+    func longPress_0_5s_highMovement_entersDragging() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        controller.handleDragMoved(to: CGPoint(x: 220, y: 220))
+        mockScheduler.advance(by: 0.5)
+
+        #expect(controller.state == .dragging)
+    }
+
+    @Test("Hold < 0.5s release -> stays idle")
+    func press_shorterThanThreshold_staysIdle() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        mockScheduler.advance(by: 0.3)
+        controller.handlePressEnded()
+
+        #expect(controller.state == .idle)
+    }
+
+    @Test("Hold 0.5s but release before timer -> timer cancelled, stays idle")
+    func press_releasedBeforeTimer_staysIdle() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        mockScheduler.advance(by: 0.4)
+        controller.handlePressEnded()
+
+        mockScheduler.advance(by: 0.5)
+        #expect(controller.state == .idle)
+    }
+
+    @Test("Movement distance exactly 10px -> still enters jiggling (boundary)")
+    func longPress_exactlyAtThreshold_entersJiggling() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        controller.handleDragMoved(to: CGPoint(x: 210, y: 200))
+        mockScheduler.advance(by: 0.5)
+
+        #expect(controller.state == .jiggling)
+    }
+
+    @Test("Movement distance 10.01px -> enters dragging (boundary+1)")
+    func longPress_justAboveThreshold_entersDragging() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        controller.handleDragMoved(to: CGPoint(x: 210.01, y: 200))
+        mockScheduler.advance(by: 0.5)
+
+        #expect(controller.state == .dragging)
+    }
+
+    @Test("Already jiggling state, long press callback does not re-trigger")
+    func alreadyJiggling_longPressCallback_noop() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+
+        controller.handleLongPress(movementDistance: 5)
+        #expect(controller.state == .jiggling)
+
+        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
+        mockScheduler.advance(by: 0.5)
+
+        #expect(controller.state == .jiggling)
+    }
+}
+
+// MARK: - Hover Timer Tests
+
+@Suite("DragController hover timers")
+struct DragControllerHoverTimerTests {
+
+    private func makeDraggingController(
+        scheduler: MockScheduler,
+        itemWriter: MockItemWriter = MockItemWriter()
+    ) -> DragController {
+        let controller = DragController(itemWriter: itemWriter, scheduler: scheduler)
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        return controller
+    }
+
+    // MARK: - Edge Hover
+
+    @Test("Dragging hover screen edge 1.5s -> triggers pageChange event")
+    func edgeHover_1_5s_triggersPageChange() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var pageChangeDirection: DragController.PageChangeDirection?
+
+        controller.onPageChange = { direction in
+            pageChangeDirection = direction
+        }
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.5)
+
+        #expect(pageChangeDirection != nil)
+    }
+
+    @Test("Dragging hover screen edge 1.4s -> no pageChange triggered")
+    func edgeHover_1_4s_noPageChange() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var pageChangeTriggered = false
+
+        controller.onPageChange = { _ in
+            pageChangeTriggered = true
+        }
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.4)
+
+        #expect(pageChangeTriggered == false)
+    }
+
+    @Test("Edge hover then leave -> timer reset, no pageChange")
+    func edgeHover_leave_resetsTimer() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var pageChangeTriggered = false
+
+        controller.onPageChange = { _ in
+            pageChangeTriggered = true
+        }
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.0)
+        controller.updateDragHover(location: .empty)
+        mockScheduler.advance(by: 1.0)
+
+        #expect(pageChangeTriggered == false)
+    }
+
+    @Test("Edge hover -> leave -> re-hover -> restarts 1.5s timer")
+    func edgeHover_leave_rehover_restartsTimer() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var pageChangeCount = 0
+
+        controller.onPageChange = { _ in
+            pageChangeCount += 1
+        }
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.0)
+        controller.updateDragHover(location: .empty)
+        mockScheduler.advance(by: 0.5)
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.0)
+        #expect(pageChangeCount == 0)
+
+        mockScheduler.advance(by: 0.5)
+        #expect(pageChangeCount == 1)
+    }
+
+    // MARK: - Icon Hover
+
+    @Test("Dragging hover icon 0.8s -> triggers createGroup event")
+    func iconHover_0_8s_triggersCreateGroup() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var groupTargetId: Int64?
+
+        controller.onCreateGroup = { targetId in
+            groupTargetId = targetId
+        }
+
+        controller.updateDragHover(location: .overIcon(targetId: 42))
+        mockScheduler.advance(by: 0.8)
+
+        #expect(groupTargetId == 42)
+    }
+
+    @Test("Dragging hover icon 0.7s -> no createGroup triggered")
+    func iconHover_0_7s_noCreateGroup() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var groupTriggered = false
+
+        controller.onCreateGroup = { _ in
+            groupTriggered = true
+        }
+
+        controller.updateDragHover(location: .overIcon(targetId: 42))
+        mockScheduler.advance(by: 0.7)
+
+        #expect(groupTriggered == false)
+    }
+
+    @Test("Icon hover then leave -> timer reset")
+    func iconHover_leave_resetsTimer() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var groupTriggered = false
+
+        controller.onCreateGroup = { _ in
+            groupTriggered = true
+        }
+
+        controller.updateDragHover(location: .overIcon(targetId: 42))
+        mockScheduler.advance(by: 0.5)
+        controller.updateDragHover(location: .empty)
+        mockScheduler.advance(by: 0.5)
+
+        #expect(groupTriggered == false)
+    }
+
+    @Test("Switch from one icon to another -> timer resets")
+    func iconHover_switchTarget_resetsTimer() {
+        let mockScheduler = MockScheduler()
+        let controller = makeDraggingController(scheduler: mockScheduler)
+        var groupTargetId: Int64?
+
+        controller.onCreateGroup = { targetId in
+            groupTargetId = targetId
+        }
+
+        controller.updateDragHover(location: .overIcon(targetId: 10))
+        mockScheduler.advance(by: 0.6)
+        controller.updateDragHover(location: .overIcon(targetId: 20))
+        mockScheduler.advance(by: 0.6)
+
+        #expect(groupTargetId == nil)
+
+        mockScheduler.advance(by: 0.2)
+        #expect(groupTargetId == 20)
+    }
+
+    // MARK: - Non-dragging state does not trigger
+
+    @Test("idle state does not trigger hover timer")
+    func idle_hover_noTimer() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+        var triggered = false
+
+        controller.onPageChange = { _ in triggered = true }
+        controller.onCreateGroup = { _ in triggered = true }
+
+        controller.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 2.0)
+
+        #expect(triggered == false)
+    }
+}
+
+// MARK: - Drop + Reorder Tests
+
+@Suite("DragController Drop + Reorder")
+struct DragControllerDropTests {
+
+    @Test("drop -> commits reorder via ItemWriting")
+    func drop_commitsReorderViaItemWriter() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+
+        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
+        controller.beginEditing(originalOrder: originalOrder, parentId: 100)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+
+        controller.simulateReorder(from: 0, to: 3)
+        #expect(controller.currentOrder == [2, 3, 4, 1, 5])
+
+        controller.handleDrop()
+
+        #expect(mockWriter.reorderedParentIds.count == 1)
+        #expect(mockWriter.reorderedParentIds[0].parentId == 100)
+        #expect(mockWriter.reorderedParentIds[0].orderedIds == [2, 3, 4, 1, 5])
+    }
+
+    @Test("drop returns to idle state")
+    func drop_returnsToIdle() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+        controller.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        controller.handleDrop()
+
+        #expect(controller.state == .idle)
+    }
+
+    @Test("cross-page drag -> records cross-page move info")
+    func crossPageDrop_recordsMove() throws {
+        let mockWriter = MockItemWriter()
+        let mockScheduler = MockScheduler()
+        let sut = DragController(itemWriter: mockWriter, scheduler: mockScheduler)
+
+        sut.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.handleDragStart()
+
+        sut.updateDragHover(location: .screenEdge)
+        mockScheduler.advance(by: 1.5)
+        sut.handleDrop()
+
+        #expect(sut.pendingCrossPageMove != nil)
+    }
+
+    @Test("cancel -> restores original order, no ItemWriting call")
+    func cancel_restoresOriginalOrder_noWrite() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+
+        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
+        controller.beginEditing(originalOrder: originalOrder, parentId: 100)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        controller.simulateReorder(from: 0, to: 4)
+        controller.handleCancel()
+
+        #expect(controller.currentOrder == originalOrder)
+        #expect(mockWriter.reorderedParentIds.isEmpty)
+    }
+
+    @Test("drop without reorder -> no ItemWriting call")
+    func drop_withoutReorder_noWrite() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+        controller.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        controller.handleDrop()
+
+        #expect(mockWriter.reorderedParentIds.isEmpty)
+    }
+
+    @Test("multiple reorder operations -> drop commits final order")
+    func multipleReorder_drop_commitsFinalOrder() {
+        let mockWriter = MockItemWriter()
+        let controller = DragController(itemWriter: mockWriter)
+        controller.beginEditing(originalOrder: [1, 2, 3, 4, 5], parentId: 100)
+
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+
+        controller.simulateReorder(from: 0, to: 4)
+        controller.simulateReorder(from: 0, to: 3)
+
+        controller.handleDrop()
+
+        #expect(mockWriter.reorderedParentIds.count == 1)
+        #expect(mockWriter.reorderedParentIds[0].parentId == 100)
+    }
+}

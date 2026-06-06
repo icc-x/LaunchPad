@@ -154,6 +154,7 @@ final class MockScheduler: Scheduler, @unchecked Sendable {
 
     func cancelPending() {
         cancelCallCount += 1
+        scheduledActions.removeAll()
     }
 
     func advance(by duration: TimeInterval) {
