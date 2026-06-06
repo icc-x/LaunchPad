@@ -85,7 +85,7 @@ struct IntegrationTests {
         ]
 
         let scanner = AppScanner(fileSystemService: mockFS)
-        let storage = try StorageManager(dbPath: ":")
+        let storage = try StorageManager(dbPath: ":memory:")
 
         let scanned = scanner.scanDirectories([appDir])
         #expect(scanned.count == 2)
