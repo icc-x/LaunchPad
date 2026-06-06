@@ -6,7 +6,7 @@ import LaunchPadProtocols
 
 /// DiffableDataSource section type
 /// In normal mode each page is a section, in search mode there is a single search section
-enum Section: Hashable {
+public enum Section: Hashable {
     case page(Int)
     case search
 }
@@ -14,7 +14,7 @@ enum Section: Hashable {
 // MARK: - Snapshot Builder
 
 /// DiffableDataSource Snapshot builder pure function
-enum DiffableDataSourceBuilder {
+public enum DiffableDataSourceBuilder {
 
     /// Build a DiffableDataSourceSnapshot
     ///
@@ -23,7 +23,7 @@ enum DiffableDataSourceBuilder {
     ///   - searchResults: Search results (nil means non-search mode)
     ///   - searchQuery: Current search query (nil or empty means non-search mode)
     /// - Returns: The built snapshot
-    static func buildSnapshot(
+    public static func buildSnapshot(
         pages: [[PageItem]],
         searchResults: [PageItem]?,
         searchQuery: String?

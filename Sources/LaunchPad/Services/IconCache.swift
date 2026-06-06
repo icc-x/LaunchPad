@@ -12,7 +12,7 @@ import AppKit
 /// Thread safety: This class is marked `@unchecked Sendable` because NSCache
 /// does not declare Sendable conformance but is internally thread-safe (uses locks).
 #if canImport(AppKit)
-final class IconCache: @unchecked Sendable {
+public final class IconCache: @unchecked Sendable {
 
     private let iconProvider: IconProviding
     private let imageStore: ImageStoring
@@ -25,7 +25,7 @@ final class IconCache: @unchecked Sendable {
     ///   - iconProvider: Icon extraction provider
     ///   - imageStore: Disk storage
     ///   - memoryLimit: Memory cache entry limit, default 500
-    init(
+    public init(
         iconProvider: IconProviding,
         imageStore: ImageStoring,
         memoryLimit: Int = 500
@@ -44,7 +44,7 @@ final class IconCache: @unchecked Sendable {
     ///   - itemId: Database item ID
     ///   - path: Application path
     /// - Returns: Icon image, returns default NSApplicationIcon on failure
-    func icon(forItemId itemId: Int64, path: String) -> NSImage {
+    public func icon(forItemId itemId: Int64, path: String) -> NSImage {
         let cacheKey = NSString(string: path)
 
         // 1. Check memory cache

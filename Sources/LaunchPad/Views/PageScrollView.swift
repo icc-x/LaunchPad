@@ -21,7 +21,7 @@ class PageScrollView: NSScrollView {
     ///   - totalPages: Total number of pages
     ///   - pageWidth: Width of each page (pt)
     /// - Returns: Target page number (0-based, clamped to valid range)
-    nonisolated static func targetPage(
+    nonisolated public static func targetPage(
         for offset: CGFloat,
         velocity: CGFloat,
         currentPage: Int,
@@ -67,12 +67,12 @@ class PageScrollView: NSScrollView {
 // MARK: - PageControl state management
 
 /// PageControl view model, manages page indicator dot states
-final class PageControlViewModel {
+public final class PageControlViewModel {
 
     // MARK: - State
 
     /// Current page number (0-based), clamped to valid range
-    var currentPage: Int {
+    public var currentPage: Int {
         get { _currentPage }
         set {
             let clamped = max(0, min(newValue, max(0, totalPages - 1)))
@@ -82,25 +82,27 @@ final class PageControlViewModel {
     private var _currentPage: Int = 0
 
     /// Total number of pages
-    private(set) var totalPages: Int = 0
+    public private(set) var totalPages: Int = 0
 
     /// Whether search mode is active
-    var isSearchActive: Bool = false
+    public var isSearchActive: Bool = false
 
     // MARK: - Computed properties
 
     /// Dot count (equals total pages)
-    var dotCount: Int { totalPages }
+    public var dotCount: Int { totalPages }
 
     /// Whether to show page indicator
-    var isVisible: Bool {
+    public var isVisible: Bool {
         !isSearchActive && totalPages > 1
     }
+
+    public init() {}
 
     // MARK: - Configuration
 
     /// Configure total pages
-    func configure(totalPages: Int) {
+    public func configure(totalPages: Int) {
         self.totalPages = max(0, totalPages)
         if totalPages == 0 || currentPage >= totalPages {
             currentPage = 0
@@ -110,7 +112,7 @@ final class PageControlViewModel {
     // MARK: - Dot queries
 
     /// Whether the dot at the given index is the current page (active state)
-    func isDotActive(at index: Int) -> Bool {
+    public func isDotActive(at index: Int) -> Bool {
         guard index >= 0, index < totalPages else { return false }
         return index == currentPage
     }
@@ -118,7 +120,7 @@ final class PageControlViewModel {
     // MARK: - Interaction
 
     /// Select a dot to jump to the corresponding page
-    func selectDot(at index: Int) {
+    public func selectDot(at index: Int) {
         guard index >= 0, index < totalPages else { return }
         currentPage = index
     }
