@@ -189,3 +189,77 @@ struct SearchEngineSearchTests {
         #expect(results.isEmpty)
     }
 }
+
+@Suite("SearchEngine 结果缓存")
+struct SearchEngineCacheTests {
+
+    private func makeAppItem(title: String, bundleId: String = "com.test.app") -> PageItem {
+        PageItem(
+            id: Int64.random(in: 1...Int64.max),
+            uuid: UUID().uuidString,
+            type: .app,
+            ordering: 0,
+            parentId: nil,
+            app: AppInfo(
+                id: Int64.random(in: 1...Int64.max),
+                title: title,
+                bundleId: bundleId,
+                path: "/Applications/\(title).app",
+                storeId: nil,
+                category: nil
+            ),
+            group: nil
+        )
+    }
+
+    @Test("相同查询第二次命中缓存 — 返回相同结果")
+    func cachedSearch_sameQuery_hitsCache() {
+        let sut = SearchEngine()
+        let items = [makeAppItem(title: "Safari"), makeAppItem(title: "Notes")]
+
+        let first = sut.cachedSearch(items: items, query: "saf")
+        let second = sut.cachedSearch(items: items, query: "saf")
+
+        #expect(first.first?.app?.title == second.first?.app?.title)
+    }
+
+    @Test("缓存容量限制 — 超过后淘汰最旧条目")
+    func cachedSearch_evictionAtLimit() {
+        let sut = SearchEngine(cacheSize: 3)
+        let allItems = (0..<100).map { makeAppItem(title: "App\($0)") }
+
+        _ = sut.cachedSearch(items: allItems, query: "app0")
+        _ = sut.cachedSearch(items: allItems, query: "app1")
+        _ = sut.cachedSearch(items: allItems, query: "app2")
+        _ = sut.cachedSearch(items: allItems, query: "app3")
+
+        let results = sut.cachedSearch(items: allItems, query: "app0")
+        #expect(!results.isEmpty)
+    }
+
+    @Test("不同查询产生不同缓存条目")
+    func cachedSearch_differentQueries_differentEntries() {
+        let sut = SearchEngine()
+        let items = [makeAppItem(title: "Safari"), makeAppItem(title: "Notes")]
+
+        let resultsSaf = sut.cachedSearch(items: items, query: "saf")
+        let resultsNot = sut.cachedSearch(items: items, query: "not")
+
+        #expect(resultsSaf.first?.app?.title != resultsNot.first?.app?.title)
+    }
+
+    @Test("缓存命中时不重新计算 — 通过调用计数验证")
+    func cachedSearch_hitDoesNotRecompute() {
+        let counter = MatchCounter()
+        let sut = SearchEngine(matchCounter: counter)
+        let items = [makeAppItem(title: "Safari")]
+
+        _ = sut.cachedSearch(items: items, query: "saf")
+        let countAfterFirst = counter.count
+
+        _ = sut.cachedSearch(items: items, query: "saf")
+        let countAfterSecond = counter.count
+
+        #expect(countAfterFirst == countAfterSecond)
+    }
+}

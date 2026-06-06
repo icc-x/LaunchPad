@@ -61,7 +61,7 @@ final class AppScanner: AppScanning {
                 app: nil,
                 group: nil
             )
-            let pageId = try! writer.insertItem(pageItem)
+            guard let pageId = try? writer.insertItem(pageItem) else { continue }
 
             let start = pageIndex * maxPerPage
             let end = min(start + maxPerPage, sorted.count)
@@ -84,7 +84,7 @@ final class AppScanner: AppScanning {
                     app: appInfo,
                     group: nil
                 )
-                try! writer.insertItem(appItem)
+                try? writer.insertItem(appItem)
             }
         }
     }
@@ -93,6 +93,7 @@ final class AppScanner: AppScanning {
     func incrementalSync(
         scannedApps: [ScannedApp],
         existingItems: [PageItem],
+        lastPageId: Int64?,
         writer: ItemWriting
     ) {
         let existingApps = existingItems.filter { $0.type == .app }
@@ -110,7 +111,7 @@ final class AppScanner: AppScanning {
             )
             let item = PageItem(
                 id: 0, uuid: UUID().uuidString, type: .app,
-                ordering: 0, parentId: nil, app: appInfo, group: nil
+                ordering: 0, parentId: lastPageId, app: appInfo, group: nil
             )
             try? writer.insertItem(item)
         }

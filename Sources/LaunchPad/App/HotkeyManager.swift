@@ -164,6 +164,8 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     }
 
     /// Test-only: simulate Space key down (keyDown, checks if Option is held)
+    /// Note: Calls onToggle synchronously for test determinism.
+    /// The real CGEventTap path dispatches to main queue.
     public func simulateSpaceKeyDown() {
         guard isOptionHeld else { return }
         onToggle?()
