@@ -170,7 +170,11 @@ final class DragController {
 
     private func commitReorder() {
         guard currentOrder != originalOrder else { return }
-        try? itemWriter?.reorderItems(parentId: editingParentId, orderedIds: currentOrder)
+        do {
+            try itemWriter?.reorderItems(parentId: editingParentId, orderedIds: currentOrder)
+        } catch {
+            rollbackReorder()
+        }
     }
 
     private func rollbackReorder() {

@@ -72,6 +72,7 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
 
     public func updateItem(_ item: PageItem) throws {
         try writeQueue.sync {
+            // Update items table (ordering + parent_id)
             let sql = "UPDATE items SET ordering = ?, parent_id = ? WHERE id = ?"
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
@@ -87,6 +88,48 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
             sqlite3_bind_int64(stmt, 3, item.id)
             guard sqlite3_step(stmt) == SQLITE_DONE else {
                 throw StorageError.updateFailed
+            }
+            sqlite3_finalize(stmt)
+
+            // Update apps table if app data changed
+            if let app = item.app {
+                let appSQL = "UPDATE apps SET title = ?, path = ?, store_id = ?, category = ? WHERE item_id = ?"
+                var appStmt: OpaquePointer?
+                defer { sqlite3_finalize(appStmt) }
+                guard sqlite3_prepare_v2(db, appSQL, -1, &appStmt, nil) == SQLITE_OK else {
+                    throw StorageError.prepareFailed
+                }
+                sqlite3_bind_text(appStmt, 1, (app.title as NSString).utf8String, -1, nil)
+                sqlite3_bind_text(appStmt, 2, (app.path as NSString).utf8String, -1, nil)
+                if let sid = app.storeId {
+                    sqlite3_bind_text(appStmt, 3, (sid as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(appStmt, 3)
+                }
+                if let cat = app.category {
+                    sqlite3_bind_text(appStmt, 4, (cat as NSString).utf8String, -1, nil)
+                } else {
+                    sqlite3_bind_null(appStmt, 4)
+                }
+                sqlite3_bind_int64(appStmt, 5, item.id)
+                guard sqlite3_step(appStmt) == SQLITE_DONE else {
+                    throw StorageError.updateFailed
+                }
+            }
+
+            // Update groups table if group data changed
+            if let group = item.group {
+                let groupSQL = "UPDATE groups SET title = ? WHERE item_id = ?"
+                var groupStmt: OpaquePointer?
+                defer { sqlite3_finalize(groupStmt) }
+                guard sqlite3_prepare_v2(db, groupSQL, -1, &groupStmt, nil) == SQLITE_OK else {
+                    throw StorageError.prepareFailed
+                }
+                sqlite3_bind_text(groupStmt, 1, (group.title as NSString).utf8String, -1, nil)
+                sqlite3_bind_int64(groupStmt, 2, item.id)
+                guard sqlite3_step(groupStmt) == SQLITE_DONE else {
+                    throw StorageError.updateFailed
+                }
             }
         }
     }

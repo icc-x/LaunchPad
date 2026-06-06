@@ -224,7 +224,7 @@ struct AppScannerSyncTests {
             ScannedApp(name: "NewApp", bundleId: "com.new.app", path: "/Applications/NewApp.app")
         ]
 
-        scanner.incrementalSync(scannedApps: scanned, existingItems: [], writer: writer)
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [], lastPageId: nil, writer: writer)
 
         #expect(writer.insertedItems.count == 1)
         #expect(writer.insertedItems.first?.app?.bundleId == "com.new.app")
@@ -239,7 +239,7 @@ struct AppScannerSyncTests {
             app: TestDataFactory.makeAppInfo(title: "OldApp", bundleId: "com.old.app")
         )
 
-        scanner.incrementalSync(scannedApps: [], existingItems: [existing], writer: writer)
+        scanner.incrementalSync(scannedApps: [], existingItems: [existing], lastPageId: nil, writer: writer)
 
         #expect(writer.deletedIds.count == 1)
         #expect(writer.deletedIds.first == existing.id)
@@ -257,7 +257,7 @@ struct AppScannerSyncTests {
             ScannedApp(name: "NewName", bundleId: "com.changed.app", path: "/new/path")
         ]
 
-        scanner.incrementalSync(scannedApps: scanned, existingItems: [existing], writer: writer)
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [existing], lastPageId: nil, writer: writer)
 
         #expect(writer.updatedItems.count == 1)
         #expect(writer.updatedItems.first?.app?.title == "NewName")
@@ -275,7 +275,7 @@ struct AppScannerSyncTests {
             ScannedApp(name: "SameApp", bundleId: "com.same.app", path: "/same/path")
         ]
 
-        scanner.incrementalSync(scannedApps: scanned, existingItems: [existing], writer: writer)
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [existing], lastPageId: nil, writer: writer)
 
         #expect(writer.insertedItems.isEmpty)
         #expect(writer.updatedItems.isEmpty)
