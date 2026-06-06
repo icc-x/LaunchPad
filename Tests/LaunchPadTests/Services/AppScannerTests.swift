@@ -13,8 +13,8 @@ struct AppScannerTests {
         appDir.appendingPathComponent("\(name).app")
     }
 
-    private func makePlist(name: String, bundleId: String, isUIElement: Bool = false) -> [String: Any] {
-        var plist: [String: Any] = [
+    private func makePlist(name: String, bundleId: String, isUIElement: Bool = false) -> [String: any Sendable] {
+        var plist: [String: any Sendable] = [
             "CFBundleName": name,
             "CFBundleIdentifier": bundleId,
         ]
@@ -135,7 +135,7 @@ struct AppScannerPaginationTests {
 
     private let appDir = URL(fileURLWithPath: "/Applications")
 
-    private func makePlist(name: String, bundleId: String) -> [String: Any] {
+    private func makePlist(name: String, bundleId: String) -> [String: any Sendable] {
         ["CFBundleName": name, "CFBundleIdentifier": bundleId]
     }
 
@@ -208,7 +208,7 @@ struct AppScannerSyncTests {
 
     private let appDir = URL(fileURLWithPath: "/Applications")
 
-    private func makePlist(name: String, bundleId: String) -> [String: Any] {
+    private func makePlist(name: String, bundleId: String) -> [String: any Sendable] {
         ["CFBundleName": name, "CFBundleIdentifier": bundleId]
     }
 

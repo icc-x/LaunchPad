@@ -71,15 +71,15 @@ final class PageControlViewModel {
 
     // MARK: - State
 
-    /// Current page number (0-based)
-    var currentPage: Int = 0 {
-        didSet {
-            let clamped = max(0, min(currentPage, totalPages - 1))
-            if currentPage != clamped {
-                currentPage = clamped
-            }
+    /// Current page number (0-based), clamped to valid range
+    var currentPage: Int {
+        get { _currentPage }
+        set {
+            let clamped = max(0, min(newValue, max(0, totalPages - 1)))
+            _currentPage = clamped
         }
     }
+    private var _currentPage: Int = 0
 
     /// Total number of pages
     private(set) var totalPages: Int = 0

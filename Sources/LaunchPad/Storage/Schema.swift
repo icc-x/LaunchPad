@@ -75,14 +75,22 @@ public enum Schema {
 
         // 写入版本号（仅首次）
         let checkSQL = "SELECT COUNT(*) FROM schema_version"
-        var stmt: OpaquePointer?
-        sqlite3_prepare_v2(db, checkSQL, -1, &stmt, nil)
-        defer { sqlite3_finalize(stmt) }
-        if sqlite3_step(stmt) == SQLITE_ROW {
-            let count = sqlite3_column_int(stmt, 0)
+        var checkStmt: OpaquePointer?
+        guard sqlite3_prepare_v2(db, checkSQL, -1, &checkStmt, nil) == SQLITE_OK else {
+            return
+        }
+        defer { sqlite3_finalize(checkStmt) }
+        if sqlite3_step(checkStmt) == SQLITE_ROW {
+            let count = sqlite3_column_int(checkStmt, 0)
             if count == 0 {
-                sqlite3_exec(db, "INSERT INTO schema_version (version) VALUES (\(currentVersion))",
-                             nil, nil, nil)
+                var insertStmt: OpaquePointer?
+                let insertSQL = "INSERT INTO schema_version (version) VALUES (?)"
+                guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStmt, nil) == SQLITE_OK else {
+                    return
+                }
+                defer { sqlite3_finalize(insertStmt) }
+                sqlite3_bind_int(insertStmt, 1, Int32(currentVersion))
+                sqlite3_step(insertStmt)
             }
         }
     }

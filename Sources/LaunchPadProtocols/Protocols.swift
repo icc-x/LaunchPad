@@ -70,14 +70,14 @@ public protocol IconProviding: Sendable {
 public protocol FileSystemService: Sendable {
     func contentsOfDirectory(at url: URL) throws -> [URL]
     func fileExists(at url: URL) -> Bool
-    func bundleInfo(at bundleURL: URL) -> [String: Any]?
+    func bundleInfo(at bundleURL: URL) -> [String: any Sendable]?
 }
 
 // MARK: - 热键管理协议
 
 /// 测试时可模拟按键事件
 public protocol HotkeyManaging: Sendable {
-    var onToggle: (() -> Void)? { get set }
+    var onToggle: (@Sendable () -> Void)? { get set }
     func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool
     func unregisterGlobalHotkey()
 }
@@ -86,6 +86,6 @@ public protocol HotkeyManaging: Sendable {
 
 /// 测试时可精确控制时间，避免 flaky test
 public protocol Scheduler: Sendable {
-    func schedule(after interval: TimeInterval, action: @escaping () -> Void)
+    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void)
     func cancelPending()
 }
