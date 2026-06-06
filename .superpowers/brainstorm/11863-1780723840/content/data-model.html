@@ -1,0 +1,143 @@
+<h2>数据模型与应用扫描</h2>
+<p class="subtitle">SQLite 存储架构 · 应用扫描策略 · 图标缓存</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">SQLite 数据库 Schema</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #ff6b6b;">── items (核心树结构) ──────────────</span>
+id          INTEGER PRIMARY KEY
+uuid        TEXT UNIQUE NOT NULL
+type        INTEGER NOT NULL
+  <span style="color: #888;">1=page, 4=app, 7=group</span>
+parent_id   INTEGER → items.id
+ordering    INTEGER NOT NULL
+  <span style="color: #888;">同一 parent 下的排序</span>
+created_at  REAL
+
+<span style="color: #ff6b6b;">── apps (应用信息) ─────────────────</span>
+item_id     INTEGER → items.id (PK)
+title       TEXT NOT NULL
+bundle_id   TEXT UNIQUE
+store_id    TEXT
+category    TEXT
+path        TEXT NOT NULL
+  <span style="color: #888;">/Applications/Safari.app</span>
+bookmark    BLOB
+  <span style="color: #888;">Security-scoped bookmark</span>
+
+<span style="color: #ff6b6b;">── groups (文件夹) ─────────────────</span>
+item_id     INTEGER → items.id (PK)
+title       TEXT NOT NULL
+  <span style="color: #888;">用户自定义文件夹名</span>
+
+<span style="color: #ff6b6b;">── image_cache (图标缓存) ──────────</span>
+item_id     INTEGER → items.id (PK)
+icon_1x     BLOB
+icon_2x     BLOB
+updated_at  REAL
+
+<span style="color: #ff6b6b;">── schema_version ──────────────────</span>
+version     INTEGER NOT NULL
+      </pre>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">应用扫描流程</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #6bcb77;">AppScanner.scan()</span>
+┌──────────────────────────┐
+│ 1. 读取扫描目录          │
+│    • /Applications       │
+│    • ~/Applications      │
+│    • /System/Applications│
+│                          │
+│ 2. 过滤 .app bundles     │
+│    • 检查 Info.plist     │
+│    • 排除后台服务:        │
+│      - 无 CFBundleName   │
+│      - LSUIElement=YES   │
+│      - 在排除列表中      │
+│                          │
+│ 3. 提取应用信息          │
+│    • title (本地化名)    │
+│    • bundleIdentifier    │
+│    • icon (NSWorkspace)  │
+│    • app path            │
+│                          │
+│ 4. 与数据库同步          │
+│    ┌──────────────────┐  │
+│    │ 新 app → INSERT  │  │
+│    │ 已有  → UPDATE   │  │
+│    │ 已删  → DELETE   │  │
+│    └──────────────────┘  │
+│                          │
+│ 5. 首次: 自动分页       │
+│    按 maxPerPage 切分    │
+│    追加到末尾页面        │
+└──────────────────────────┘
+
+<span style="color: #ffd93d;">触发时机:</span>
+• 应用启动时
+• 文件系统事件 (FSEvents)
+• 从 App Store 安装后
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>数据模型 Swift 结构</h3>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>struct 值类型（推荐）</h3>
+      <p>用 struct 定义 AppInfo / GroupInfo / PageItem，配合 enum ItemType。轻量、不可变、易于在 CollectionView 的 diffable data source 中使用。</p>
+      <pre style="background:#0d1117; padding:8px; border-radius:4px; font-size:12px; color:#c9d1d9;">
+enum ItemType: Int { case page = 1, app = 4, group = 7 }
+struct PageItem {
+  let id: Int64
+  let uuid: String
+  let type: ItemType
+  let ordering: Int
+  var app: AppInfo?   // type == .app 时有值
+  var group: GroupInfo? // type == .group 时有值
+}</pre>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>class 引用类型</h3>
+      <p>用 class 定义，支持 KVO 和 Objective-C 运行时。更接近原版的 ECSBPageItem 继承体系，但更重。</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>图标缓存策略</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d; width: 140px;">内存缓存</td>
+      <td style="padding: 8px;">NSCache&lt;NSString, NSImage&gt;，LRU 淘汰，最多 500 个图标。按 bundle_id 缓存，支持 @1x/@2x</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">磁盘缓存</td>
+      <td style="padding: 8px;">SQLite image_cache 表存储 PNG 数据。避免每次启动都从 .app bundle 重新提取图标</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">图标提取</td>
+      <td style="padding: 8px;"><code>NSWorkspace.shared.icon(forFile:)</code> 获取应用图标。对于缺失图标，使用 <code>NSImage(named: "NSApplicationIcon")</code> 兜底</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">失效检测</td>
+      <td style="padding: 8px;">比较 path 的 modification date，变化时重新提取并更新缓存</td>
+    </tr>
+  </table>
+</div>

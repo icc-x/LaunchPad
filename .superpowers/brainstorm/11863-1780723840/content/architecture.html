@@ -1,0 +1,95 @@
+<h2>LaunchPad 系统架构</h2>
+<p class="subtitle">纯 AppKit + NSCollectionView · 模块依赖关系</p>
+
+<div class="mockup">
+  <div class="mockup-header">Architecture Overview</div>
+  <div class="mockup-body" style="font-family: monospace; font-size: 13px; line-height: 1.6; padding: 24px; background: #1a1a2e;">
+    <pre style="color: #e0e0e0; margin: 0;">
+┌─────────────────────────────────────────────────────────────────────┐
+│                        <span style="color: #ff6b6b;">App Layer</span>                                   │
+│  ┌──────────────┐  ┌───────────────────┐  ┌─────────────────────┐  │
+│  │ <span style="color: #ffd93d;">AppDelegate</span>   │  │ <span style="color: #ffd93d;">HotkeyManager</span>      │  │ <span style="color: #ffd93d;">LaunchPadWindow</span>     │  │
+│  │ • 生命周期    │  │ • CGEventTap       │  │ • 全屏 NSWindow     │  │
+│  │ • 菜单栏      │  │ • Option+Space     │  │ • NSVisualEffectView│  │
+│  └──────┬───────┘  └─────────┬─────────┘  └──────────┬──────────┘  │
+│         │                    │                        │             │
+│         └────────────────────┼────────────────────────┘             │
+│                              ▼                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │              <span style="color: #6bcb77;">LaunchPadViewController</span>                      │   │
+│  │  • 协调所有子视图  • 处理键盘事件  • 管理编辑模式状态        │   │
+│  └────────────┬───────────────┬────────────────┬────────────────┘   │
+│               │               │                │                    │
+│               ▼               ▼                ▼                    │
+│  ┌────────────────┐ ┌─────────────────┐ ┌──────────────────┐       │
+│  │ <span style="color: #4ecdc4;">PageScrollView</span> │ │ <span style="color: #4ecdc4;">SearchBar</span>        │ │ <span style="color: #4ecdc4;">PageControl</span>       │       │
+│  │ • NSScrollView │ │ • NSSearchField  │ │ • 页码指示点     │       │
+│  │ • 分页翻页     │ │ • 实时过滤       │ │ • 点击跳页       │       │
+│  └───────┬────────┘ └────────┬────────┘ └──────────────────┘       │
+│          │                   │                                      │
+│          ▼                   ▼                                      │
+│  ┌──────────────────────────────────────────────────────────────┐   │
+│  │           <span style="color: #45b7d1;">AppGridCollectionView</span>  (NSCollectionView)          │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐           │   │
+│  │  │<span style="color: #dda0dd;">IconCell</span> │ │<span style="color: #dda0dd;">IconCell</span> │ │<span style="color: #dda0dd;">FolderCell</span>│ │<span style="color: #dda0dd;">IconCell</span> │  ...       │   │
+│  │  │ 📱      │ │ 📧      │ │ 📁      │ │ 🎵      │           │   │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘           │   │
+│  │  ┌─────────┐ ┌─────────┐ ┌─────────┐ ┌─────────┐           │   │
+│  │  │<span style="color: #dda0dd;">IconCell</span> │ │<span style="color: #dda0dd;">IconCell</span> │ │<span style="color: #dda0dd;">IconCell</span> │ │<span style="color: #dda0dd;">IconCell</span> │  ...       │   │
+│  │  │ 🎮      │ │ 📷      │ │ 🌐      │ │ 💬      │           │   │
+│  │  └─────────┘ └─────────┘ └─────────┘ └─────────┘           │   │
+│  └──────────────────────────┬───────────────────────────────────┘   │
+│                             │                                       │
+├─────────────────────────────┼───────────────────────────────────────┤
+│                    <span style="color: #ff6b6b;">Service Layer</span>                                   │
+│                             │                                       │
+│  ┌────────────────┐ ┌──────┴──────┐ ┌─────────────────────┐        │
+│  │ <span style="color: #a8e6cf;">AppScanner</span>     │ │ <span style="color: #a8e6cf;">IconCache</span>    │ │ <span style="color: #a8e6cf;">DragController</span>       │        │
+│  │ • NSWorkspace  │ │ • NSCache   │ │ • 拖拽状态机        │        │
+│  │ • /Applications│ │ • LRU 缓存  │ │ • 跨页拖拽          │        │
+│  │ • LSApp 数据   │ │ • @1x/@2x   │ │ • 创建文件夹        │        │
+│  └────────────────┘ └─────────────┘ └─────────────────────┘        │
+│                                                                    │
+├────────────────────────────────────────────────────────────────────┤
+│                    <span style="color: #ff6b6b;">Data Layer</span>                                     │
+│                                                                    │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  <span style="color: #ffeaa7;">StorageManager</span>  (SQLite)                                   │    │
+│  │  ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────────┐  │    │
+│  │  │ items    │ │ apps     │ │ groups   │ │ image_cache  │  │    │
+│  │  │ • uuid   │ │ • title  │ │ • title  │ │ • icon_data  │  │    │
+│  │  │ • type   │ │ • bundle │ │ • items  │ │ • @1x / @2x  │  │    │
+│  │  │ • parent │ │ • path   │ │          │ │              │  │    │
+│  │  │ • order  │ │          │ │          │ │              │  │    │
+│  │  └──────────┘ └──────────┘ └──────────┘ └──────────────┘  │    │
+│  └────────────────────────────────────────────────────────────┘    │
+│                                                                    │
+│  ┌────────────────────────────────────────────────────────────┐    │
+│  │  <span style="color: #ffeaa7;">Models</span>: AppInfo · FolderInfo · PageItem · LaunchPadLayout  │    │
+│  └────────────────────────────────────────────────────────────┘    │
+└────────────────────────────────────────────────────────────────────┘
+    </pre>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>核心模块边界</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">App Layer</td>
+      <td style="padding: 8px;">窗口管理、全局热键、主控制器协调。每个类职责单一，通过 delegate/通知通信</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #4ecdc4;">View Layer</td>
+      <td style="padding: 8px;">纯 UI 组件，不含业务逻辑。CollectionView cell、搜索栏、页码指示器各自独立</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #a8e6cf;">Service Layer</td>
+      <td style="padding: 8px;">应用扫描、图标缓存、拖拽状态机。可独立测试，不依赖 UI</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffeaa7;">Data Layer</td>
+      <td style="padding: 8px;">SQLite 持久化、数据模型。所有数据操作通过 StorageManager 统一入口</td>
+    </tr>
+  </table>
+</div>

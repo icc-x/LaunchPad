@@ -1,0 +1,139 @@
+<h2>拖拽与编辑模式</h2>
+<p class="subtitle">抖动模式 · 拖拽重排 · 跨页拖拽 · 拖拽状态机</p>
+
+<div class="split">
+  <div class="mockup">
+    <div class="mockup-header">拖拽状态机</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #ffd93d;">DragState (状态机)</span>
+
+        longPress(0.5s)
+idle ──────────────────────→ jiggling
+ ↑                            │    ↑
+ │ ESC / 点空白               │    │ 长按另一图标
+ │                            ▼    │
+ │                          dragging
+ │                            │
+ │                            ├─→ overEdge ─→ pageChange
+ │                            │     (1.5s)       │
+ │                            │                  │
+ │                            ├─→ overIcon ─→ createGroup
+ │                            │   (hover 0.8s)   │
+ │                            │                  │
+ │                            ├─→ outside  ─→ remove
+ │                            │   (delete zone)  │
+ │                            │                  │
+ │                            └─→ drop ────────→ reorder
+ │                                  │
+ └──────────────────────────────────┘
+           (drop 完成)
+
+<span style="color: #4ecdc4;">状态详情:</span>
+
+<span style="color: #ff6b6b;">idle:</span>     正常浏览模式
+<span style="color: #ff6b6b;">jiggling:</span> 所有图标抖动 + 显示删除✕
+<span style="color: #ff6b6b;">dragging:</span> 图标跟随鼠标 + 阴影
+<span style="color: #ff6b6b;">pageChange:</span> 自动翻到相邻页
+<span style="color: #ff6b6b;">createGroup:</span> 悬停目标放大提示
+      </pre>
+    </div>
+  </div>
+
+  <div class="mockup">
+    <div class="mockup-header">编辑模式 UI</div>
+    <div class="mockup-body" style="font-family: monospace; font-size: 12px; line-height: 1.5; padding: 20px; background: #1a1a2e;">
+      <pre style="color: #e0e0e0; margin: 0;">
+<span style="color: #6bcb77;">Jiggle Mode (抖动模式)</span>
+┌──────────────────────────────┐
+│                              │
+│  ┌───┐ ┌───┐ ┌───┐ ┌───┐   │
+│  │ ✕ │ │ ✕ │ │ ✕ │ │ ✕ │   │  ← 每个图标左上角 ✕
+│  │╭─╮│ │╭─╮│ │╭─╮│ │╭─╮│   │
+│  ││📱│ ││📧│ ││📁│ ││🎮│   │  ← 图标抖动 (±2°旋转)
+│  │╰─╯│ │╰─╯│ │╰─╯│ │╰─╯│   │     随机相位，永不停止
+│  │Saf│ │Mai│ │Uti│ │Gam│   │
+│  └───┘ └───┘ └───┘ └───┘   │
+│                              │
+│  ┌───┐ ┌───┐ ┌───┐ ┌───┐   │
+│  │ ✕ │ │ ✕ │ │ ✕ │ │ ✕ │   │
+│  │╭─╮│ │╭─╮│ │╭─╮│ │╭─╮│   │
+│  ││📷│ ││🌐│ ││🎵│ ││📝│   │
+│  │╰─╯│ │╰─╯│ │╰─╯│ │╰─╯│   │
+│  │Pho│ │Chr│ │Mus│ │Not│   │
+│  └───┘ └───┘ └───┘ └───┘   │
+│                              │
+│ <span style="color: #ff6b6b;">拖拽图标到另一个上 → 创建文件夹</span> │
+│ <span style="color: #ff6b6b;">点击 ✕ → 删除应用 (需确认)</span>      │
+│ <span style="color: #ff6b6b;">拖到屏幕边缘 → 翻页</span>             │
+│ <span style="color: #ff6b6b;">ESC / 点空白 → 退出编辑</span>          │
+└──────────────────────────────┘
+      </pre>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>拖拽实现方案</h3>
+</div>
+
+<div class="options">
+  <div class="option" data-choice="a" onclick="toggleSelect(this)">
+    <div class="letter">A</div>
+    <div class="content">
+      <h3>NSCollectionView 内置拖拽（推荐）</h3>
+      <p>利用 NSCollectionView 的 <code>canDragItems</code> / <code>pasteboardWriterForItemAt</code> / <code>validateDrop</code> / <code>acceptDrop</code> API。框架自动处理 drop 位置检测和动画。</p>
+      <p><strong>优点：</strong>系统级拖拽支持、拖拽预览自动生成、与 Finder 等应用互通<br>
+      <strong>缺点：</strong>跨页拖拽需要额外处理边缘检测和自动翻页</p>
+    </div>
+  </div>
+  <div class="option" data-choice="b" onclick="toggleSelect(this)">
+    <div class="letter">B</div>
+    <div class="content">
+      <h3>完全自定义拖拽</h3>
+      <p>用 <code>mouseDown</code> / <code>mouseDragged</code> / <code>mouseUp</code> 手动实现。创建一个独立的 <code>TileDragWindow</code> 跟随鼠标（和原版一样）。其他图标用动画让位。</p>
+      <p><strong>优点：</strong>完全控制视觉效果，与原版行为一致<br>
+      <strong>缺点：</strong>需要手动实现 hit testing、drop 检测、动画，工作量大</p>
+    </div>
+  </div>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>抖动动画实现</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d; width: 160px;">旋转动画</td>
+      <td style="padding: 8px;">CABasicAnimation 作用于 transform.rotation.z。角度 ±2°~3°，duration 0.12~0.15s，autoreverses，每个 cell 随机延迟 0~0.1s 避免同步</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">进入抖动</td>
+      <td style="padding: 8px;">长按 0.5s 触发（距离阈值 < 10px 才算长按，否则进入拖拽）。进入时所有图标同时开始抖动 + 淡入 ✕ 按钮</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">退出抖动</td>
+      <td style="padding: 8px;">ESC 或点击空白区域。图标渐停旋转 + ✕ 淡出。如果位置有变动，触发保存布局</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">Reduce Motion</td>
+      <td style="padding: 8px;">监听无障碍设置，开启时抖动改为图标轻微缩放脉冲（scale 1.0→1.05→1.0），✕ 按钮直接显示无动画</td>
+    </tr>
+  </table>
+</div>
+
+<div class="section" style="margin-top: 24px;">
+  <h3>跨页拖拽</h3>
+  <table style="width:100%; border-collapse: collapse; font-size: 14px;">
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d; width: 160px;">边缘检测</td>
+      <td style="padding: 8px;">拖拽图标进入屏幕左/右边缘 40px 区域时，启动 1.5s 倒计时。倒计时结束后自动翻页，图标跟随到新页面</td>
+    </tr>
+    <tr style="border-bottom: 1px solid #333;">
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">取消翻页</td>
+      <td style="padding: 8px;">在倒计时内拖离边缘区域则取消。鼠标移动角度检测（必须朝边缘方向移动才触发）</td>
+    </tr>
+    <tr>
+      <td style="padding: 8px; font-weight: bold; color: #ffd93d;">翻页动画</td>
+      <td style="padding: 8px;">翻页期间拖拽预览窗口保持跟随鼠标。新页面加载后，图标在新页面的对应位置显示</td>
+    </tr>
+  </table>
+</div>
