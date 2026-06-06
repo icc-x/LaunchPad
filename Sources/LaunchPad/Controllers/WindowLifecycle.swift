@@ -1,7 +1,8 @@
 import Foundation
 
 /// 窗口生命周期状态机委托协议
-protocol WindowLifecycleDelegate: AnyObject {
+@preconcurrency
+public protocol WindowLifecycleDelegate: AnyObject {
     func lifecycle(_ lifecycle: WindowLifecycle, didTransitionTo state: WindowLifecycle.State)
     func lifecycle(_ lifecycle: WindowLifecycle, shouldLaunchApp bundleId: String)
     func lifecycleRequestsOpenAnimation(_ lifecycle: WindowLifecycle)
@@ -10,9 +11,9 @@ protocol WindowLifecycleDelegate: AnyObject {
 }
 
 /// 窗口生命周期状态机
-final class WindowLifecycle {
+public final class WindowLifecycle {
 
-    enum State: Equatable {
+    public enum State: Equatable {
         case hidden
         case opening
         case visible
@@ -20,14 +21,14 @@ final class WindowLifecycle {
         case launching
     }
 
-    private(set) var state: State = .hidden
-    weak var delegate: WindowLifecycleDelegate?
+    public private(set) var state: State = .hidden
+    public weak var delegate: WindowLifecycleDelegate?
 
-    init(delegate: WindowLifecycleDelegate? = nil) {
+    public init(delegate: WindowLifecycleDelegate? = nil) {
         self.delegate = delegate
     }
 
-    func handleToggle() {
+    public func handleToggle() {
         switch state {
         case .hidden:
             transition(to: .opening)
@@ -40,7 +41,7 @@ final class WindowLifecycle {
         }
     }
 
-    func handleEscape() {
+    public func handleEscape() {
         switch state {
         case .visible:
             transition(to: .closing)
@@ -50,30 +51,30 @@ final class WindowLifecycle {
         }
     }
 
-    func handleAppClick(bundleId: String) {
+    public func handleAppClick(bundleId: String) {
         guard state == .visible else { return }
         transition(to: .launching)
         delegate?.lifecycle(self, shouldLaunchApp: bundleId)
         delegate?.lifecycleRequestsLaunchAnimation(self, bundleId: bundleId)
     }
 
-    func handleFocusLost() {
+    public func handleFocusLost() {
         guard state == .visible else { return }
         transition(to: .closing)
         delegate?.lifecycleRequestsCloseAnimation(self)
     }
 
-    func openAnimationDidFinish() {
+    public func openAnimationDidFinish() {
         guard state == .opening else { return }
         transition(to: .visible)
     }
 
-    func closeAnimationDidFinish() {
+    public func closeAnimationDidFinish() {
         guard state == .closing else { return }
         transition(to: .hidden)
     }
 
-    func launchAnimationDidFinish() {
+    public func launchAnimationDidFinish() {
         guard state == .launching else { return }
         transition(to: .closing)
         delegate?.lifecycleRequestsCloseAnimation(self)

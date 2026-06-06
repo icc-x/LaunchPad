@@ -3,47 +3,47 @@ import CoreGraphics
 import LaunchPadProtocols
 
 /// 拖拽状态机，管理从 idle → jiggling → dragging → idle 的完整生命周期
-final class DragController: @unchecked Sendable {
+public final class DragController: @unchecked Sendable {
 
     // MARK: - 状态定义
 
-    enum DragState: Equatable {
+    public enum DragState: Equatable {
         case idle
         case jiggling
         case dragging
     }
 
-    enum DraggingSubstate: Equatable {
+    public enum DraggingSubstate: Equatable {
         case none
         case overEdge
         case overIcon(targetId: Int64)
     }
 
-    enum HoverLocation: Equatable {
+    public enum HoverLocation: Equatable {
         case screenEdge
         case overIcon(targetId: Int64)
         case empty
     }
 
-    enum PageChangeDirection: Equatable {
+    public enum PageChangeDirection: Equatable {
         case forward
         case backward
     }
 
     // MARK: - 公开状态
 
-    private(set) var state: DragState = .idle
-    private(set) var draggingSubstate: DraggingSubstate = .none
-    private(set) var currentOrder: [Int64] = []
-    private(set) var pendingCrossPageMove: (itemId: Int64, fromPage: Int64, toPage: Int64)?
+    public private(set) var state: DragState = .idle
+    public private(set) var draggingSubstate: DraggingSubstate = .none
+    public private(set) var currentOrder: [Int64] = []
+    public private(set) var pendingCrossPageMove: (itemId: Int64, fromPage: Int64, toPage: Int64)?
 
     private var originalOrder: [Int64] = []
     private var editingParentId: Int64 = 0
 
     // MARK: - 悬停回调
 
-    var onPageChange: ((PageChangeDirection) -> Void)?
-    var onCreateGroup: ((Int64) -> Void)?
+    public var onPageChange: ((PageChangeDirection) -> Void)?
+    public var onCreateGroup: ((Int64) -> Void)?
 
     // MARK: - 依赖
 
@@ -55,14 +55,14 @@ final class DragController: @unchecked Sendable {
 
     // MARK: - 初始化
 
-    init(itemWriter: ItemWriting? = nil, scheduler: Scheduler = DispatchQueueScheduler()) {
+    public init(itemWriter: ItemWriting? = nil, scheduler: Scheduler = DispatchQueueScheduler()) {
         self.itemWriter = itemWriter
         self.scheduler = scheduler
     }
 
     // MARK: - 编辑模式管理
 
-    func beginEditing(originalOrder: [Int64], parentId: Int64? = nil) {
+    public func beginEditing(originalOrder: [Int64], parentId: Int64? = nil) {
         self.originalOrder = originalOrder
         self.currentOrder = originalOrder
         self.editingParentId = parentId ?? 0
@@ -70,19 +70,19 @@ final class DragController: @unchecked Sendable {
 
     // MARK: - 状态转换入口
 
-    func handleLongPress(movementDistance: CGFloat) {
+    public func handleLongPress(movementDistance: CGFloat) {
         guard state == .idle else { return }
         guard movementDistance <= DragController.movementThreshold else { return }
         state = .jiggling
     }
 
-    func handleDragStart() {
+    public func handleDragStart() {
         guard state == .jiggling || state == .idle else { return }
         state = .dragging
         draggingSubstate = .none
     }
 
-    func updateDragHover(location: HoverLocation) {
+    public func updateDragHover(location: HoverLocation) {
         guard state == .dragging else { return }
 
         if location == lastHoverLocation { return }
@@ -102,13 +102,13 @@ final class DragController: @unchecked Sendable {
         }
     }
 
-    func handleDrop() {
+    public func handleDrop() {
         guard state == .dragging else { return }
         commitReorder()
         resetToIdle()
     }
 
-    func handleCancel() {
+    public func handleCancel() {
         switch state {
         case .idle:
             return
@@ -122,7 +122,7 @@ final class DragController: @unchecked Sendable {
 
     // MARK: - 手势生命周期
 
-    func handlePressBegan(at point: CGPoint) {
+    public func handlePressBegan(at point: CGPoint) {
         pressStartPoint = point
         currentPoint = point
         scheduler.schedule(after: DragController.longPressDuration) { [weak self] in
@@ -136,7 +136,7 @@ final class DragController: @unchecked Sendable {
         }
     }
 
-    func handleDragMoved(to point: CGPoint) {
+    public func handleDragMoved(to point: CGPoint) {
         currentPoint = point
         guard state == .idle else { return }
         let distance = calculateMovementDistance()
@@ -146,13 +146,13 @@ final class DragController: @unchecked Sendable {
         }
     }
 
-    func handlePressEnded() {
+    public func handlePressEnded() {
         scheduler.cancelPending()
     }
 
     // MARK: - 模拟重排（测试用）
 
-    func simulateReorder(from sourceIndex: Int, to destinationIndex: Int) {
+    public func simulateReorder(from sourceIndex: Int, to destinationIndex: Int) {
         guard sourceIndex != destinationIndex,
               sourceIndex >= 0, sourceIndex < currentOrder.count,
               destinationIndex >= 0, destinationIndex < currentOrder.count else { return }
@@ -226,12 +226,14 @@ final class DragController: @unchecked Sendable {
 }
 
 /// 生产环境调度器
-final class DispatchQueueScheduler: Scheduler, @unchecked Sendable {
+public final class DispatchQueueScheduler: Scheduler, @unchecked Sendable {
     private let queue = DispatchQueue(label: "com.launchpad.scheduler", qos: .userInitiated)
     private var currentWorkItem: DispatchWorkItem?
     private let lock = NSLock()
 
-    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
+    public init() {}
+
+    public func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
         lock.lock()
         currentWorkItem?.cancel()
         let workItem = DispatchWorkItem(block: action)
@@ -240,7 +242,7 @@ final class DispatchQueueScheduler: Scheduler, @unchecked Sendable {
         queue.asyncAfter(deadline: .now() + interval, execute: workItem)
     }
 
-    func cancelPending() {
+    public func cancelPending() {
         lock.lock()
         currentWorkItem?.cancel()
         currentWorkItem = nil
