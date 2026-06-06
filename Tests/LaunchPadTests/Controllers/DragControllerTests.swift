@@ -3,6 +3,14 @@ import Foundation
 import CoreGraphics
 @testable import LaunchPad
 
+/// Thread-safe helpers for @Sendable closure tests
+private final class SendableState: @unchecked Sendable {
+    var direction: DragController.PageChangeDirection?
+    var boolFlag: Bool = false
+    var targetId: Int64?
+    var count: Int = 0
+}
+
 // MARK: - State Machine Tests
 
 @Suite("DragController state machine")
@@ -284,42 +292,42 @@ struct DragControllerHoverTimerTests {
     func edgeHover_1_5s_triggersPageChange() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var pageChangeDirection: DragController.PageChangeDirection?
+        let state = SendableState()
 
         controller.onPageChange = { direction in
-            pageChangeDirection = direction
+            state.direction = direction
         }
 
         controller.updateDragHover(location: .screenEdge)
         mockScheduler.advance(by: 1.5)
 
-        #expect(pageChangeDirection != nil)
+        #expect(state.direction != nil)
     }
 
     @Test("Dragging hover screen edge 1.4s -> no pageChange triggered")
     func edgeHover_1_4s_noPageChange() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var pageChangeTriggered = false
+        let state = SendableState()
 
         controller.onPageChange = { _ in
-            pageChangeTriggered = true
+            state.boolFlag = true
         }
 
         controller.updateDragHover(location: .screenEdge)
         mockScheduler.advance(by: 1.4)
 
-        #expect(pageChangeTriggered == false)
+        #expect(state.boolFlag == false)
     }
 
     @Test("Edge hover then leave -> timer reset, no pageChange")
     func edgeHover_leave_resetsTimer() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var pageChangeTriggered = false
+        let state = SendableState()
 
         controller.onPageChange = { _ in
-            pageChangeTriggered = true
+            state.boolFlag = true
         }
 
         controller.updateDragHover(location: .screenEdge)
@@ -327,17 +335,17 @@ struct DragControllerHoverTimerTests {
         controller.updateDragHover(location: .empty)
         mockScheduler.advance(by: 1.0)
 
-        #expect(pageChangeTriggered == false)
+        #expect(state.boolFlag == false)
     }
 
     @Test("Edge hover -> leave -> re-hover -> restarts 1.5s timer")
     func edgeHover_leave_rehover_restartsTimer() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var pageChangeCount = 0
+        let state = SendableState()
 
         controller.onPageChange = { _ in
-            pageChangeCount += 1
+            state.count += 1
         }
 
         controller.updateDragHover(location: .screenEdge)
@@ -347,10 +355,10 @@ struct DragControllerHoverTimerTests {
 
         controller.updateDragHover(location: .screenEdge)
         mockScheduler.advance(by: 1.0)
-        #expect(pageChangeCount == 0)
+        #expect(state.count == 0)
 
         mockScheduler.advance(by: 0.5)
-        #expect(pageChangeCount == 1)
+        #expect(state.count == 1)
     }
 
     // MARK: - Icon Hover
@@ -359,42 +367,42 @@ struct DragControllerHoverTimerTests {
     func iconHover_0_8s_triggersCreateGroup() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var groupTargetId: Int64?
+        let state = SendableState()
 
         controller.onCreateGroup = { targetId in
-            groupTargetId = targetId
+            state.targetId = targetId
         }
 
         controller.updateDragHover(location: .overIcon(targetId: 42))
         mockScheduler.advance(by: 0.8)
 
-        #expect(groupTargetId == 42)
+        #expect(state.targetId == 42)
     }
 
     @Test("Dragging hover icon 0.7s -> no createGroup triggered")
     func iconHover_0_7s_noCreateGroup() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var groupTriggered = false
+        let state = SendableState()
 
         controller.onCreateGroup = { _ in
-            groupTriggered = true
+            state.boolFlag = true
         }
 
         controller.updateDragHover(location: .overIcon(targetId: 42))
         mockScheduler.advance(by: 0.7)
 
-        #expect(groupTriggered == false)
+        #expect(state.boolFlag == false)
     }
 
     @Test("Icon hover then leave -> timer reset")
     func iconHover_leave_resetsTimer() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var groupTriggered = false
+        let state = SendableState()
 
         controller.onCreateGroup = { _ in
-            groupTriggered = true
+            state.boolFlag = true
         }
 
         controller.updateDragHover(location: .overIcon(targetId: 42))
@@ -402,17 +410,17 @@ struct DragControllerHoverTimerTests {
         controller.updateDragHover(location: .empty)
         mockScheduler.advance(by: 0.5)
 
-        #expect(groupTriggered == false)
+        #expect(state.boolFlag == false)
     }
 
     @Test("Switch from one icon to another -> timer resets")
     func iconHover_switchTarget_resetsTimer() {
         let mockScheduler = MockScheduler()
         let controller = makeDraggingController(scheduler: mockScheduler)
-        var groupTargetId: Int64?
+        let state = SendableState()
 
         controller.onCreateGroup = { targetId in
-            groupTargetId = targetId
+            state.targetId = targetId
         }
 
         controller.updateDragHover(location: .overIcon(targetId: 10))
@@ -420,10 +428,10 @@ struct DragControllerHoverTimerTests {
         controller.updateDragHover(location: .overIcon(targetId: 20))
         mockScheduler.advance(by: 0.6)
 
-        #expect(groupTargetId == nil)
+        #expect(state.targetId == nil)
 
         mockScheduler.advance(by: 0.2)
-        #expect(groupTargetId == 20)
+        #expect(state.targetId == 20)
     }
 
     // MARK: - Non-dragging state does not trigger
@@ -432,15 +440,15 @@ struct DragControllerHoverTimerTests {
     func idle_hover_noTimer() {
         let mockScheduler = MockScheduler()
         let controller = DragController(scheduler: mockScheduler)
-        var triggered = false
+        let state = SendableState()
 
-        controller.onPageChange = { _ in triggered = true }
-        controller.onCreateGroup = { _ in triggered = true }
+        controller.onPageChange = { _ in state.boolFlag = true }
+        controller.onCreateGroup = { _ in state.boolFlag = true }
 
         controller.updateDragHover(location: .screenEdge)
         mockScheduler.advance(by: 2.0)
 
-        #expect(triggered == false)
+        #expect(state.boolFlag == false)
     }
 }
 

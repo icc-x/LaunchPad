@@ -97,13 +97,17 @@ final class AppScanner: AppScanning {
         writer: ItemWriting
     ) {
         let existingApps = existingItems.filter { $0.type == .app }
-        let existingByBundleId = Dictionary(uniqueKeysWithValues: existingApps.compactMap { item -> (String, PageItem)? in
-            guard let bundleId = item.app?.bundleId else { return nil }
-            return (bundleId, item)
-        })
+        let existingByBundleId = Dictionary(
+            existingApps.compactMap { item -> (String, PageItem)? in
+                guard let bundleId = item.app?.bundleId else { return nil }
+                return (bundleId, item)
+            },
+            uniquingKeysWith: { first, _ in first }
+        )
         let scannedByBundleId = Dictionary(uniqueKeysWithValues: scannedApps.map { ($0.bundleId, $0) })
 
-        // INSERT new apps
+        // INSERT new apps (with incrementing ordering)
+        var newAppOrdering = existingApps.filter { $0.parentId == lastPageId }.count
         for scanned in scannedApps where existingByBundleId[scanned.bundleId] == nil {
             let appInfo = AppInfo(
                 id: 0, title: scanned.name, bundleId: scanned.bundleId,
@@ -111,9 +115,14 @@ final class AppScanner: AppScanning {
             )
             let item = PageItem(
                 id: 0, uuid: UUID().uuidString, type: .app,
-                ordering: 0, parentId: lastPageId, app: appInfo, group: nil
+                ordering: newAppOrdering, parentId: lastPageId, app: appInfo, group: nil
             )
-            try? writer.insertItem(item)
+            do {
+                try writer.insertItem(item)
+                newAppOrdering += 1
+            } catch {
+                NSLog("[AppScanner] Failed to insert app \(scanned.bundleId): \(error)")
+            }
         }
 
         // UPDATE changed apps
@@ -127,7 +136,11 @@ final class AppScanner: AppScanning {
                 )
                 var updatedItem = existing
                 updatedItem.app = updated
-                try? writer.updateItem(updatedItem)
+                do {
+                    try writer.updateItem(updatedItem)
+                } catch {
+                    NSLog("[AppScanner] Failed to update app \(bundleId): \(error)")
+                }
             }
         }
 
@@ -135,7 +148,11 @@ final class AppScanner: AppScanning {
         for existing in existingApps {
             guard let bundleId = existing.app?.bundleId else { continue }
             if scannedByBundleId[bundleId] == nil {
-                try? writer.deleteItem(id: existing.id)
+                do {
+                    try writer.deleteItem(id: existing.id)
+                } catch {
+                    NSLog("[AppScanner] Failed to delete app \(bundleId): \(error)")
+                }
             }
         }
     }

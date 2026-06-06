@@ -31,7 +31,7 @@ enum DiffableDataSourceBuilder {
         var snapshot = NSDiffableDataSourceSnapshot<Section, PageItem>()
 
         // Search mode: single section containing filtered results
-        if let results = searchResults, searchQuery != nil && !searchQuery!.isEmpty {
+        if let results = searchResults, let query = searchQuery, !query.isEmpty {
             snapshot.appendSections([.search])
             snapshot.appendItems(results, toSection: .search)
             return snapshot

@@ -68,10 +68,17 @@ final class IconCache: @unchecked Sendable {
                 // Check if disk cache is still valid
                 let cachedModDate = modificationCache.object(forKey: cacheKey) as Date?
                 let isStillValid: Bool
-                if let current = currentModDate, let cached = cachedModDate {
-                    isStillValid = (current == cached)
+                if let current = currentModDate {
+                    if let cached = cachedModDate {
+                        isStillValid = (current == cached)
+                    } else {
+                        // Modification cache evicted — compare disk icon against live icon
+                        let liveIcon = iconProvider.icon(forPath: path)
+                        let liveData = liveIcon.tiffRepresentation ?? Data()
+                        isStillValid = (diskData.0 == liveData)
+                    }
                 } else {
-                    // No modification date info available, assume disk data is valid
+                    // No current modification date available, assume disk data is valid
                     isStillValid = true
                 }
 

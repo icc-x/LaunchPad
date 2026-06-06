@@ -13,9 +13,10 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
             throw StorageError.openFailed
         }
+        guard let db else { throw StorageError.openFailed }
         sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
         sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil)
-        Schema.setupSchema(db: db!)
+        Schema.setupSchema(db: db)
     }
 
     deinit {
@@ -27,6 +28,9 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
     @discardableResult
     public func insertItem(_ item: PageItem) throws -> Int64 {
         try writeQueue.sync {
+            sqlite3_exec(db, "BEGIN", nil, nil, nil)
+            defer { sqlite3_exec(db, "COMMIT", nil, nil, nil) }
+
             let sql = """
                 INSERT INTO items (uuid, type, parent_id, ordering)
                 VALUES (?, ?, ?, ?)
@@ -72,6 +76,10 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
 
     public func updateItem(_ item: PageItem) throws {
         try writeQueue.sync {
+            sqlite3_exec(db, "BEGIN", nil, nil, nil)
+            var committed = false
+            defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
+
             // Update items table (ordering + parent_id)
             let sql = "UPDATE items SET ordering = ?, parent_id = ? WHERE id = ?"
             var stmt: OpaquePointer?
@@ -89,7 +97,6 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
             guard sqlite3_step(stmt) == SQLITE_DONE else {
                 throw StorageError.updateFailed
             }
-            sqlite3_finalize(stmt)
 
             // Update apps table if app data changed
             if let app = item.app {
@@ -131,6 +138,9 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
                     throw StorageError.updateFailed
                 }
             }
+
+            committed = true
+            sqlite3_exec(db, "COMMIT", nil, nil, nil)
         }
     }
 
@@ -212,13 +222,19 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
 
     public func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {
         try writeQueue.sync {
+            sqlite3_exec(db, "BEGIN", nil, nil, nil)
+            var committed = false
+            defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
+
+            let sql = "UPDATE items SET ordering = ?, parent_id = ? WHERE id = ?"
+            var stmt: OpaquePointer?
+            defer { sqlite3_finalize(stmt) }
+            guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
+                throw StorageError.prepareFailed
+            }
+
             for (index, id) in orderedIds.enumerated() {
-                let sql = "UPDATE items SET ordering = ?, parent_id = ? WHERE id = ?"
-                var stmt: OpaquePointer?
-                defer { sqlite3_finalize(stmt) }
-                guard sqlite3_prepare_v2(db, sql, -1, &stmt, nil) == SQLITE_OK else {
-                    throw StorageError.prepareFailed
-                }
+                sqlite3_reset(stmt)
                 sqlite3_bind_int(stmt, 1, Int32(index))
                 sqlite3_bind_int64(stmt, 2, parentId)
                 sqlite3_bind_int64(stmt, 3, id)
@@ -226,6 +242,9 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
                     throw StorageError.updateFailed
                 }
             }
+
+            committed = true
+            sqlite3_exec(db, "COMMIT", nil, nil, nil)
         }
     }
 

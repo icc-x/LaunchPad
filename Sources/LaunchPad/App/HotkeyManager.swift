@@ -10,14 +10,13 @@ import Carbon.HIToolbox
 /// - Thread safety: CGEventTap callback dispatches via DispatchQueue.main.async
 public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
-    public var onToggle: (() -> Void)?
+    public var onToggle: (@Sendable () -> Void)?
 
-    /// In-app keyboard event callback, return nil to consume event, return event to pass to next responder
-    public var onKeyDown: ((NSEvent) -> NSEvent?)?
+    /// In-app keyboard event callback
+    public var onKeyDown: (@Sendable (NSEvent) -> NSEvent?)?
 
     // MARK: - Option+Space state machine
 
-    /// Whether Option key is held down (tracked via flagsChanged events)
     private var isOptionHeld = false
 
     // MARK: - Event monitors
@@ -25,12 +24,22 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     private var eventTap: CFMachPort?
     private var localMonitor: Any?
 
-    // MARK: - Class-level strong reference (prevent dangling pointer in CGEventTap callback)
+    // MARK: - Class-level strong reference with lock protection
 
-    /// Strong reference to self, preventing dangling pointers in CGEventTap callback with passUnretained.
-    /// Set in registerGlobalHotkey, cleared in unregisterGlobalHotkey.
-    /// This class is @unchecked Sendable, and access is protected by external synchronization (main thread).
+    private static let retainedLock = NSLock()
     nonisolated(unsafe) private static var retainedSelf: HotkeyManager?
+
+    private static func setRetained(_ manager: HotkeyManager?) {
+        retainedLock.lock()
+        retainedSelf = manager
+        retainedLock.unlock()
+    }
+
+    private static func getRetained() -> HotkeyManager? {
+        retainedLock.lock()
+        defer { retainedLock.unlock() }
+        return retainedSelf
+    }
 
     public init() {}
 
@@ -38,11 +47,13 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
     @discardableResult
     public func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool {
-        // Monitor flagsChanged (Option key) and keyDown (Space key)
         let mask = CGEventMask(
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue)
         )
+
+        // Use passRetained to prevent use-after-free — the callback holds a strong reference
+        let selfPtr = Unmanaged.passRetained(self).toOpaque()
 
         let callback: CGEventTapCallBack = { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
             guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
@@ -50,16 +61,12 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
             switch type {
             case .flagsChanged:
-                // Track Option key press/release state
-                // Dispatch to main thread to avoid data race with isOptionHeld read in keyDown
                 let isOptionNow = event.flags.contains(.maskAlternate)
                 DispatchQueue.main.async {
                     manager.isOptionHeld = isOptionNow
                 }
 
             case .keyDown:
-                // Detect Option+Space combination
-                // Move isOptionHeld read and onToggle call to main thread to avoid data race
                 let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
                 DispatchQueue.main.async {
                     if manager.isOptionHeld && keyCode == 49 { // 49 = Space
@@ -74,9 +81,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
             return Unmanaged.passUnretained(event)
         }
 
-        // Use class-level strong reference to prevent dangling pointer
-        HotkeyManager.retainedSelf = self
-        let selfPtr = Unmanaged.passUnretained(self).toOpaque()
+        HotkeyManager.setRetained(self)
 
         eventTap = CGEvent.tapCreate(
             tap: .cgSessionEventTap,
@@ -88,7 +93,9 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         )
 
         guard let tap = eventTap else {
-            HotkeyManager.retainedSelf = nil
+            // Balance the retain from passRetained
+            _ = Unmanaged<HotkeyManager>.fromOpaque(selfPtr).takeRetainedValue()
+            HotkeyManager.setRetained(nil)
             return false
         }
 
@@ -102,33 +109,27 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     public func unregisterGlobalHotkey() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
+            // Remove from run loop before releasing the strong reference
+            let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
             eventTap = nil
+            // Balance the retain from passRetained
+            _ = Unmanaged<HotkeyManager>.passUnretained(self).takeRetainedValue()
         }
-        HotkeyManager.retainedSelf = nil
+        HotkeyManager.setRetained(nil)
     }
 
     // MARK: - In-app keyboard monitoring
 
-    /// Register in-app keyboard event monitor, forwarding events to onKeyDown callback
     public func registerLocalMonitor() {
         localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
             guard let self else { return event }
-
-            // flagsChanged events (modifier keys) forwarded to onKeyDown callback
             if event.type == .flagsChanged {
                 return self.onKeyDown?(event) ?? event
             }
-
-            // ESC
-            if event.keyCode == 53 { return event }
-
-            // Arrow keys
-            if [123, 124, 125, 126].contains(event.keyCode) { return event }
-
-            // Enter
-            if event.keyCode == 36 { return event }
-
-            // Other character keys -> forward to onKeyDown callback
+            if event.keyCode == 53 { return event }          // ESC
+            if [123, 124, 125, 126].contains(event.keyCode) { return event } // Arrow keys
+            if event.keyCode == 36 { return event }           // Enter
             return self.onKeyDown?(event) ?? event
         }
     }
@@ -142,7 +143,6 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
     // MARK: - Test helpers
 
-    /// Test-only: simulate onToggle callback firing (executes synchronously on main thread)
     public func simulateToggle() {
         if Thread.isMainThread {
             onToggle?()
@@ -153,19 +153,14 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         }
     }
 
-    /// Test-only: simulate Option key down (flagsChanged)
     public func simulateOptionKeyDown() {
         isOptionHeld = true
     }
 
-    /// Test-only: simulate Option key up (flagsChanged)
     public func simulateOptionKeyUp() {
         isOptionHeld = false
     }
 
-    /// Test-only: simulate Space key down (keyDown, checks if Option is held)
-    /// Note: Calls onToggle synchronously for test determinism.
-    /// The real CGEventTap path dispatches to main queue.
     public func simulateSpaceKeyDown() {
         guard isOptionHeld else { return }
         onToggle?()

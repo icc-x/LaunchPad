@@ -3,7 +3,7 @@ import CoreGraphics
 import LaunchPadProtocols
 
 /// 拖拽状态机，管理从 idle → jiggling → dragging → idle 的完整生命周期
-final class DragController {
+final class DragController: @unchecked Sendable {
 
     // MARK: - 状态定义
 
@@ -231,7 +231,7 @@ final class DispatchQueueScheduler: Scheduler, @unchecked Sendable {
     private var currentWorkItem: DispatchWorkItem?
     private let lock = NSLock()
 
-    func schedule(after interval: TimeInterval, action: @escaping () -> Void) {
+    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
         lock.lock()
         currentWorkItem?.cancel()
         let workItem = DispatchWorkItem(block: action)

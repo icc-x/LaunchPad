@@ -5,6 +5,12 @@ import LaunchPadProtocols
 import AppKit
 #endif
 
+/// Thread-safe counter for @Sendable closure tests
+private final class SendableCounter: @unchecked Sendable {
+    var count: Int = 0
+    var flag: Bool = false
+}
+
 @Suite("HotkeyManager")
 struct HotkeyManagerTests {
 
@@ -15,12 +21,12 @@ struct HotkeyManagerTests {
     @Test("onToggle callback can be triggered via simulateToggle")
     func simulateToggle_invokesOnToggle() {
         let manager = HotkeyManager()
-        var toggleCount = 0
-        manager.onToggle = { toggleCount += 1 }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
 
         manager.simulateToggle()
 
-        #expect(toggleCount == 1)
+        #expect(counter.count == 1)
     }
 
     @Test("simulateToggle without onToggle set does not crash")
@@ -33,14 +39,14 @@ struct HotkeyManagerTests {
     @MainActor
     func simulateToggle_callsOnMainThread() {
         let manager = HotkeyManager()
-        var calledOnMainThread = false
+        let counter = SendableCounter()
         manager.onToggle = {
-            calledOnMainThread = Thread.isMainThread
+            counter.flag = Thread.isMainThread
         }
 
         manager.simulateToggle()
 
-        #expect(calledOnMainThread == true)
+        #expect(counter.flag == true)
     }
 
     // MARK: - registerGlobalHotkey
@@ -70,10 +76,10 @@ struct HotkeyManagerTests {
     @Test("MockHotkeyManager conforms to HotkeyManaging protocol")
     func mockHotkeyManager_conformsToProtocol() {
         var mock: HotkeyManaging = MockHotkeyManager()
-        var toggleCalled = false
-        mock.onToggle = { toggleCalled = true }
+        let counter = SendableCounter()
+        mock.onToggle = { counter.flag = true }
         mock.onToggle?()
-        #expect(toggleCalled == true)
+        #expect(counter.flag == true)
     }
 
     @Test("MockHotkeyManager registerGlobalHotkey return value is configurable")
@@ -119,48 +125,48 @@ struct HotkeyManagerTests {
     @Test("Option+Space combination triggers onToggle")
     func optionSpace_combination_triggersToggle() {
         let manager = HotkeyManager()
-        var toggleCount = 0
-        manager.onToggle = { toggleCount += 1 }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
 
         manager.simulateOptionKeyDown()
         manager.simulateSpaceKeyDown()
 
-        #expect(toggleCount == 1)
+        #expect(counter.count == 1)
     }
 
     @Test("Only Option pressed does not trigger onToggle")
     func optionOnly_noToggle() {
         let manager = HotkeyManager()
-        var toggleCount = 0
-        manager.onToggle = { toggleCount += 1 }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
 
         manager.simulateOptionKeyDown()
 
-        #expect(toggleCount == 0)
+        #expect(counter.count == 0)
     }
 
     @Test("Only Space pressed (no Option) does not trigger onToggle")
     func spaceOnly_noToggle() {
         let manager = HotkeyManager()
-        var toggleCount = 0
-        manager.onToggle = { toggleCount += 1 }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
 
         manager.simulateSpaceKeyDown()
 
-        #expect(toggleCount == 0)
+        #expect(counter.count == 0)
     }
 
     @Test("Option released then Space pressed does not trigger onToggle")
     func optionReleased_thenSpace_noToggle() {
         let manager = HotkeyManager()
-        var toggleCount = 0
-        manager.onToggle = { toggleCount += 1 }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
 
         manager.simulateOptionKeyDown()
         manager.simulateOptionKeyUp()
         manager.simulateSpaceKeyDown()
 
-        #expect(toggleCount == 0)
+        #expect(counter.count == 0)
     }
 
     // MARK: - unregisterGlobalHotkey

@@ -86,7 +86,7 @@ final class MockImageStore: ImageStoring, @unchecked Sendable {
 final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var directoryContentsMap: [URL: [URL]] = [:]
     var directoryContents: [URL] = []
-    var bundleInfos: [URL: [String: Any]] = [:]
+    var bundleInfos: [URL: [String: any Sendable]] = [:]
     var existingFiles: Set<URL> = []
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
@@ -97,7 +97,7 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
         return existingFiles.contains(url)
     }
 
-    func bundleInfo(at bundleURL: URL) -> [String: Any]? {
+    func bundleInfo(at bundleURL: URL) -> [String: any Sendable]? {
         return bundleInfos[bundleURL]
     }
 }
@@ -126,7 +126,7 @@ final class MockIconProvider: IconProviding, @unchecked Sendable {
 // MARK: - MockHotkeyManager
 
 final class MockHotkeyManager: HotkeyManaging, @unchecked Sendable {
-    var onToggle: (() -> Void)?
+    var onToggle: (@Sendable () -> Void)?
     var registerResult = true
     private(set) var registerCallCount = 0
     private(set) var unregisterCallCount = 0
@@ -144,11 +144,11 @@ final class MockHotkeyManager: HotkeyManaging, @unchecked Sendable {
 // MARK: - MockScheduler
 
 final class MockScheduler: Scheduler, @unchecked Sendable {
-    var scheduledActions: [(interval: TimeInterval, action: () -> Void)] = []
+    var scheduledActions: [(interval: TimeInterval, action: @Sendable () -> Void)] = []
     private(set) var cancelCallCount = 0
     private var currentTime: TimeInterval = 0
 
-    func schedule(after interval: TimeInterval, action: @escaping () -> Void) {
+    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
         scheduledActions.append((currentTime + interval, action))
     }
 
