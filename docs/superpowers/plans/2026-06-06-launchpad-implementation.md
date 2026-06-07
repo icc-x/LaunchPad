@@ -30,10 +30,14 @@ LaunchPad/
 │   │   │   ├── FolderOverlayView.swift              # 文件夹展开浮动面板
 │   │   │   ├── SearchBar.swift                      # 搜索输入框
 │   │   │   ├── PageControl.swift                    # 页码指示点（底部居中）
-│   │   │   └── EmptyStateView.swift                 # 搜索无结果提示
+│   │   │   ├── EmptyStateView.swift                 # 搜索无结果提示
+│   │   │   └── DiffableDataSourceBuilder.swift      # DiffableDataSource 快照构建（纯函数）
 │   │   ├── Controllers/
 │   │   │   ├── LaunchPadViewController.swift        # 主视图控制器，协调所有子视图
-│   │   │   └── DragController.swift                 # 拖拽状态机（idle/jiggling/dragging）
+│   │   │   ├── DragController.swift                 # 拖拽状态机（idle/jiggling/dragging）
+│   │   │   ├── WindowLifecycle.swift                # 窗口生命周期状态机（五态）
+│   │   │   ├── FolderController.swift               # 文件夹操作逻辑（创建/解散/重命名）
+│   │   │   └── KeyboardNavigator.swift              # 键盘导航状态逻辑（idle/search/edit）
 │   │   ├── Services/
 │   │   │   ├── AppScanner.swift                     # 应用扫描 + 过滤 + 增量同步
 │   │   │   ├── IconCache.swift                      # 双层图标缓存（NSCache + SQLite）
@@ -45,7 +49,8 @@ LaunchPad/
 │   │   └── Utilities/
 │   │       ├── GridLayoutCalculator.swift           # 网格布局参数计算（纯函数）
 │   │       ├── AnimationConstants.swift             # 动画参数表（duration/timing/fallback）
-│   │       └── AccessibilityObservers.swift         # 无障碍设置监听（Reduce Motion 等）
+│   │       ├── AccessibilityObservers.swift         # 无障碍设置监听（Reduce Motion 等）
+│   │       └── ErrorRecovery.swift                  # 错误处理策略（6 种恢复方案）
 │   └── LaunchPadProtocols/
 │       ├── Protocols.swift                          # DI 协议（AppScanning/IconProviding/DataStoring/...）
 │       └── Models/
@@ -66,9 +71,20 @@ LaunchPad/
 │       │   └── IconCacheTests.swift                 # 两层缓存命中/淘汰/失效
 │       ├── Controllers/
 │       │   ├── DragControllerTests.swift            # 状态机转换 / 边界条件
-│       │   └── WindowLifecycleTests.swift           # 窗口生命周期状态机
+│       │   ├── WindowLifecycleTests.swift           # 窗口生命周期状态机
+│       │   ├── FolderControllerTests.swift          # 文件夹操作测试
+│       │   ├── KeyboardNavigatorTests.swift         # 键盘导航映射测试
+│       │   └── HotkeyManagerTests.swift             # 全局热键注册测试
+│       ├── Views/
+│       │   ├── PageScrollViewTests.swift            # 目标页计算纯函数测试
+│       │   └── DiffableDataSourceTests.swift        # 快照构建纯函数测试
 │       ├── Utilities/
-│       │   └── GridLayoutCalculatorTests.swift      # 纯函数：列数/行数/图标尺寸/间距
+│       │   ├── GridLayoutCalculatorTests.swift      # 纯函数：列数/行数/图标尺寸/间距
+│       │   ├── AnimationConstantsTests.swift        # 动画参数验证
+│       │   ├── ErrorRecoveryTests.swift             # 错误处理策略测试
+│       │   └── AccessibilityObserversTests.swift    # 无障碍设置监听测试
+│       ├── Integration/
+│       │   └── IntegrationTests.swift               # 跨模块集成验证
 │       └── TestHelpers/
 │           ├── MockProtocols.swift                  # 所有 DI 协议的 Mock 实现
 │           └── TestDataFactory.swift                 # 工厂方法：创建测试用 PageItem/AppInfo
@@ -8811,4 +8827,506 @@ git log --oneline
 ```
 
 预期：32 个提交（每个 Task 一个），从 `chore: init SPM project` 到 `feat: add integration tests and cleanup placeholder files`。
+
+---
+
+# View / App 层实施任务（补充）
+
+> 以下 Task 33-44 补齐计划蓝图文件树中列出但未分配实施任务的 12 个文件。
+> 这些 Task 覆盖整个 View 渲染层和 App 生命周期层，使实施计划与设计文档完全对应。
+
+---
+
+## Task 33: AppIconCell — 应用图标 Cell
+
+> `NSCollectionViewItem` 子类，显示应用图标 + 标题标签。支持抖动动画和 VoiceOver。
+> 设计文档 §5（网格）、§10（抖动动画）、§14（无障碍）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/AppIconCell.swift`
+
+- [ ] **Step 1: 创建 AppIconCell 实现**
+
+创建 `Sources/LaunchPad/Views/AppIconCell.swift`：
+
+```swift
+import Foundation
+#if canImport(AppKit)
+import AppKit
+import LaunchPadProtocols
+
+/// 应用图标 Cell — NSCollectionViewItem 子类
+public class AppIconCell: NSCollectionViewItem {
+    static let identifier = NSUserInterfaceItemIdentifier("AppIconCell")
+
+    private let iconImageView = NSImageView()
+    private let titleLabel = NSTextField(labelWithString: "")
+    private let containerView = NSView()
+    private var isJiggling = false
+
+    override public func loadView() {
+        view = NSView()
+        view.addSubview(containerView)
+        containerView.addSubview(iconImageView)
+        containerView.addSubview(titleLabel)
+        // 布局约束：icon 64×64 居中，标题在下方
+        // VoiceOver: accessibilityRole = .button
+        // ... (完整布局代码)
+    }
+
+    public func configure(item: PageItem, icon: NSImage?) {
+        let title = item.app?.title ?? item.group?.title ?? ""
+        titleLabel.stringValue = title
+        iconImageView.image = icon ?? NSImage(named: NSImage.applicationIconName)
+        view.setAccessibilityLabel(title)
+    }
+
+    public func startJiggling() {
+        // CABasicAnimation on transform.rotation.z
+        // values: [jiggleMinRotation, -jiggleMinRotation, jiggleMaxRotation, -jiggleMaxRotation]
+        // duration: 0.4, repeatCount: .infinity
+    }
+
+    public func stopJiggling() {
+        containerView.layer?.removeAnimation(forKey: "jiggle")
+    }
+
+    override public func prepareForReuse() {
+        super.prepareForReuse()
+        stopJiggling()
+        iconImageView.image = nil
+        titleLabel.stringValue = ""
+    }
+}
+#endif
+```
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/AppIconCell.swift
+git commit -m "feat(view): add AppIconCell — icon display, jiggle animation, VoiceOver support"
+```
+
+---
+
+## Task 34: FolderCell — 文件夹 Cell
+
+> 3×3 图标缩略网格 + 文件夹标题。设计文档 §11（文件夹外观）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/FolderCell.swift`
+
+- [ ] **Step 1: 创建 FolderCell 实现**
+
+创建 `Sources/LaunchPad/Views/FolderCell.swift`，含：
+- `NSCollectionViewItem` 子类，identifier = `"FolderCell"`
+- 3×3 `NSImageView` 网格（每个 20×20pt，间距 2pt）
+- `configure(item:childIcons:)` — 最多显示 9 个缩略图
+- VoiceOver: label = 文件夹标题
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/FolderCell.swift
+git commit -m "feat(view): add FolderCell — 3×3 thumbnail grid + folder title"
+```
+
+---
+
+## Task 35: SearchBar — 搜索输入框
+
+> 搜索输入框，支持显示/隐藏动画和查询回调。设计文档 §9（搜索行为、清除搜索）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/SearchBar.swift`
+
+- [ ] **Step 1: 创建 SearchBar 实现**
+
+创建 `Sources/LaunchPad/Views/SearchBar.swift`，含：
+- `NSSearchField` 子类
+- `onQueryChanged: ((String) -> Void)?` 回调
+- `show()` / `hide()` 带淡入淡出动画（使用 `AnimationConstants.windowExpand.duration`）
+- `clearAndFocus()` — 清空并聚焦
+- 实现 `NSSearchFieldDelegate`，`controlTextDidChange` 触发回调
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/SearchBar.swift
+git commit -m "feat(view): add SearchBar — search input with show/hide animation"
+```
+
+---
+
+## Task 36: PageControl — 页码指示点
+
+> 底部居中的圆点指示器，使用 `PageControlViewModel`（Task 25）。设计文档 §5（PageControl）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/PageControl.swift`
+
+- [ ] **Step 1: 创建 PageControl 实现**
+
+创建 `Sources/LaunchPad/Views/PageControl.swift`，含：
+- `NSView` 子类 `PageControlView`
+- `init(viewModel: PageControlViewModel)` — 注入视图模型
+- `update()` — 重绘，根据 `isVisible` 显示/隐藏
+- `draw(_:)` — 绘制圆点（当前页白色实心，其他白色半透明空心）
+- `mouseDown` — 点击圆点触发 `onDotSelected` 回调
+- `intrinsicContentSize` — 根据页数计算宽度
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/PageControl.swift
+git commit -m "feat(view): add PageControlView — page indicator dots with click navigation"
+```
+
+---
+
+## Task 37: EmptyStateView — 搜索无结果提示
+
+> 搜索无结果时显示的居中提示视图。设计文档 §9（清除搜索）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/EmptyStateView.swift`
+
+- [ ] **Step 1: 创建 EmptyStateView 实现**
+
+创建 `Sources/LaunchPad/Views/EmptyStateView.swift`，含：
+- `NSView` 子类
+- 居中标签 "No applications found"（`NSFont.systemFont(ofSize: 18, weight: .light)`, `.secondaryLabelColor`）
+- `show(animated:)` / `hide(animated:)` 带 0.2s 淡入淡出
+- 初始状态隐藏（`alphaValue = 0, isHidden = true`）
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/EmptyStateView.swift
+git commit -m "feat(view): add EmptyStateView — no search results message"
+```
+
+---
+
+## Task 38: FolderOverlayView — 文件夹展开浮动面板
+
+> 点击文件夹时弹出的浮动面板，显示文件夹内容。设计文档 §11（FolderOverlayView）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/FolderOverlayView.swift`
+
+- [ ] **Step 1: 创建 FolderOverlayView 实现**
+
+创建 `Sources/LaunchPad/Views/FolderOverlayView.swift`，含：
+- `NSView` 子类
+- `NSVisualEffectView` 毛玻璃背景（`.behindWindow`, `.hudWindow`, 圆角 12pt）
+- 标题标签 + 内嵌 `NSCollectionView`（垂直滚动）
+- `openFolder(item:childItems:iconCache:)` — 弹出动画（`AnimationConstants.folderExpand`）
+- `closeFolder()` — 关闭动画（`AnimationConstants.folderCollapse`）
+- 点击外部区域关闭
+- `onAppSelected` / `onClosed` 回调
+- 实现 `NSCollectionViewDataSource` + `NSCollectionViewDelegate`
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/FolderOverlayView.swift
+git commit -m "feat(view): add FolderOverlayView — floating folder panel with frosted glass"
+```
+
+---
+
+## Task 39: AppGridCollectionView — 主应用网格
+
+> `NSCollectionView` 子类，使用 `NSDiffableDataSource` 管理数据。设计文档 §5（网格容器）、§6（DiffableDataSource）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/AppGridCollectionView.swift`
+
+- [ ] **Step 1: 创建 AppGridCollectionView 实现**
+
+创建 `Sources/LaunchPad/Views/AppGridCollectionView.swift`，含：
+- `NSCollectionView` 子类
+- `NSDiffableDataSource<Section, PageItem>` 数据源
+- `configure(iconCache:)` — 注入图标缓存
+- `reload(pages:searchResults:searchQuery:)` — 调用 `DiffableDataSourceBuilder.buildSnapshot` 并 apply
+- `updateLayout(screenWidth:)` — 应用 `GridLayoutCalculator.calculate` 到 `AppGridFlowLayout`
+- 注册 `AppIconCell` 和 `FolderCell`
+- `onItemSelected` 回调
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/AppGridCollectionView.swift
+git commit -m "feat(view): add AppGridCollectionView — NSCollectionView with DiffableDataSource"
+```
+
+---
+
+## Task 40: AppGridFlowLayout — 自定义横向分页布局
+
+> `NSCollectionViewFlowLayout` 子类，每页一个 section，水平滚动。设计文档 §5（AppGridFlowLayout）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Views/AppGridFlowLayout.swift`
+
+- [ ] **Step 1: 创建 AppGridFlowLayout 实现**
+
+创建 `Sources/LaunchPad/Views/AppGridFlowLayout.swift`，含：
+- `NSCollectionViewFlowLayout` 子类
+- `applyGridParameters(_:)` — 从 `GridParameters` 设置 itemSize、spacing、sectionInset
+- `scrollDirection = .horizontal`
+- `targetContentOffset(forProposedContentOffset:withScrollingVelocity:)` — 吸附到页面
+- `layoutAttributesForElements(in:)` — 垂直居中 items
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Views/AppGridFlowLayout.swift
+git commit -m "feat(view): add AppGridFlowLayout — custom horizontal paging layout"
+```
+
+---
+
+## Task 41: LaunchPadViewController — 主视图控制器
+
+> 协调所有子视图和控制器的核心组件。设计文档 §3-§14 的视图层集成。
+
+**Files:**
+- Create: `Sources/LaunchPad/Controllers/LaunchPadViewController.swift`
+
+- [ ] **Step 1: 创建 LaunchPadViewController 实现**
+
+创建 `Sources/LaunchPad/Controllers/LaunchPadViewController.swift`，含：
+- `@MainActor` 的 `NSViewController` 子类
+- 拥有并布局所有子视图：`PageScrollView`、`AppGridCollectionView`、`SearchBar`、`PageControlView`、`EmptyStateView`、`FolderOverlayView`
+- 依赖注入：`DataStoring`、`IconCache`、`SearchEngine`、`KeyboardNavigator`、`DragController`、`FolderController`
+- `loadData()` — 从 `LayoutPersistence.loadLayout` 加载数据，更新 collectionView 和 pageControl
+- `handleSearch(query:)` — 调用 `SearchEngine.cachedSearch`，更新快照，显示/隐藏 emptyState
+- `handleKeyEvent(_:)` / `handleCharacterInput(_:)` — 委托给 `KeyboardNavigator`，执行返回的 Action
+- `handleItemSelection(_:)` — app 类型用 `NSWorkspace.shared.launchApplication`，group 类型打开 `FolderOverlayView`
+- 搜索栏回调 → 更新 DiffableDataSource 快照
+- 拖拽控制器回调 → 页面切换、创建文件夹
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Controllers/LaunchPadViewController.swift
+git commit -m "feat(controller): add LaunchPadViewController — main view coordinator"
+```
+
+---
+
+## Task 42: LaunchPadWindowController — 全屏毛玻璃覆盖窗口
+
+> 全屏无边框窗口，实现 `WindowLifecycleDelegate`，驱动开/关/启动动画。设计文档 §3（窗口与背景层）。
+
+**Files:**
+- Create: `Sources/LaunchPad/App/LaunchPadWindowController.swift`
+
+- [ ] **Step 1: 创建 LaunchPadWindowController 实现**
+
+创建 `Sources/LaunchPad/App/LaunchPadWindowController.swift`，含：
+- `NSWindowController` 子类，实现 `WindowLifecycleDelegate`
+- `NSPanel` 配置：`.borderless`、`.statusBar` 级别、全屏、`hidesOnDeactivate = false`
+- `NSVisualEffectView` 毛玻璃背景（`.behindWindow`, `.hudWindow`）
+- `toggle()` / `escape()` 公开方法
+- `lifecycle(_:didTransitionTo:)` — 状态转换时执行动画
+  - `.opening` → `showWindowAnimated()`（`AnimationConstants.windowExpand`）
+  - `.closing` → `hideWindowAnimated()`（`AnimationConstants.windowCollapse`）
+  - `.hidden` → `window?.orderOut(nil)` + 重新加载数据
+- `lifecycle(_:shouldLaunchApp:)` → `NSWorkspace.shared.launchApplication`
+- `lifecycleRequestsLaunchAnimation` → 缩放 + 淡出动画
+- 焦点丢失检测：`NSWindow.didResignKeyNotification` → `lifecycle.handleFocusLost()`
+- `AccessibilityObserver` 监听 → 更新毛玻璃材质
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/App/LaunchPadWindowController.swift
+git commit -m "feat(window): add LaunchPadWindowController — fullscreen frosted glass overlay"
+```
+
+---
+
+## Task 43: LayoutPersistence — 布局持久化
+
+> 保存/加载用户自定义的应用排列顺序。设计文档 §6（数据持久化）。
+
+**Files:**
+- Create: `Sources/LaunchPad/Services/LayoutPersistence.swift`
+
+- [ ] **Step 1: 创建 LayoutPersistence 实现**
+
+创建 `Sources/LaunchPad/Services/LayoutPersistence.swift`，含：
+- `public enum LayoutPersistence` 命名空间
+- `saveLayout(items:writer:)` — 遍历 items 调用 `writer.updateItem` 保存 ordering/parentId
+- `loadLayout(reader:) -> (pages: [PageItem], itemsByPage: [Int64: [PageItem]])` — 加载所有页面和子项，按 ordering 排序
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 提交**
+
+```bash
+git add Sources/LaunchPad/Services/LayoutPersistence.swift
+git commit -m "feat(service): add LayoutPersistence — save/load user layout ordering"
+```
+
+---
+
+## Task 44: AppDelegate — 应用入口与服务装配
+
+> 应用入口，菜单栏图标，服务初始化，热键注册，首次扫描。设计文档 §4（全局热键、Agent 应用）。
+
+**Files:**
+- Create: `Sources/LaunchPad/App/AppDelegate.swift`
+
+- [ ] **Step 1: 创建 AppDelegate 实现**
+
+创建 `Sources/LaunchPad/App/AppDelegate.swift`，含：
+- `@MainActor` 的 `NSObject, NSApplicationDelegate` 子类
+- `applicationDidFinishLaunching`:
+  1. `NSApp.setActivationPolicy(.accessory)` — Agent 应用，无 Dock 图标
+  2. 创建 `StorageManager`（数据库路径：`~/Library/Application Support/LaunchPad/launchpad.db`）
+  3. 创建 `IconCache`、`AppScanner`、`SearchEngine`、`HotkeyManager`
+  4. 创建 `DragController`、`FolderController`、`KeyboardNavigator`
+  5. 创建 `LaunchPadViewController`、`WindowLifecycle`、`LaunchPadWindowController`
+  6. 设置菜单栏 `NSStatusItem`（图标 + 右键菜单）
+  7. 注册全局热键 `Option+Space`（`HotkeyManager.registerGlobalHotkey`）
+  8. 注册本地键盘监听（`HotkeyManager.registerLocalMonitor` → 转发给 ViewController）
+  9. 首次启动扫描：`AppScanner.scanDirectories` → `firstLaunchPaginate`
+  10. 后续启动同步：`AppScanner.incrementalSync`
+- 生产环境服务实现：`SystemFileSystemService`、`SystemIconProvider`
+- 错误恢复：数据库损坏时 `ErrorRecovery.handleSQLiteCorruption` → 删除重建
+
+- [ ] **Step 2: 验证编译通过**
+
+```bash
+swift build 2>&1
+```
+
+- [ ] **Step 3: 验证全量测试无回归**
+
+```bash
+swift test 2>&1
+```
+
+预期：所有现有测试通过。
+
+- [ ] **Step 4: 提交**
+
+```bash
+git add Sources/LaunchPad/App/AppDelegate.swift
+git commit -m "feat(app): add AppDelegate — entry point, menu bar, service wiring, hotkey registration"
+```
+
+---
+
+## 文件树完整性验证
+
+完成 Task 33-44 后，实施计划文件树中的所有文件应全部有对应 Task：
+
+| 文件 | Task |
+|------|------|
+| `Package.swift` | Task 1 |
+| `Sources/LaunchPadProtocols/Protocols.swift` | Task 6 |
+| `Sources/LaunchPadProtocols/Models/ItemType.swift` | Task 3 |
+| `Sources/LaunchPadProtocols/Models/AppInfo.swift` | Task 4 |
+| `Sources/LaunchPadProtocols/Models/GroupInfo.swift` | Task 5 |
+| `Sources/LaunchPadProtocols/Models/PageItem.swift` | Task 5 |
+| `Sources/LaunchPad/Storage/Schema.swift` | Task 7 |
+| `Sources/LaunchPad/Storage/StorageManager.swift` | Task 8-9 |
+| `Sources/LaunchPad/Utilities/GridLayoutCalculator.swift` | Task 10 |
+| `Sources/LaunchPad/Utilities/AnimationConstants.swift` | Task 23 |
+| `Sources/LaunchPad/Utilities/AccessibilityObservers.swift` | Task 31 |
+| `Sources/LaunchPad/Utilities/ErrorRecovery.swift` | Task 30 |
+| `Sources/LaunchPad/Services/SearchEngine.swift` | Task 11-13 |
+| `Sources/LaunchPad/Services/AppScanner.swift` | Task 14-16 |
+| `Sources/LaunchPad/Services/IconCache.swift` | Task 17 |
+| `Sources/LaunchPad/Services/LayoutPersistence.swift` | **Task 43** ✅ |
+| `Sources/LaunchPad/Views/PageScrollView.swift` | Task 24-25 |
+| `Sources/LaunchPad/Views/DiffableDataSourceBuilder.swift` | Task 26 |
+| `Sources/LaunchPad/Views/AppIconCell.swift` | **Task 33** ✅ |
+| `Sources/LaunchPad/Views/FolderCell.swift` | **Task 34** ✅ |
+| `Sources/LaunchPad/Views/SearchBar.swift` | **Task 35** ✅ |
+| `Sources/LaunchPad/Views/PageControl.swift` | **Task 36** ✅ |
+| `Sources/LaunchPad/Views/EmptyStateView.swift` | **Task 37** ✅ |
+| `Sources/LaunchPad/Views/FolderOverlayView.swift` | **Task 38** ✅ |
+| `Sources/LaunchPad/Views/AppGridCollectionView.swift` | **Task 39** ✅ |
+| `Sources/LaunchPad/Views/AppGridFlowLayout.swift` | **Task 40** ✅ |
+| `Sources/LaunchPad/Controllers/DragController.swift` | Task 19-22 |
+| `Sources/LaunchPad/Controllers/WindowLifecycle.swift` | Task 18 |
+| `Sources/LaunchPad/Controllers/FolderController.swift` | Task 28 |
+| `Sources/LaunchPad/Controllers/KeyboardNavigator.swift` | Task 29 |
+| `Sources/LaunchPad/Controllers/LaunchPadViewController.swift` | **Task 41** ✅ |
+| `Sources/LaunchPad/App/HotkeyManager.swift` | Task 27 |
+| `Sources/LaunchPad/App/LaunchPadWindowController.swift` | **Task 42** ✅ |
+| `Sources/LaunchPad/App/AppDelegate.swift` | **Task 44** ✅ |
+
+**44 个 Task，33 个源文件，100% 覆盖。**
 
