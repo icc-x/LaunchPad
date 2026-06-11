@@ -34,8 +34,7 @@ public class AppGridFlowLayout: NSCollectionViewFlowLayout {
     // MARK: - Snap to Page
 
     override public func targetContentOffset(forProposedContentOffset proposedContentOffset: NSPoint, withScrollingVelocity velocity: NSPoint) -> NSPoint {
-        guard let collectionView = collectionView,
-              let params = gridParams else {
+        guard let collectionView = collectionView else {
             return super.targetContentOffset(forProposedContentOffset: proposedContentOffset, withScrollingVelocity: velocity)
         }
 
@@ -54,17 +53,16 @@ public class AppGridFlowLayout: NSCollectionViewFlowLayout {
     // MARK: - Vertical centering
 
     override public func layoutAttributesForElements(in rect: NSRect) -> [NSCollectionViewLayoutAttributes] {
-        let attributes = super.layoutAttributesForElements(in: rect)
+        let originalAttributes = super.layoutAttributesForElements(in: rect)
 
-        guard let collectionView = collectionView else { return attributes }
+        guard let collectionView = collectionView else { return originalAttributes }
 
-        // Vertically center the items
-        for attr in attributes {
-            let verticalOffset = (collectionView.bounds.height - attr.frame.height) / 2
-            attr.frame.origin.y = verticalOffset
+        // 复制属性后再修改，避免破坏系统布局缓存
+        return originalAttributes.map { attr in
+            let copy = attr.copy() as! NSCollectionViewLayoutAttributes
+            copy.frame.origin.y = (collectionView.bounds.height - copy.frame.height) / 2
+            return copy
         }
-
-        return attributes
     }
 }
 #endif

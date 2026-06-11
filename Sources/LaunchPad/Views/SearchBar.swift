@@ -86,6 +86,11 @@ extension SearchBar: NSSearchFieldDelegate {
         onQueryChanged?(stringValue)
     }
 
+    public func searchFieldDidStartSearching(_ sender: NSSearchField) {
+        // 用户按回车触发搜索时（与 controlTextDidChange 互补）
+        onQueryChanged?(stringValue)
+    }
+
     public func searchFieldDidEndSearching(_ sender: NSSearchField) {
         // User clicked the "x" button
         onQueryChanged?("")

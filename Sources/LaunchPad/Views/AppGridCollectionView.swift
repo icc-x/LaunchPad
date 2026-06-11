@@ -15,6 +15,7 @@ public class AppGridCollectionView: NSCollectionView {
 
     private(set) var diffableDataSource: DataSource!
     private var iconCache: IconCache?
+    private var storage: DataStoring?
 
     // MARK: - Init
 
@@ -46,12 +47,16 @@ public class AppGridCollectionView: NSCollectionView {
         diffableDataSource = DataSource(collectionView: self) { [weak self] collectionView, indexPath, item in
             self?.configureCell(collectionView: collectionView, indexPath: indexPath, item: item)
         }
+
+        // Use delegate for selection (supports both mouse and keyboard)
+        delegate = self
     }
 
     // MARK: - Public API
 
-    public func configure(iconCache: IconCache) {
+    public func configure(iconCache: IconCache, storage: DataStoring? = nil) {
         self.iconCache = iconCache
+        self.storage = storage
     }
 
     /// Reload the grid with new data
@@ -87,8 +92,17 @@ public class AppGridCollectionView: NSCollectionView {
 
         case .group:
             let cell = collectionView.makeItem(withIdentifier: FolderCell.identifier, for: indexPath) as! FolderCell
-            // For folder cells, we show placeholder thumbnails
-            cell.configure(item: item, childIcons: [])
+            // 加载文件夹子项图标
+            var childIcons: [NSImage] = []
+            if let storage {
+                if let children = try? storage.fetchAllItems(parentId: item.id) {
+                    childIcons = children.prefix(9).compactMap { child in
+                        guard let app = child.app else { return nil }
+                        return iconCache?.icon(forItemId: child.id, path: app.path)
+                    }
+                }
+            }
+            cell.configure(item: item, childIcons: childIcons)
             return cell
 
         case .page:
@@ -99,17 +113,16 @@ public class AppGridCollectionView: NSCollectionView {
         }
     }
 
-    // MARK: - Selection
+}
 
-    override public func mouseDown(with event: NSEvent) {
-        super.mouseDown(with: event)
+// MARK: - NSCollectionViewDelegate
 
-        let location = convert(event.locationInWindow, from: nil)
-        if let indexPath = indexPathForItem(at: location) {
-            let item = diffableDataSource.itemIdentifier(for: indexPath)
-            if let item {
-                onItemSelected?(item)
-            }
+extension AppGridCollectionView: NSCollectionViewDelegate {
+    public func collectionView(_ collectionView: NSCollectionView, didSelectItemsAt indexPaths: Set<IndexPath>) {
+        collectionView.deselectAll(nil)
+        guard let indexPath = indexPaths.first else { return }
+        if let item = diffableDataSource.itemIdentifier(for: indexPath) {
+            onItemSelected?(item)
         }
     }
 }

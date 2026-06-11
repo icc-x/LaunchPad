@@ -5,6 +5,8 @@ import LaunchPadProtocols
 
 /// 文件夹展开浮动面板
 /// 当用户点击文件夹时弹出，显示文件夹内的应用
+/// 本视图覆盖整个父视图，backgroundView 为实际面板，
+/// 点击面板外区域（即本视图背景区域）可关闭文件夹
 public class FolderOverlayView: NSView {
 
     /// 点击文件夹内某个应用时的回调
@@ -32,7 +34,7 @@ public class FolderOverlayView: NSView {
     }
 
     private func setup() {
-        // Background with frosted glass
+        // Background with frosted glass — 作为实际面板
         backgroundView.blendingMode = .behindWindow
         backgroundView.material = .hudWindow
         backgroundView.state = .active
@@ -43,10 +45,10 @@ public class FolderOverlayView: NSView {
 
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
         NSLayoutConstraint.activate([
-            backgroundView.topAnchor.constraint(equalTo: topAnchor),
-            backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor),
-            backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor),
-            backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor),
+            backgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
+            backgroundView.centerYAnchor.constraint(equalTo: centerYAnchor),
+            backgroundView.widthAnchor.constraint(equalToConstant: 320),
+            backgroundView.heightAnchor.constraint(equalToConstant: 360),
         ])
 
         // Title
@@ -123,11 +125,13 @@ public class FolderOverlayView: NSView {
         })
     }
 
-    // MARK: - Click outside to close
+    // MARK: - Click outside panel to close
 
     override public func mouseDown(with event: NSEvent) {
         let location = convert(event.locationInWindow, from: nil)
-        if !bounds.contains(location) {
+        // 点击落在面板（backgroundView）外部则关闭
+        let panelFrame = backgroundView.frame
+        if !panelFrame.contains(location) {
             closeFolder()
         }
         super.mouseDown(with: event)

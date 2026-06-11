@@ -71,7 +71,7 @@ public class LaunchPadViewController: NSViewController {
 
         // Collection view
         collectionView = AppGridCollectionView(frame: .zero)
-        collectionView.configure(iconCache: iconCache)
+        collectionView.configure(iconCache: iconCache, storage: storage)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = collectionView
 
@@ -119,11 +119,11 @@ public class LaunchPadViewController: NSViewController {
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
 
-            // Folder overlay centered
-            folderOverlay.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            folderOverlay.centerYAnchor.constraint(equalTo: view.centerYAnchor),
-            folderOverlay.widthAnchor.constraint(equalToConstant: 320),
-            folderOverlay.heightAnchor.constraint(equalToConstant: 360),
+            // Folder overlay 覆盖整个视图（点击外部关闭功能需要）
+            folderOverlay.topAnchor.constraint(equalTo: view.topAnchor),
+            folderOverlay.leadingAnchor.constraint(equalTo: view.leadingAnchor),
+            folderOverlay.trailingAnchor.constraint(equalTo: view.trailingAnchor),
+            folderOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
         // Configure grid layout
@@ -250,8 +250,10 @@ public class LaunchPadViewController: NSViewController {
     private func handleItemSelection(_ item: PageItem) {
         switch item.type {
         case .app:
-            if let bundleId = item.app?.bundleId {
-                NSWorkspace.shared.launchApplication(bundleId)
+            if let bundleId = item.app?.bundleId,
+               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(at: url, configuration: config)
             }
         case .group:
             openFolder(item)

@@ -28,9 +28,9 @@ public enum AnimationConstants {
     // MARK: - Animation definition
 
     public struct Animation: Equatable, Sendable {
-        let duration: TimeInterval
-        let timing: Timing
-        let reduceMotionFallback: ReduceMotionFallback
+        public let duration: TimeInterval
+        public let timing: Timing
+        public let reduceMotionFallback: ReduceMotionFallback
     }
 
     // MARK: - Window animations
