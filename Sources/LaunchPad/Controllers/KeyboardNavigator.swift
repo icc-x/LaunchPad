@@ -6,7 +6,7 @@ public final class KeyboardNavigator {
 
     // MARK: - Mode (corresponds to section 13 three states)
 
-    public enum Mode: Equatable {
+    public enum Mode: Equatable, Sendable {
         case idle
         case search(query: String)
         case edit
@@ -14,7 +14,7 @@ public final class KeyboardNavigator {
 
     // MARK: - Key (abstract key)
 
-    public enum Key: Equatable {
+    public enum Key: Equatable, Sendable {
         case escape
         case leftArrow
         case rightArrow
@@ -27,7 +27,7 @@ public final class KeyboardNavigator {
 
     // MARK: - Action (navigator output)
 
-    public enum Action: Equatable {
+    public enum Action: Equatable, Sendable {
         case closeWindow
         case clearSearch
         case exitEditMode

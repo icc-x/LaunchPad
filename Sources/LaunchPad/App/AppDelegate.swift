@@ -10,21 +10,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services
 
-    nonisolated(unsafe) private var storage: StorageManager!
-    nonisolated(unsafe) private var iconCache: IconCache!
-    nonisolated(unsafe) private var appScanner: AppScanner!
-    nonisolated(unsafe) private var searchEngine: SearchEngine!
-    nonisolated(unsafe) private var hotkeyManager: HotkeyManager!
+    private var storage: StorageManager!
+    private var iconCache: IconCache!
+    private var appScanner: AppScanner!
+    private var searchEngine: SearchEngine!
+    private var hotkeyManager: HotkeyManager!
 
     // MARK: - Controllers
 
-    nonisolated(unsafe) private var lifecycle: WindowLifecycle!
-    nonisolated(unsafe) private var windowController: LaunchPadWindowController!
-    nonisolated(unsafe) private var viewController: LaunchPadViewController!
+    private var lifecycle: WindowLifecycle!
+    private var windowController: LaunchPadWindowController!
+    private var viewController: LaunchPadViewController!
 
     // MARK: - Menu Bar
 
-    nonisolated(unsafe) private var statusItem: NSStatusItem!
+    private var statusItem: NSStatusItem!
 
     // MARK: - Application Lifecycle
 
@@ -33,6 +33,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         NSApp.setActivationPolicy(.accessory)
 
         setupServices()
+        guard storage != nil else {
+            NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
+            return
+        }
         setupControllers()
         setupMenuBar()
         setupHotkey()
@@ -132,54 +136,31 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in
-            nonisolated(unsafe) let unsafeEvent = event
-            guard let self else { return unsafeEvent }
-            if Thread.isMainThread {
-                return self.handleLocalKeyEvent(unsafeEvent)
-            } else {
-                nonisolated(unsafe) var result: NSEvent? = unsafeEvent
-                DispatchQueue.main.sync {
-                    result = self.handleLocalKeyEvent(unsafeEvent)
-                }
-                return result
+            guard let self else { return event }
+            // 本地事件监视器在主线程运行，此处通过 nonisolated(unsafe) 访问 @MainActor 状态
+            nonisolated(unsafe) let unsafeSelf = self
+            guard unsafeSelf.lifecycle.state == .visible else { return event }
+
+            let key: KeyboardNavigator.Key? = switch event.keyCode {
+            case 53:  .escape
+            case 36:  .enter
+            case 126: .upArrow
+            case 125: .downArrow
+            case 123: .leftArrow
+            case 124: .rightArrow
+            case 48:  .tab
+            case 51:  .delete
+            default:  nil
             }
+
+            if let key {
+                _ = unsafeSelf.viewController.handleKeyEvent(key)
+            } else if let chars = event.characters {
+                _ = unsafeSelf.viewController.handleCharacterInput(chars)
+            }
+            return nil
         }
         hotkeyManager.registerLocalMonitor()
-    }
-
-    @preconcurrency
-    nonisolated private func handleLocalKeyEvent(_ event: NSEvent) -> NSEvent? {
-        nonisolated(unsafe) let e = event
-        nonisolated(unsafe) var result: NSEvent? = e
-        MainActor.assumeIsolated { [self] in
-            guard lifecycle.state == .visible else { return }
-
-            if e.keyCode == 53 { // ESC
-                let action = viewController.handleKeyEvent(.escape)
-                if case .closeWindow = action {
-                    windowController.escape()
-                    result = nil
-                    return
-                }
-                result = nil
-                return
-            }
-
-            if e.keyCode == 36 { _ = viewController.handleKeyEvent(.enter); result = nil; return }
-            if e.keyCode == 126 { _ = viewController.handleKeyEvent(.upArrow); result = nil; return }
-            if e.keyCode == 125 { _ = viewController.handleKeyEvent(.downArrow); result = nil; return }
-            if e.keyCode == 123 { _ = viewController.handleKeyEvent(.leftArrow); result = nil; return }
-            if e.keyCode == 124 { _ = viewController.handleKeyEvent(.rightArrow); result = nil; return }
-            if e.keyCode == 48 { _ = viewController.handleKeyEvent(.tab); result = nil; return }
-            if e.keyCode == 51 { _ = viewController.handleKeyEvent(.delete); result = nil; return }
-
-            if let chars = e.characters {
-                _ = viewController.handleCharacterInput(chars)
-                result = nil
-                return
-            }
-        }
-        return result
     }
 
     // MARK: - Initial Scan

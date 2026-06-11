@@ -99,7 +99,10 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
 
     nonisolated public func lifecycle(_ lifecycle: WindowLifecycle, shouldLaunchApp bundleId: String) {
         DispatchQueue.main.async {
-            NSWorkspace.shared.launchApplication(bundleId)
+            if let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
+                let config = NSWorkspace.OpenConfiguration()
+                NSWorkspace.shared.openApplication(at: url, configuration: config)
+            }
         }
     }
 
@@ -113,7 +116,9 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
                 ctx.duration = AnimationConstants.appLaunch.duration
                 self.window?.animator().alphaValue = 0.8
             }, completionHandler: { [weak self] in
-                self?.lifecycle.launchAnimationDidFinish()
+                DispatchQueue.main.async {
+                    self?.lifecycle.launchAnimationDidFinish()
+                }
             })
         }
     }
@@ -133,7 +138,9 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
             ctx.duration = duration
             window.animator().alphaValue = 1
         }, completionHandler: { [weak self] in
-            self?.lifecycle.openAnimationDidFinish()
+            DispatchQueue.main.async {
+                self?.lifecycle.openAnimationDidFinish()
+            }
         })
     }
 
@@ -145,7 +152,9 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
             ctx.duration = duration
             self.window?.animator().alphaValue = 0
         }, completionHandler: { [weak self] in
-            self?.lifecycle.closeAnimationDidFinish()
+            DispatchQueue.main.async {
+                self?.lifecycle.closeAnimationDidFinish()
+            }
         })
     }
 
