@@ -9,10 +9,34 @@ final class AppScanner: AppScanning {
 
     init(
         fileSystemService: FileSystemService,
-        excludedBundleIds: Set<String> = []
+        excludedBundleIds: Set<String>? = nil
     ) {
         self.fileSystemService = fileSystemService
-        self.excludedBundleIds = excludedBundleIds
+        // 如果未提供排除列表，从系统 LaunchPadLayout.plist 读取
+        self.excludedBundleIds = excludedBundleIds ?? Self.loadSystemExcludedBundleIds()
+    }
+
+    /// 从系统 LaunchPadLayout.plist 读取排除的 bundle ID 列表
+    private static func loadSystemExcludedBundleIds() -> Set<String> {
+        let plistPath = NSHomeDirectory() + "/Library/Application Support/Dock/LaunchPadLayout.plist"
+        guard let data = FileManager.default.contents(atPath: plistPath),
+              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
+              let pages = plist["pages"] as? [[String: Any]] else {
+            return []
+        }
+
+        var excluded = Set<String>()
+        for page in pages {
+            if let items = page["items"] as? [[String: Any]] {
+                for item in items {
+                    if let bundleId = item["bundleid"] as? String,
+                       let visible = item["visible"] as? Bool, !visible {
+                        excluded.insert(bundleId)
+                    }
+                }
+            }
+        }
+        return excluded
     }
 
     func isExcluded(bundleId: String) -> Bool {
