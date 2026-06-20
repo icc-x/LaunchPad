@@ -20,6 +20,8 @@ public class FolderOverlayView: NSView {
     private var collectionView: NSCollectionView!
     private var childItems: [PageItem] = []
     private var iconCache: IconCache?
+    private var backgroundWidthConstraint: NSLayoutConstraint?
+    private var backgroundHeightConstraint: NSLayoutConstraint?
 
     // MARK: - Init
 
@@ -44,11 +46,15 @@ public class FolderOverlayView: NSView {
         addSubview(backgroundView)
 
         backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        let widthConstraint = backgroundView.widthAnchor.constraint(equalToConstant: 320)
+        let heightConstraint = backgroundView.heightAnchor.constraint(equalToConstant: 360)
+        backgroundWidthConstraint = widthConstraint
+        backgroundHeightConstraint = heightConstraint
         NSLayoutConstraint.activate([
             backgroundView.centerXAnchor.constraint(equalTo: centerXAnchor),
             backgroundView.centerYAnchor.constraint(equalTo: centerYAnchor),
-            backgroundView.widthAnchor.constraint(equalToConstant: 320),
-            backgroundView.heightAnchor.constraint(equalToConstant: 360),
+            widthConstraint,
+            heightConstraint,
         ])
 
         // Title
@@ -103,14 +109,42 @@ public class FolderOverlayView: NSView {
         self.iconCache = iconCache
         titleLabel.stringValue = item.group?.title ?? "Folder"
 
+        // 响应式尺寸：60% 屏幕宽度，最大 70% 屏幕高度
+        if let screen = NSScreen.main {
+            let screenWidth = screen.frame.width
+            let screenHeight = screen.frame.height
+            let targetWidth = min(screenWidth * 0.6, 800)
+            let targetHeight = min(screenHeight * 0.7, 600)
+            backgroundWidthConstraint?.constant = targetWidth
+            backgroundHeightConstraint?.constant = targetHeight
+        }
+
         collectionView.dataSource = self
         collectionView.delegate = self
         collectionView.reloadData()
 
         isHidden = false
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = AnimationConstants.folderExpand.duration
-            animator().alphaValue = 1
+
+        // Scale 弹出动画（Task 4.2）
+        let settings = AccessibilitySettings.current()
+        if settings.reduceMotion {
+            // Reduce Motion: 简单 fade
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.15
+                animator().alphaValue = 1
+            })
+        } else {
+            // 正常: scale 0.8→1.0 + fade
+            backgroundView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.folderExpand.duration
+                animator().alphaValue = 1
+            })
+            let spring = CASpringAnimation(keyPath: "transform.scale")
+            spring.fromValue = 0.8
+            spring.toValue = 1.0
+            spring.damping = 0.8
+            backgroundView.layer?.add(spring, forKey: "scaleIn")
         }
     }
 
