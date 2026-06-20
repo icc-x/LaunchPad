@@ -2,25 +2,106 @@
 import AppKit
 import CoreGraphics
 
-/// Custom paging scroll container
+/// 自定义分页滚动容器
+/// 重写 scrollWheel 实现双指横滑翻页 + 弹性回弹
 class PageScrollView: NSScrollView {
 
     // MARK: - Constants
 
-    /// Velocity threshold (pt/s), exceed this to flip page directly
+    /// 速度阈值 (pt/s)，超过则直接翻页
     nonisolated static let velocityThreshold: CGFloat = 300.0
 
-    // MARK: - Pure function: calculate target page
+    // MARK: - 状态追踪
 
-    /// Calculate target page number based on scroll offset and velocity
-    ///
-    /// - Parameters:
-    ///   - offset: Scroll offset (positive = scroll left / next page direction)
-    ///   - velocity: Scroll velocity (pt/s)
-    ///   - currentPage: Current page number (0-based)
-    ///   - totalPages: Total number of pages
-    ///   - pageWidth: Width of each page (pt)
-    /// - Returns: Target page number (0-based, clamped to valid range)
+    private var scrollAccumulator: CGFloat = 0
+    private var isScrolling = false
+
+    // MARK: - Init
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        setupPaging()
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        setupPaging()
+    }
+
+    private func setupPaging() {
+        horizontalScrollElasticity = .allowed
+        hasHorizontalScroller = false
+        drawsBackground = false
+    }
+
+    // MARK: - 核心分页逻辑
+
+    override func scrollWheel(with event: NSEvent) {
+        // 收集滚动位移
+        if event.phase.contains(.changed) {
+            scrollAccumulator += event.scrollingDeltaX
+            isScrolling = true
+        }
+
+        // 滚动结束 → 计算目标页并动画跳转
+        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
+            guard isScrolling else { return }
+            isScrolling = false
+
+            let pageWidth = bounds.width
+            guard pageWidth > 0 else { return }
+
+            let currentOffset = contentView.bounds.origin.x
+            let currentPage = Int(round(currentOffset / pageWidth))
+            let totalPages = max(1, Int(documentView!.bounds.width / pageWidth))
+
+            let target = Self.targetPage(
+                for: scrollAccumulator,
+                velocity: event.scrollingDeltaX * 10, // 近似速度
+                currentPage: currentPage,
+                totalPages: totalPages,
+                pageWidth: pageWidth
+            )
+
+            scrollToPage(target, pageWidth: pageWidth)
+            scrollAccumulator = 0
+            return
+        }
+
+        // 边缘弹性回弹：首/末页时允许系统默认弹性行为
+        if event.phase.contains(.mayBegin) || event.phase.contains(.began) {
+            let atFirstPage = contentView.bounds.origin.x <= 0
+            let documentWidth = documentView?.bounds.width ?? 0
+            let atLastPage = contentView.bounds.origin.x >= documentWidth - bounds.width - 1
+
+            if (atFirstPage && event.scrollingDeltaX > 0) ||
+               (atLastPage && event.scrollingDeltaX < 0) {
+                super.scrollWheel(with: event)
+                return
+            }
+        }
+
+        // 其他阶段不传递（阻止系统默认滚动，由我们控制翻页）
+    }
+
+    // MARK: - 翻页动画
+
+    /// 平滑动画滚动到指定页面
+    func scrollToPage(_ page: Int, pageWidth: CGFloat? = nil) {
+        let pw = pageWidth ?? bounds.width
+        guard pw > 0 else { return }
+        let targetX = CGFloat(page) * pw
+
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = AnimationConstants.pageScroll.duration
+            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+            contentView.animator().bounds.origin.x = targetX
+        }
+    }
+
+    // MARK: - 纯函数（保持不变）
+
+    /// 计算目标页码（纯函数）
     nonisolated public static func targetPage(
         for offset: CGFloat,
         velocity: CGFloat,
@@ -28,25 +109,21 @@ class PageScrollView: NSScrollView {
         totalPages: Int,
         pageWidth: CGFloat
     ) -> Int {
-        // Single page: always return 0
         guard totalPages > 1 else { return 0 }
 
         let halfPage = pageWidth / 2.0
 
-        // Velocity exceeds threshold: flip based on velocity direction
+        // 高速滚动：根据方向翻页
         if abs(velocity) >= velocityThreshold {
             if velocity > 0 {
-                // Positive velocity -> next page
                 return clampPage(currentPage + 1, totalPages: totalPages)
             } else {
-                // Negative velocity -> previous page
                 return clampPage(currentPage - 1, totalPages: totalPages)
             }
         }
 
-        // Low velocity: decide based on offset
+        // 低速：根据位移判断
         if abs(offset) > halfPage {
-            // Offset exceeds half page -> flip to corresponding direction
             if offset > 0 {
                 return clampPage(currentPage + 1, totalPages: totalPages)
             } else {
@@ -54,11 +131,9 @@ class PageScrollView: NSScrollView {
             }
         }
 
-        // Offset less than half page -> stay on current page
         return currentPage
     }
 
-    /// Clamp page number to [0, totalPages-1]
     private nonisolated static func clampPage(_ page: Int, totalPages: Int) -> Int {
         return max(0, min(page, totalPages - 1))
     }
