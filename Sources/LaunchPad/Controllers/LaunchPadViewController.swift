@@ -257,16 +257,69 @@ public class LaunchPadViewController: NSViewController {
     private func handleItemSelection(_ item: PageItem) {
         switch item.type {
         case .app:
-            if let bundleId = item.app?.bundleId,
-               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-                let config = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: config)
+            if let bundleId = item.app?.bundleId {
+                animateAppLaunch(item: item, bundleId: bundleId)
             }
         case .group:
             openFolder(item)
         case .page:
             break
         }
+    }
+
+    /// 三阶段启动动画：高亮反馈 → 放大淡出 → 启动应用
+    private func animateAppLaunch(item: PageItem, bundleId: String) {
+        let settings = AccessibilitySettings.current()
+
+        // 找到对应的 cell
+        guard let indexPath = collectionView.diffableDataSource.indexPath(for: item),
+              let cell = collectionView.item(at: indexPath) else {
+            // 找不到 cell，直接启动
+            launchApp(bundleId: bundleId)
+            return
+        }
+
+        if settings.reduceMotion {
+            // Reduce Motion: 直接启动
+            launchApp(bundleId: bundleId)
+            return
+        }
+
+        let cellView = cell.view
+        cellView.wantsLayer = true
+
+        // 阶段 1: 高亮反馈 scale 0.95→1.0 (0.1s)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            cellView.animator().alphaValue = 0.8
+        }, completionHandler: { [weak self] in
+            // 阶段 2: 放大淡出 scale→2.0 + alpha→0 (0.3s)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.appLaunch.duration
+                cellView.animator().alphaValue = 0
+            })
+            let zoom = CABasicAnimation(keyPath: "transform.scale")
+            zoom.fromValue = 1.0
+            zoom.toValue = 2.0
+            zoom.duration = AnimationConstants.appLaunch.duration
+            zoom.isRemovedOnCompletion = false
+            zoom.fillMode = .forwards
+            cellView.layer?.add(zoom, forKey: "zoomOut")
+
+            // 阶段 3: 动画完成后启动应用
+            DispatchQueue.main.asyncAfter(deadline: .now() + AnimationConstants.appLaunch.duration) {
+                self?.launchApp(bundleId: bundleId)
+                // 恢复 cell 状态
+                cellView.layer?.removeAnimation(forKey: "zoomOut")
+                cellView.alphaValue = 1
+            }
+        })
+    }
+
+    private func launchApp(bundleId: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: url, configuration: config)
     }
 
     private func openFolder(_ folderItem: PageItem) {
