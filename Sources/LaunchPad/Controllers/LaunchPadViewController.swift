@@ -281,15 +281,17 @@ public class LaunchPadViewController: NSViewController {
             pageControl.update()
             collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
         } else {
+            // 在主线程拷贝数据，避免 @MainActor 属性跨线程访问
+            let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
+            let capturedQuery = query
+            let capturedSearchQuery = currentSearchQuery
             // 后台线程执行搜索，避免阻塞 UI
-            nonisolated(unsafe) let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
-            nonisolated(unsafe) let capturedQuery = query
-            searchQueue.async { [searchEngine, currentSearchQuery] in
+            searchQueue.async { [searchEngine] in
                 let results = searchEngine.cachedSearch(items: allItems, query: capturedQuery)
                 DispatchQueue.main.async { [weak self] in
                     guard let self else { return }
                     // 仅当查询未过期时更新 UI
-                    guard self.currentSearchQuery == currentSearchQuery else { return }
+                    guard self.currentSearchQuery == capturedSearchQuery else { return }
                     if results.isEmpty {
                         self.emptyStateView.show()
                     } else {
