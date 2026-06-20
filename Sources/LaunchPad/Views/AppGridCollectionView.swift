@@ -22,6 +22,7 @@ public class AppGridCollectionView: NSCollectionView {
     private(set) var diffableDataSource: DataSource!
     private var iconCache: IconCache?
     private var storage: DataStoring?
+    private var currentIconSize: CGFloat = 64
 
     // MARK: - Init
 
@@ -137,6 +138,7 @@ public class AppGridCollectionView: NSCollectionView {
     /// Update layout parameters based on screen width
     public func updateLayout(screenWidth: CGFloat) {
         let params = GridLayoutCalculator.calculate(screenWidth: screenWidth)
+        currentIconSize = params.iconSize
         if let layout = collectionViewLayout as? AppGridFlowLayout {
             layout.applyGridParameters(params)
         }
@@ -152,7 +154,7 @@ public class AppGridCollectionView: NSCollectionView {
             if let app = item.app {
                 icon = iconCache?.icon(forItemId: item.id, path: app.path)
             }
-            cell.configure(item: item, icon: icon)
+            cell.configure(item: item, icon: icon, iconSize: currentIconSize)
             cell.onDelete = { [weak self] in
                 self?.onItemDelete?(item)
             }

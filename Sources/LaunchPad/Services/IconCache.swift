@@ -115,13 +115,24 @@ public final class IconCache: @unchecked Sendable {
 
     /// Write image to disk cache
     private func storeToDisk(image: NSImage, itemId: Int64) {
-        guard let tiff = image.tiffRepresentation,
-              let rep = NSBitmapImageRep(data: tiff),
-              let png1x = rep.representation(using: .png, properties: [:]) else {
+        // @1x: 128×128pt
+        let size1x = NSSize(width: 128, height: 128)
+        let image1x = NSImage(size: size1x)
+        image1x.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: size1x),
+                   from: .zero,
+                   operation: .copy,
+                   fraction: 1.0)
+        image1x.unlockFocus()
+
+        guard let tiff1x = image1x.tiffRepresentation,
+              let rep1x = NSBitmapImageRep(data: tiff1x),
+              let png1x = rep1x.representation(using: .png, properties: [:]) else {
             return
         }
 
-        // @2x: 256x256px
+        // @2x: 256×256px
         let size2x = NSSize(width: 256, height: 256)
         let image2x = NSImage(size: size2x)
         image2x.lockFocus()
