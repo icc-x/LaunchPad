@@ -45,8 +45,21 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
     // MARK: - HotkeyManaging
 
+    /// Whether the current process has Accessibility / Input Monitoring permission.
+    /// Exposed as an instance property so callers (AppDelegate) can decide whether to
+    /// surface a permission-request UI before registration. Override-friendly for tests.
+    public var isAccessibilityTrusted: Bool {
+        AXIsProcessTrusted()
+    }
+
     @discardableResult
     public func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool {
+        // Global event taps require Accessibility / Input Monitoring permission.
+        // CGEvent.tapCreate may succeed without permission on some macOS versions but the
+        // callback will never fire, so we treat "no permission" as a registration failure
+        // and let the caller surface a permission prompt.
+        guard isAccessibilityTrusted else { return false }
+
         let mask = CGEventMask(
             (1 << CGEventType.flagsChanged.rawValue) |
             (1 << CGEventType.keyDown.rawValue)
@@ -113,9 +126,10 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
             let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
             CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
             eventTap = nil
-            // Balance the retain from passRetained
-            _ = Unmanaged<HotkeyManager>.passUnretained(self).takeRetainedValue()
         }
+        // The retain from passRetained(self) is balanced by clearing the class-level
+        // strong reference. The previous `passUnretained(self).takeRetainedValue()` call
+        // was incorrect (mismatched Unmanaged pairing) and decremented an unrelated retain.
         HotkeyManager.setRetained(nil)
     }
 
