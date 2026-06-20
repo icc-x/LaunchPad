@@ -13,7 +13,9 @@ public class AppIconCell: NSCollectionViewItem {
     private let titleLabel = NSTextField(labelWithString: "")
     private let containerView = NSView()
     private let deleteButton = NSButton()
+    private let runningIndicator = NSView()
     private var isJiggling = false
+    private var currentBundleId: String?
 
     /// 删除按钮点击回调
     public var onDelete: (() -> Void)?
@@ -57,6 +59,9 @@ public class AppIconCell: NSCollectionViewItem {
         iconImageView.imageScaling = .scaleProportionallyUpOrDown
         iconImageView.isEditable = false
 
+        // 已运行应用指示器（小圆点，底部居中）
+        setupRunningIndicator()
+
         // VoiceOver
         view.setAccessibilityRole(.button)
 
@@ -93,6 +98,33 @@ public class AppIconCell: NSCollectionViewItem {
         onDelete?()
     }
 
+    private func setupRunningIndicator() {
+        runningIndicator.wantsLayer = true
+        runningIndicator.layer?.backgroundColor = NSColor.systemGray.cgColor
+        runningIndicator.layer?.cornerRadius = 3
+        runningIndicator.translatesAutoresizingMaskIntoConstraints = false
+        runningIndicator.isHidden = true
+        containerView.addSubview(runningIndicator)
+        NSLayoutConstraint.activate([
+            runningIndicator.centerXAnchor.constraint(equalTo: iconImageView.centerXAnchor),
+            runningIndicator.topAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: 2),
+            runningIndicator.widthAnchor.constraint(equalToConstant: 6),
+            runningIndicator.heightAnchor.constraint(equalToConstant: 6),
+        ])
+    }
+
+    /// 检查应用是否正在运行，更新指示器
+    private func updateRunningState() {
+        guard let bundleId = currentBundleId else {
+            runningIndicator.isHidden = true
+            return
+        }
+        let isRunning = NSWorkspace.shared.runningApplications.contains {
+            $0.bundleIdentifier == bundleId
+        }
+        runningIndicator.isHidden = !isRunning
+    }
+
     // MARK: - Configuration
 
     public func configure(item: PageItem, icon: NSImage?) {
@@ -100,6 +132,9 @@ public class AppIconCell: NSCollectionViewItem {
         titleLabel.stringValue = title
         iconImageView.image = icon ?? NSImage(named: NSImage.applicationIconName)
         view.setAccessibilityLabel(title)
+
+        currentBundleId = item.app?.bundleId
+        updateRunningState()
     }
 
     // MARK: - Jiggle Animation
@@ -163,6 +198,8 @@ public class AppIconCell: NSCollectionViewItem {
         stopJiggling()
         iconImageView.image = nil
         titleLabel.stringValue = ""
+        runningIndicator.isHidden = true
+        currentBundleId = nil
     }
 }
 #endif
