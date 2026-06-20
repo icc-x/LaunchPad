@@ -27,6 +27,7 @@ public class LaunchPadViewController: NSViewController {
     private let keyboardNavigator: KeyboardNavigator
     private let dragController: DragController
     private let folderController: FolderController
+    private let searchScheduler: Scheduler
 
     // MARK: - State
 
@@ -34,6 +35,7 @@ public class LaunchPadViewController: NSViewController {
     private var itemsByPage: [Int64: [PageItem]] = [:]
     private var currentSearchQuery: String = ""
     private var pageControlViewModel = PageControlViewModel()
+    private var searchDebouncer: SearchDebouncer!
 
     // MARK: - Init
 
@@ -43,7 +45,8 @@ public class LaunchPadViewController: NSViewController {
         searchEngine: SearchEngine = SearchEngine(),
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
         dragController: DragController,
-        folderController: FolderController
+        folderController: FolderController,
+        searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
         self.storage = storage
         self.iconCache = iconCache
@@ -51,6 +54,7 @@ public class LaunchPadViewController: NSViewController {
         self.keyboardNavigator = keyboardNavigator
         self.dragController = dragController
         self.folderController = folderController
+        self.searchScheduler = searchScheduler
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -144,9 +148,12 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Setup
 
     private func setupCallbacks() {
-        // Search bar
-        searchBar.onQueryChanged = { [weak self] query in
+        // 搜索防抖：100ms debounce，空查询和 Backspace 立即触发
+        searchDebouncer = SearchDebouncer(scheduler: searchScheduler) { [weak self] query in
             self?.handleSearch(query: query)
+        }
+        searchBar.onQueryChanged = { [weak self] query in
+            self?.searchDebouncer.search(query: query)
         }
 
         // Collection view selection
@@ -320,6 +327,7 @@ public class LaunchPadViewController: NSViewController {
             break
         case .clearSearch:
             searchBar.hide()
+            searchDebouncer.cancelPending()
             handleSearch(query: "")
         case .exitEditMode:
             break
@@ -328,11 +336,12 @@ public class LaunchPadViewController: NSViewController {
         case .appendToQuery(let char):
             searchBar.show()
             searchBar.stringValue += String(char)
-            handleSearch(query: searchBar.stringValue)
+            searchDebouncer.search(query: searchBar.stringValue)
         case .deleteLastCharacter:
             if !searchBar.stringValue.isEmpty {
                 searchBar.stringValue.removeLast()
-                handleSearch(query: searchBar.stringValue)
+                // Backspace: 查询变短，debouncer 内部会立即触发
+                searchDebouncer.search(query: searchBar.stringValue)
             }
         case .nextPage:
             handlePageChange(.forward)
