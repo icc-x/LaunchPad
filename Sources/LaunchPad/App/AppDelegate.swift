@@ -169,6 +169,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let directories = [
             URL(fileURLWithPath: "/Applications"),
             URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
+            URL(fileURLWithPath: "/System/Applications"),
         ]
 
         do {
