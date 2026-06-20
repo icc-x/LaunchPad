@@ -7,6 +7,7 @@ import AppKit
 public final class FileWatcher: @unchecked Sendable {
 
     private var stream: FSEventStreamRef?
+    private var retainedSelfPtr: UnsafeMutableRawPointer?
     private let debounceInterval: TimeInterval
     private var debounceWorkItem: DispatchWorkItem?
     private let queue = DispatchQueue(label: "com.launchpad.filewatcher", qos: .utility)
@@ -60,8 +61,9 @@ public final class FileWatcher: @unchecked Sendable {
             return
         }
 
-        // 保存 onChange 回调
+        // 保存 onChange 回调和 retained 引用
         self.onChange = onChange
+        self.retainedSelfPtr = selfPtr
 
         FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
         FSEventStreamStart(stream)
@@ -79,8 +81,15 @@ public final class FileWatcher: @unchecked Sendable {
             self.stream = nil
         }
 
+        // 释放 start() 中 passRetained 的引用，平衡引用计数
+        if let ptr = retainedSelfPtr {
+            Unmanaged<FileWatcher>.fromOpaque(ptr).release()
+            retainedSelfPtr = nil
+        }
+
         debounceWorkItem?.cancel()
         debounceWorkItem = nil
+        onChange = nil
     }
 
     // MARK: - Private
