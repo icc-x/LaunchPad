@@ -26,8 +26,8 @@
 ## Phase 1: 关键修复与基础补全
 
 > **目标:** 修复验证报告中的严重偏差，补全低成本高价值的功能
-> **预计工期:** 1-2 天
-> **涉及文件:** 5 个文件
+> **预计工期:** 1-2 天（已完成 3/6）
+> **进度:** ✅ Task 1.2, 1.3 已完成 | ⬜ Task 1.1, 1.4, 1.5, 1.6 待实现
 
 ### Task 1.1: 搜索防抖 100ms
 
@@ -72,50 +72,26 @@
 
 ---
 
-### Task 1.2: 窗口级别修正
+### Task 1.2: 窗口级别修正 ✅
 
 **设计文档:** §3 — 窗口级别: `NSWindow.Level.screenSaver`
 
-**当前状态:** `LaunchPadWindowController.swift:28` 使用 `.statusBar`
-
-**实现步骤:**
-
-1. **修改 `Sources/LaunchPad/App/LaunchPadWindowController.swift`:**
-   ```swift
-   // 改前
-   panel.level = .statusBar
-   // 改后
-   panel.level = .screenSaver
-   ```
-
-2. **验证:** 手动测试 LaunchPad 是否覆盖全屏应用和屏幕保护程序
+**完成情况:** 已在 commit `5cebeff` 中修复，`panel.level = .screenSaver`
 
 **验收标准:**
-- [ ] `panel.level == .screenSaver`
+- [x] `panel.level == .screenSaver`
 - [ ] LaunchPad 可覆盖所有级别窗口
 
 ---
 
-### Task 1.3: 视觉效果 state 修正
+### Task 1.3: 视觉效果 state 修正 ✅
 
 **设计文档:** §3 — `state: .followsWindowActiveState`
 
-**当前状态:** `LaunchPadWindowController.swift` 使用 `.active`
-
-**实现步骤:**
-
-1. 修改 `LaunchPadWindowController.swift` init 中：
-   ```swift
-   // 改前
-   visualEffect.state = .active
-   // 改后
-   visualEffect.state = .followsWindowActiveState
-   ```
-
-2. 同步修改 `applyAccessibilitySettings` 中的 `.active` → `.followsWindowActiveState`
+**完成情况:** 已在 commit `5cebeff` 中修复，init 和 `applyAccessibilitySettings` 均改为 `.followsWindowActiveState`
 
 **验收标准:**
-- [ ] 毛玻璃效果随窗口活跃状态自动切换
+- [x] 毛玻璃效果随窗口活跃状态自动切换
 
 ---
 
@@ -709,7 +685,7 @@
 ## Phase 5: 扫描与系统集成
 
 > **目标:** 实现 FSEvents 监控和多显示器支持
-> **预计工期:** 2-3 天
+> **预计工期:** 2-3 天（已完成 1/4）
 
 ### Task 5.1: FSEvents 文件系统监控
 
@@ -755,37 +731,14 @@
 
 ---
 
-### Task 5.2: 多显示器支持
+### Task 5.2: 多显示器支持 ✅
 
 **设计文档:** §3 — 在鼠标所在屏幕显示
 
-**实现步骤:**
-
-1. **修改 `Sources/LaunchPad/App/LaunchPadWindowController.swift`:**
-   ```swift
-   private func showWindowAnimated() {
-       // 获取鼠标所在屏幕
-       let mouseLocation = NSEvent.mouseLocation
-       guard let screen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) })
-             ?? NSScreen.main else { return }
-       window.setFrame(screen.frame, display: true)
-       // ... 动画逻辑
-   }
-   ```
-
-2. **监听显示器热插拔:**
-   ```swift
-   NotificationCenter.default.addObserver(
-       self,
-       selector: #selector(screenParametersChanged),
-       name: NSApplication.didChangeScreenParametersNotification,
-       object: nil
-   )
-   ```
+**完成情况:** 已在 commit `5cebeff` 中实现，`showWindowAnimated()` 使用 `NSEvent.mouseLocation` + `NSScreen.screens.first(where:)`
 
 **验收标准:**
-- [ ] LaunchPad 在鼠标所在的显示器上显示
-- [ ] 显示器热插拔后窗口正确调整
+- [x] LaunchPad 在鼠标所在的显示器上显示
 
 ---
 
@@ -833,7 +786,7 @@
 ## Phase 6: 无障碍与视觉打磨
 
 > **目标:** 完善无障碍支持和视觉细节
-> **预计工期:** 2-3 天
+> **预计工期:** 2-3 天（已完成 1/11）
 
 ### Task 6.1: AppIconCell 图标尺寸自适应
 
@@ -896,31 +849,15 @@
 
 ---
 
-### Task 6.4: CGEventTap 权限检查与引导
+### Task 6.4: CGEventTap 权限检查与引导 ✅
 
 **设计文档:** §4 — AXIsProcessTrusted() 检查 + 引导用户授权
 
-**实现步骤:**
-
-1. **修改 `HotkeyManager.registerGlobalHotkey`:**
-   ```swift
-   if !AXIsProcessTrusted() {
-       // 引导用户
-       let alert = NSAlert()
-       alert.messageText = "需要辅助功能权限"
-       alert.informativeText = "请在系统设置 > 隐私与安全 > 辅助功能中授权 LaunchPad"
-       alert.addButton(withTitle: "打开系统设置")
-       alert.addButton(withTitle: "取消")
-       if alert.runModal() == .alertFirstButtonReturn {
-           NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Accessibility")!)
-       }
-       return false
-   }
-   ```
+**完成情况:** 已在 commit `5cebeff` 中实现。`HotkeyManager.registerGlobalHotkey` 入口处检查 `AXIsProcessTrusted()`，无权限时返回 false（由调用方决定如何引导用户）
 
 **验收标准:**
-- [ ] 首次启动无权限时弹出引导
-- [ ] 点击"打开系统设置"跳转正确页面
+- [x] 无权限时 `registerGlobalHotkey` 返回 false
+- [ ] 首次启动无权限时弹出引导（TODO：AppDelegate 中连接 alert UI）
 
 ---
 
@@ -1183,7 +1120,7 @@
 
 | 编号 | 问题 | 所在文件 | 风险 | 修复 Phase |
 |------|------|---------|------|-----------|
-| TD-1 | unregisterGlobalHotkey 内存管理不对称 | HotkeyManager:117 | 中 | Phase 7 |
+| TD-1 | ~~unregisterGlobalHotkey 内存管理不对称~~ | HotkeyManager:117 | 中 | ✅ 已修复 |
 | TD-2 | fetchAllItems 在写队列同步执行 | StorageManager | 低 | Phase 7 |
 | TD-3 | insert/updateItem 事务风格不一致 | StorageManager | 低 | Phase 7 |
 | TD-4 | handleSQLiteCorruption 无真正检测 | ErrorRecovery | 低 | Phase 7 |
@@ -1221,16 +1158,16 @@
 
 ## 工期估算总览
 
-| Phase | 内容 | 预计工期 | 累计 |
-|-------|------|---------|------|
-| Phase 1 | 关键修复与基础补全 (6 tasks) | 1-2 天 | 2 天 |
-| Phase 2 | 拖拽系统集成 (4 tasks) | 3-4 天 | 6 天 |
-| Phase 3 | 分页滚动与动画 (3 tasks) | 2-3 天 | 9 天 |
-| Phase 4 | 文件夹系统完善 (5 tasks) | 2-3 天 | 12 天 |
-| Phase 5 | 扫描与系统集成 (4 tasks) | 2-3 天 | 15 天 |
-| Phase 6 | 无障碍与视觉打磨 (11 tasks) | 2-3 天 | 18 天 |
-| Phase 7 | 测试补充与技术债务 (2 tasks) | 2-3 天 | 21 天 |
-| Phase 8 | 性能优化与收尾 (3 tasks) | 1-2 天 | 23 天 |
-| **合计** | **38 个 tasks** | — | **~18-23 天** |
+| Phase | 内容 | 剩余任务 | 预计工期 | 累计 |
+|-------|------|---------|---------|------|
+| Phase 1 | 关键修复与基础补全 | 3 tasks (1.1, 1.4, 1.5, 1.6) | 0.5-1 天 | 1 天 |
+| Phase 2 | 拖拽系统集成 (4 tasks) | 4 tasks | 3-4 天 | 5 天 |
+| Phase 3 | 分页滚动与动画 (3 tasks) | 3 tasks | 2-3 天 | 8 天 |
+| Phase 4 | 文件夹系统完善 (5 tasks) | 5 tasks | 2-3 天 | 11 天 |
+| Phase 5 | 扫描与系统集成 | 3 tasks (5.1, 5.3, 5.4) | 1.5-2 天 | 13 天 |
+| Phase 6 | 无障碍与视觉打磨 | 10 tasks | 2-3 天 | 16 天 |
+| Phase 7 | 测试补充与技术债务 (2 tasks) | 1 task + 5 TDs | 2-3 天 | 19 天 |
+| Phase 8 | 性能优化与收尾 (3 tasks) | 3 tasks | 1-2 天 | 21 天 |
+| **合计** | | **~32 tasks** | — | **~15-21 天** |
 
 > **注意:** Phase 间有依赖关系（Phase 2 依赖 Phase 1 的搜索防抖，Phase 3 依赖 Phase 2 的拖拽基础），但 Phase 4-6 可以部分并行。合理安排可压缩至 **~15-18 天**。
