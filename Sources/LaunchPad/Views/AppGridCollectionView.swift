@@ -23,7 +23,7 @@ public class AppGridCollectionView: NSCollectionView {
     public var dragController: DragController?
 
     private(set) var diffableDataSource: DataSource!
-    private var iconCache: IconCache?
+    private var iconCache: IconCaching?
     private var storage: DataStoring?
     private var currentIconSize: CGFloat = 64
 
@@ -73,7 +73,7 @@ public class AppGridCollectionView: NSCollectionView {
 
     // MARK: - Public API
 
-    public func configure(iconCache: IconCache, storage: DataStoring? = nil) {
+    public func configure(iconCache: IconCaching, storage: DataStoring? = nil) {
         self.iconCache = iconCache
         self.storage = storage
     }
