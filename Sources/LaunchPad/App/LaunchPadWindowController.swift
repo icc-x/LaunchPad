@@ -21,7 +21,8 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
             backing: .buffered,
             defer: true
         )
-        panel.level = .statusBar
+        // Use .screenSaver so the overlay covers full-screen apps and the screen saver layer.
+        panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
@@ -36,7 +37,8 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.blendingMode = .behindWindow
         visualEffect.material = .hudWindow
-        visualEffect.state = .active
+        // Follow the window's active state so the visual effect dims correctly when blurred.
+        visualEffect.state = .followsWindowActiveState
         panel.contentView = visualEffect
 
         // Add view controller's view
@@ -112,9 +114,10 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     nonisolated public func lifecycleRequestsLaunchAnimation(_ lifecycle: WindowLifecycle, bundleId: String) {
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
+            // Fade the overlay completely out so the launched app receives focus.
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = AnimationConstants.appLaunch.duration
-                self.window?.animator().alphaValue = 0.8
+                self.window?.animator().alphaValue = 0
             }, completionHandler: { [weak self] in
                 DispatchQueue.main.async {
                     self?.lifecycle.launchAnimationDidFinish()
@@ -126,7 +129,11 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     // MARK: - Animations
 
     private func showWindowAnimated() {
-        guard let window = window, let screen = NSScreen.main else { return }
+        // Show on the screen that currently contains the mouse cursor; fall back to
+        // the main screen on single-display setups.
+        let mouseLocation = NSEvent.mouseLocation
+        let targetScreen = NSScreen.screens.first(where: { $0.frame.contains(mouseLocation) }) ?? NSScreen.main
+        guard let window = window, let screen = targetScreen else { return }
         window.setFrame(screen.frame, display: true)
         window.alphaValue = 0
         window.makeKeyAndOrderFront(nil)
@@ -169,7 +176,7 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         switch material {
         case .hudWindow:
             visualEffect.material = .hudWindow
-            visualEffect.state = .active
+            visualEffect.state = .followsWindowActiveState
         case .solidColor:
             visualEffect.material = .menu
             visualEffect.state = .inactive
