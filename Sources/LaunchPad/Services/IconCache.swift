@@ -12,7 +12,7 @@ import AppKit
 /// Thread safety: This class is marked `@unchecked Sendable` because NSCache
 /// does not declare Sendable conformance but is internally thread-safe (uses locks).
 #if canImport(AppKit)
-public final class IconCache: @unchecked Sendable {
+public final class IconCache: IconCaching, @unchecked Sendable {
 
     private let iconProvider: IconProviding
     private let imageStore: ImageStoring

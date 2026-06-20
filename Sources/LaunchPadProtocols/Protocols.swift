@@ -73,7 +73,14 @@ public protocol FileSystemService: Sendable {
     func bundleInfo(at bundleURL: URL) -> [String: any Sendable]?
 }
 
-// MARK: - 热键管理协议
+// MARK: - 图标缓存协议
+
+/// 图标缓存抽象 — AppGridCollectionView 不应直接依赖具体 IconCache 类
+public protocol IconCaching: Sendable {
+    #if canImport(AppKit)
+    func icon(forItemId itemId: Int64, path: String) -> NSImage
+    #endif
+}
 
 /// 测试时可模拟按键事件
 public protocol HotkeyManaging: Sendable {
