@@ -179,4 +179,36 @@ struct StorageManagerAdvancedTests {
         #expect(children.count == 3)
         #expect(children.allSatisfy { $0.parentId == pageId })
     }
+
+    @Test("三层嵌套: page → group → items 正确解析")
+    func fetchItems_threeLayerNested() throws {
+        let sut = try makeSUT()
+
+        // 创建 page
+        let pageId = try sut.insertItem(TestDataFactory.makePageItem(type: .page, ordering: 0))
+
+        // 创建 group（文件夹）
+        let group = TestDataFactory.makeGroupInfo(title: "Utilities")
+        let groupId = try sut.insertItem(TestDataFactory.makePageItem(type: .group, ordering: 0,
+                                                                       parentId: pageId, group: group))
+
+        // 创建 items 在 group 下
+        let app1 = TestDataFactory.makeAppInfo(title: "Calculator", bundleId: "com.apple.calculator")
+        let app2 = TestDataFactory.makeAppInfo(title: "Terminal", bundleId: "com.apple.Terminal")
+        try sut.insertItem(TestDataFactory.makePageItem(type: .app, ordering: 0, parentId: groupId, app: app1))
+        try sut.insertItem(TestDataFactory.makePageItem(type: .app, ordering: 1, parentId: groupId, app: app2))
+
+        // 验证 page 下有 group
+        let pageChildren = try sut.fetchAllItems(parentId: pageId)
+        #expect(pageChildren.count == 1)
+        #expect(pageChildren.first?.type == .group)
+        #expect(pageChildren.first?.group?.title == "Utilities")
+
+        // 验证 group 下有 items
+        let groupChildren = try sut.fetchAllItems(parentId: groupId)
+        #expect(groupChildren.count == 2)
+        #expect(groupChildren.allSatisfy { $0.type == .app })
+        let titles = groupChildren.compactMap { $0.app?.title }.sorted()
+        #expect(titles == ["Calculator", "Terminal"])
+    }
 }
