@@ -315,6 +315,20 @@ ECSBSpringboard (root)
 
 ---
 
+## 12. Open-Source Clones and References
+
+Based on the binary analysis, the most faithful approach would use:
+- **SwiftUI** with `LazyVGrid` for the icon grid
+- **CABackdropLayer** or `NSVisualEffectView` for the blur background
+- **Core Animation** for smooth page transitions and jiggle animations
+- **SQLite** for persistent layout storage (matching the LaunchPad DB schema)
+- **NSWorkspace** for app launching and icon retrieval
+- The `com.apple.dock` defaults for reading system LaunchPad configuration
+
+The Dock binary itself is a **Swift/Objective-C hybrid** with SwiftUI usage (evidenced by SwiftUI.Material references), making SwiftUI a natural choice for the clone.
+
+---
+
 ## 验证命令
 
 以下命令可在本机运行以验证上述信息：
