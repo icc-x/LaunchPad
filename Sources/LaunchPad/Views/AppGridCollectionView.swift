@@ -82,6 +82,56 @@ public class AppGridCollectionView: NSCollectionView {
             searchQuery: searchQuery
         )
         diffableDataSource.apply(snapshot, animatingDifferences: true)
+
+        // 图标入场动画：从左到右依次铺开
+        animateEntrance()
+    }
+
+    /// 图标入场动画：每个 cell 延迟 colIndex * 0.02s
+    private func animateEntrance() {
+        let settings = AccessibilitySettings.current()
+        guard !settings.reduceMotion else { return } // Reduce Motion: 直接显示
+
+        let visibleItems = indexPathsForVisibleItems().sorted()
+        for (index, indexPath) in visibleItems.enumerated() {
+            guard let cell = item(at: indexPath) else { continue }
+            let cellView = cell.view
+            cellView.wantsLayer = true
+            cellView.alphaValue = 0
+            cellView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+
+            let delay = Double(index) * AnimationConstants.iconEntranceDelayPerColumn
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.iconEntrance.duration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                ctx.allowsImplicitAnimation = true
+                // 延迟后动画
+            }, completionHandler: { [weak cellView] in
+                guard let cellView else { return }
+                NSAnimationContext.runAnimationGroup { ctx in
+                    ctx.duration = AnimationConstants.iconEntrance.duration
+                    cellView.animator().alphaValue = 1
+                    cellView.layer?.transform = CATransform3DIdentity
+                }
+            })
+
+            // 使用 dispatch 实现延迟
+            if delay > 0 {
+                let originalAlpha: CGFloat = 0
+                DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak cellView] in
+                    guard let cellView, cellView.alphaValue == originalAlpha else { return }
+                    NSAnimationContext.runAnimationGroup { ctx in
+                        ctx.duration = AnimationConstants.iconEntrance.duration
+                        cellView.animator().alphaValue = 1
+                    }
+                    let spring = CASpringAnimation(keyPath: "transform.scale")
+                    spring.fromValue = 0.8
+                    spring.toValue = 1.0
+                    spring.damping = 0.8
+                    cellView.layer?.add(spring, forKey: "entrance")
+                }
+            }
+        }
     }
 
     /// Update layout parameters based on screen width
