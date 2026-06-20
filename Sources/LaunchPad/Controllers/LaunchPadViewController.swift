@@ -77,6 +77,7 @@ public class LaunchPadViewController: NSViewController {
         // Collection view
         collectionView = AppGridCollectionView(frame: .zero)
         collectionView.configure(iconCache: iconCache, storage: storage)
+        collectionView.dragController = dragController
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = collectionView
 
