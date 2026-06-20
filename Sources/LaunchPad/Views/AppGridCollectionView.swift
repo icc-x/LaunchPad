@@ -13,6 +13,9 @@ public class AppGridCollectionView: NSCollectionView {
     /// 项目选中回调
     public var onItemSelected: ((PageItem) -> Void)?
 
+    /// 拖拽状态机（可选，用于拖拽支持）
+    public var dragController: DragController?
+
     private(set) var diffableDataSource: DataSource!
     private var iconCache: IconCache?
     private var storage: DataStoring?
@@ -50,6 +53,15 @@ public class AppGridCollectionView: NSCollectionView {
 
         // Use delegate for selection (supports both mouse and keyboard)
         delegate = self
+
+        // Enable drag source
+        registerForDraggedTypes([.string])
+    }
+
+    /// 拖拽操作类型
+    override public func draggingSession(_ session: NSDraggingSession,
+                                          sourceOperationMaskFor context: NSDraggingContext) -> NSDragOperation {
+        return [.move]
     }
 
     // MARK: - Public API
@@ -124,6 +136,90 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
         if let item = diffableDataSource.itemIdentifier(for: indexPath) {
             onItemSelected?(item)
         }
+    }
+
+    // MARK: - 拖拽支持
+
+    /// 提供拖拽数据（item UUID 写入剪贴板）
+    public func collectionView(_ collectionView: NSCollectionView,
+                               pasteboardWriterForItemAt indexPath: IndexPath) -> NSPasteboardWriting? {
+        guard let item = diffableDataSource.itemIdentifier(for: indexPath),
+              item.type != .page else { return nil }
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(item.uuid, forType: .string)
+        return pasteboardItem
+    }
+
+    /// 验证拖放位置
+    public func collectionView(_ collectionView: NSCollectionView,
+                               validateDrop draggingInfo: NSDraggingInfo,
+                               proposedIndexPath proposedDropIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+                               dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>) -> NSDragOperation {
+        let location = draggingInfo.draggingLocation
+        let edgeWidth: CGFloat = 40
+
+        // 边缘区域 → 通知 DragController 触发翻页
+        if location.x < edgeWidth || location.x > collectionView.bounds.width - edgeWidth {
+            dragController?.updateDragHover(location: .screenEdge)
+            return .generic
+        }
+
+        // 检查是否悬停在图标上
+        if let targetIndexPath = collectionView.indexPathForItem(at: location),
+           let targetItem = diffableDataSource.itemIdentifier(for: targetIndexPath),
+           targetItem.type == .group {
+            dragController?.updateDragHover(location: .overIcon(targetId: targetItem.id))
+        } else {
+            dragController?.updateDragHover(location: .empty)
+        }
+
+        dropOperation.pointee = .on
+        return .move
+    }
+
+    /// 接受拖放，执行重排
+    public func collectionView(_ collectionView: NSCollectionView,
+                               acceptDrop draggingInfo: NSDraggingInfo,
+                               indexPath: IndexPath,
+                               dropOperation: NSCollectionView.DropOperation) -> Bool {
+        // 从剪贴板提取拖拽 item 的 UUID
+        guard let pasteboard = draggingInfo.draggingPasteboard.propertyList(forType: .string) as? String,
+              let draggedItem = findItem(byUuid: pasteboard) else {
+            return false
+        }
+
+        // 获取目标位置的 item
+        guard let targetItem = diffableDataSource.itemIdentifier(for: indexPath) else {
+            return false
+        }
+
+        // 如果拖到文件夹上，触发创建/添加到文件夹
+        if targetItem.type == .group {
+            dragController?.handleDrop()
+            return true
+        }
+
+        // 同页重排：找到源和目标的索引，更新 DiffableDataSource
+        var snapshot = diffableDataSource.snapshot()
+        let section = snapshot.sectionIdentifier(containingItem: draggedItem)
+            ?? snapshot.sectionIdentifier(containingItem: targetItem)
+
+        if let section {
+            // 移动 item 到目标位置之前
+            snapshot.deleteItems([draggedItem])
+            snapshot.insertItems([draggedItem], beforeItem: targetItem)
+            diffableDataSource.apply(snapshot, animatingDifferences: true)
+        }
+
+        dragController?.handleDrop()
+        return true
+    }
+
+    // MARK: - 辅助方法
+
+    private func findItem(byUuid uuid: String) -> PageItem? {
+        let snapshot = diffableDataSource.snapshot()
+        return snapshot.itemIdentifiers.first { $0.uuid == uuid }
     }
 }
 #endif
