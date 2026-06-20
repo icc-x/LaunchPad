@@ -36,6 +36,7 @@ public class LaunchPadViewController: NSViewController {
     private var currentSearchQuery: String = ""
     private var pageControlViewModel = PageControlViewModel()
     private var searchDebouncer: SearchDebouncer!
+    private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
 
     // MARK: - Init
 
@@ -209,24 +210,32 @@ public class LaunchPadViewController: NSViewController {
         currentSearchQuery = query
 
         if query.isEmpty {
+            // 空查询：主线程快速处理
             emptyStateView.hide()
             let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
             pageControlViewModel.isSearchActive = false
             pageControl.update()
             collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
         } else {
-            let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
-            let results = searchEngine.cachedSearch(items: allItems, query: query)
-
-            if results.isEmpty {
-                emptyStateView.show()
-            } else {
-                emptyStateView.hide()
+            // 后台线程执行搜索，避免阻塞 UI
+            nonisolated(unsafe) let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
+            nonisolated(unsafe) let capturedQuery = query
+            searchQueue.async { [searchEngine, currentSearchQuery] in
+                let results = searchEngine.cachedSearch(items: allItems, query: capturedQuery)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    // 仅当查询未过期时更新 UI
+                    guard self.currentSearchQuery == currentSearchQuery else { return }
+                    if results.isEmpty {
+                        self.emptyStateView.show()
+                    } else {
+                        self.emptyStateView.hide()
+                    }
+                    self.pageControlViewModel.isSearchActive = true
+                    self.pageControl.update()
+                    self.collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: capturedQuery)
+                }
             }
-
-            pageControlViewModel.isSearchActive = true
-            pageControl.update()
-            collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: query)
         }
     }
 
