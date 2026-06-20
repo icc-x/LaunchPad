@@ -13,6 +13,9 @@ public class AppGridCollectionView: NSCollectionView {
     /// 项目选中回调
     public var onItemSelected: ((PageItem) -> Void)?
 
+    /// 删除按钮点击回调（编辑模式下）
+    public var onItemDelete: ((PageItem) -> Void)?
+
     /// 拖拽状态机（可选，用于拖拽支持）
     public var dragController: DragController?
 
@@ -100,6 +103,9 @@ public class AppGridCollectionView: NSCollectionView {
                 icon = iconCache?.icon(forItemId: item.id, path: app.path)
             }
             cell.configure(item: item, icon: icon)
+            cell.onDelete = { [weak self] in
+                self?.onItemDelete?(item)
+            }
             return cell
 
         case .group:

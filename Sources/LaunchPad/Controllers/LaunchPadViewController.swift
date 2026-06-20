@@ -139,6 +139,7 @@ public class LaunchPadViewController: NSViewController {
     override public func viewDidLoad() {
         super.viewDidLoad()
         setupCallbacks()
+        setupGestures()
         loadData()
     }
 
@@ -163,6 +164,11 @@ public class LaunchPadViewController: NSViewController {
             self?.handleItemSelection(item)
         }
 
+        // 编辑模式删除
+        collectionView.onItemDelete = { [weak self] item in
+            self?.handleItemDelete(item)
+        }
+
         // Page control
         pageControl.onDotSelected = { [weak self] pageIndex in
             self?.navigateToPage(pageIndex)
@@ -184,6 +190,49 @@ public class LaunchPadViewController: NSViewController {
 
         folderOverlay.onClosed = { [weak self] in
             self?.folderOverlay.isHidden = true
+        }
+    }
+
+    private func setupGestures() {
+        // 长按手势：连接 DragController 编辑模式
+        let longPress = NSPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        collectionView.addGestureRecognizer(longPress)
+    }
+
+    @objc private func handleLongPress(_ gesture: NSPressGestureRecognizer) {
+        let location = gesture.location(in: collectionView)
+
+        switch gesture.state {
+        case .began:
+            dragController.handlePressBegan(at: location)
+        case .changed:
+            dragController.handleDragMoved(to: location)
+        case .ended, .cancelled, .failed:
+            if dragController.state == .jiggling {
+                // 长按结束时已在抖动状态 → 保持抖动（编辑模式）
+                updateJiggleState()
+            } else if dragController.state == .dragging {
+                dragController.handleDrop()
+                loadData()
+            } else {
+                dragController.handlePressEnded()
+            }
+        default:
+            break
+        }
+    }
+
+    /// 根据 DragController 状态更新所有可见 cell 的抖动
+    private func updateJiggleState() {
+        let snapshot = collectionView.diffableDataSource.snapshot()
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            guard let cell = collectionView.item(at: indexPath) as? AppIconCell else { continue }
+            if dragController.state == .jiggling {
+                cell.startJiggling()
+            } else {
+                cell.stopJiggling()
+            }
         }
     }
 
@@ -274,6 +323,21 @@ public class LaunchPadViewController: NSViewController {
             openFolder(item)
         case .page:
             break
+        }
+    }
+
+    // MARK: - Item Deletion (Edit Mode)
+
+    private func handleItemDelete(_ item: PageItem) {
+        do {
+            try storage.deleteItem(id: item.id)
+            // 退出编辑模式
+            dragController.handleCancel()
+            updateJiggleState()
+            // 重新加载数据
+            loadData()
+        } catch {
+            NSLog("[LaunchPadViewController] Failed to delete item: \(error)")
         }
     }
 
