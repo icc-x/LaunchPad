@@ -46,11 +46,13 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     // MARK: - HotkeyManaging
 
     /// Whether the current process has Accessibility / Input Monitoring permission.
-    /// Exposed as an instance property so callers (AppDelegate) can decide whether to
-    /// surface a permission-request UI before registration. Override-friendly for tests.
     public var isAccessibilityTrusted: Bool {
         AXIsProcessTrusted()
     }
+
+    /// Indicates if the last registration failed due to a hotkey conflict
+    /// (CGEvent.tapCreate returned nil despite having permission)
+    public private(set) var hasConflict: Bool = false
 
     @discardableResult
     public func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool {
@@ -106,7 +108,8 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         )
 
         guard let tap = eventTap else {
-            // Balance the retain from passRetained
+            // tapCreate 失败：可能是快捷键被其他应用占用
+            hasConflict = true
             _ = Unmanaged<HotkeyManager>.fromOpaque(selfPtr).takeRetainedValue()
             HotkeyManager.setRetained(nil)
             return false

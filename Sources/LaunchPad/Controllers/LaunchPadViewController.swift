@@ -18,6 +18,7 @@ public class LaunchPadViewController: NSViewController {
     private var pageControl: PageControlView!
     private var emptyStateView: EmptyStateView!
     private var folderOverlay: FolderOverlayView!
+    private let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
 
@@ -27,6 +28,7 @@ public class LaunchPadViewController: NSViewController {
     private let keyboardNavigator: KeyboardNavigator
     private let dragController: DragController
     private let folderController: FolderController
+    private let searchScheduler: Scheduler
 
     // MARK: - State
 
@@ -34,6 +36,8 @@ public class LaunchPadViewController: NSViewController {
     private var itemsByPage: [Int64: [PageItem]] = [:]
     private var currentSearchQuery: String = ""
     private var pageControlViewModel = PageControlViewModel()
+    private var searchDebouncer: SearchDebouncer!
+    private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
 
     // MARK: - Init
 
@@ -43,7 +47,8 @@ public class LaunchPadViewController: NSViewController {
         searchEngine: SearchEngine = SearchEngine(),
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
         dragController: DragController,
-        folderController: FolderController
+        folderController: FolderController,
+        searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
         self.storage = storage
         self.iconCache = iconCache
@@ -51,6 +56,7 @@ public class LaunchPadViewController: NSViewController {
         self.keyboardNavigator = keyboardNavigator
         self.dragController = dragController
         self.folderController = folderController
+        self.searchScheduler = searchScheduler
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -72,6 +78,7 @@ public class LaunchPadViewController: NSViewController {
         // Collection view
         collectionView = AppGridCollectionView(frame: .zero)
         collectionView.configure(iconCache: iconCache, storage: storage)
+        collectionView.dragController = dragController
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = collectionView
 
@@ -96,6 +103,14 @@ public class LaunchPadViewController: NSViewController {
         folderOverlay.isHidden = true
         view.addSubview(folderOverlay)
 
+        // 搜索结果计数标签（搜索时替换页码点）
+        resultCountLabel.font = NSFont.systemFont(ofSize: 13, weight: .light)
+        resultCountLabel.textColor = .secondaryLabelColor
+        resultCountLabel.alignment = .center
+        resultCountLabel.isHidden = true
+        resultCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(resultCountLabel)
+
         // Layout
         NSLayoutConstraint.activate([
             // Search bar at top
@@ -115,6 +130,10 @@ public class LaunchPadViewController: NSViewController {
             pageControl.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
             pageControl.heightAnchor.constraint(equalToConstant: 10),
 
+            // 搜索结果计数（与页码点同一位置）
+            resultCountLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            resultCountLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -18),
+
             // Empty state centered
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             emptyStateView.centerYAnchor.constraint(equalTo: view.centerYAnchor),
@@ -133,6 +152,7 @@ public class LaunchPadViewController: NSViewController {
     override public func viewDidLoad() {
         super.viewDidLoad()
         setupCallbacks()
+        setupGestures()
         loadData()
     }
 
@@ -144,14 +164,22 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Setup
 
     private func setupCallbacks() {
-        // Search bar
-        searchBar.onQueryChanged = { [weak self] query in
+        // 搜索防抖：100ms debounce，空查询和 Backspace 立即触发
+        searchDebouncer = SearchDebouncer(scheduler: searchScheduler) { [weak self] query in
             self?.handleSearch(query: query)
+        }
+        searchBar.onQueryChanged = { [weak self] query in
+            self?.searchDebouncer.search(query: query)
         }
 
         // Collection view selection
         collectionView.onItemSelected = { [weak self] item in
             self?.handleItemSelection(item)
+        }
+
+        // 编辑模式删除
+        collectionView.onItemDelete = { [weak self] item in
+            self?.handleItemDelete(item)
         }
 
         // Page control
@@ -175,6 +203,49 @@ public class LaunchPadViewController: NSViewController {
 
         folderOverlay.onClosed = { [weak self] in
             self?.folderOverlay.isHidden = true
+        }
+    }
+
+    private func setupGestures() {
+        // 长按手势：连接 DragController 编辑模式
+        let longPress = NSPressGestureRecognizer(target: self, action: #selector(handleLongPress(_:)))
+        longPress.minimumPressDuration = 0.5
+        collectionView.addGestureRecognizer(longPress)
+    }
+
+    @objc private func handleLongPress(_ gesture: NSPressGestureRecognizer) {
+        let location = gesture.location(in: collectionView)
+
+        switch gesture.state {
+        case .began:
+            dragController.handlePressBegan(at: location)
+        case .changed:
+            dragController.handleDragMoved(to: location)
+        case .ended, .cancelled, .failed:
+            if dragController.state == .jiggling {
+                // 长按结束时已在抖动状态 → 保持抖动（编辑模式）
+                updateJiggleState()
+            } else if dragController.state == .dragging {
+                dragController.handleDrop()
+                loadData()
+            } else {
+                dragController.handlePressEnded()
+            }
+        default:
+            break
+        }
+    }
+
+    /// 根据 DragController 状态更新所有可见 cell 的抖动
+    private func updateJiggleState() {
+        let snapshot = collectionView.diffableDataSource.snapshot()
+        for indexPath in collectionView.indexPathsForVisibleItems() {
+            guard let cell = collectionView.item(at: indexPath) as? AppIconCell else { continue }
+            if dragController.state == .jiggling {
+                cell.startJiggling()
+            } else {
+                cell.stopJiggling()
+            }
         }
     }
 
@@ -202,24 +273,38 @@ public class LaunchPadViewController: NSViewController {
         currentSearchQuery = query
 
         if query.isEmpty {
+            // 空查询：主线程快速处理
             emptyStateView.hide()
+            resultCountLabel.isHidden = true
             let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
             pageControlViewModel.isSearchActive = false
             pageControl.update()
             collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
         } else {
+            // 在主线程拷贝数据，避免 @MainActor 属性跨线程访问
             let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
-            let results = searchEngine.cachedSearch(items: allItems, query: query)
-
-            if results.isEmpty {
-                emptyStateView.show()
-            } else {
-                emptyStateView.hide()
+            let capturedQuery = query
+            let capturedSearchQuery = currentSearchQuery
+            // 后台线程执行搜索，避免阻塞 UI
+            searchQueue.async { [searchEngine] in
+                let results = searchEngine.cachedSearch(items: allItems, query: capturedQuery)
+                DispatchQueue.main.async { [weak self] in
+                    guard let self else { return }
+                    // 仅当查询未过期时更新 UI
+                    guard self.currentSearchQuery == capturedSearchQuery else { return }
+                    if results.isEmpty {
+                        self.emptyStateView.show()
+                    } else {
+                        self.emptyStateView.hide()
+                    }
+                    self.pageControlViewModel.isSearchActive = true
+                    self.pageControl.update()
+                    // 显示结果计数
+                    self.resultCountLabel.stringValue = "\(results.count) results"
+                    self.resultCountLabel.isHidden = false
+                    self.collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: capturedQuery)
+                }
             }
-
-            pageControlViewModel.isSearchActive = true
-            pageControl.update()
-            collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: query)
         }
     }
 
@@ -250,16 +335,84 @@ public class LaunchPadViewController: NSViewController {
     private func handleItemSelection(_ item: PageItem) {
         switch item.type {
         case .app:
-            if let bundleId = item.app?.bundleId,
-               let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) {
-                let config = NSWorkspace.OpenConfiguration()
-                NSWorkspace.shared.openApplication(at: url, configuration: config)
+            if let bundleId = item.app?.bundleId {
+                animateAppLaunch(item: item, bundleId: bundleId)
             }
         case .group:
             openFolder(item)
         case .page:
             break
         }
+    }
+
+    // MARK: - Item Deletion (Edit Mode)
+
+    private func handleItemDelete(_ item: PageItem) {
+        do {
+            try storage.deleteItem(id: item.id)
+            // 退出编辑模式
+            dragController.handleCancel()
+            updateJiggleState()
+            // 重新加载数据
+            loadData()
+        } catch {
+            NSLog("[LaunchPadViewController] Failed to delete item: \(error)")
+        }
+    }
+
+    /// 三阶段启动动画：高亮反馈 → 放大淡出 → 启动应用
+    private func animateAppLaunch(item: PageItem, bundleId: String) {
+        let settings = AccessibilitySettings.current()
+
+        // 找到对应的 cell
+        guard let indexPath = collectionView.diffableDataSource.indexPath(for: item),
+              let cell = collectionView.item(at: indexPath) else {
+            // 找不到 cell，直接启动
+            launchApp(bundleId: bundleId)
+            return
+        }
+
+        if settings.reduceMotion {
+            // Reduce Motion: 直接启动
+            launchApp(bundleId: bundleId)
+            return
+        }
+
+        let cellView = cell.view
+        cellView.wantsLayer = true
+
+        // 阶段 1: 高亮反馈 scale 0.95→1.0 (0.1s)
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = 0.1
+            cellView.animator().alphaValue = 0.8
+        }, completionHandler: { [weak self] in
+            // 阶段 2: 放大淡出 scale→2.0 + alpha→0 (0.3s)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.appLaunch.duration
+                cellView.animator().alphaValue = 0
+            })
+            let zoom = CABasicAnimation(keyPath: "transform.scale")
+            zoom.fromValue = 1.0
+            zoom.toValue = 2.0
+            zoom.duration = AnimationConstants.appLaunch.duration
+            zoom.isRemovedOnCompletion = false
+            zoom.fillMode = .forwards
+            cellView.layer?.add(zoom, forKey: "zoomOut")
+
+            // 阶段 3: 动画完成后启动应用
+            DispatchQueue.main.asyncAfter(deadline: .now() + AnimationConstants.appLaunch.duration) {
+                self?.launchApp(bundleId: bundleId)
+                // 恢复 cell 状态
+                cellView.layer?.removeAnimation(forKey: "zoomOut")
+                cellView.alphaValue = 1
+            }
+        })
+    }
+
+    private func launchApp(bundleId: String) {
+        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
+        let config = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(at: url, configuration: config)
     }
 
     private func openFolder(_ folderItem: PageItem) {
@@ -320,6 +473,7 @@ public class LaunchPadViewController: NSViewController {
             break
         case .clearSearch:
             searchBar.hide()
+            searchDebouncer.cancelPending()
             handleSearch(query: "")
         case .exitEditMode:
             break
@@ -328,11 +482,12 @@ public class LaunchPadViewController: NSViewController {
         case .appendToQuery(let char):
             searchBar.show()
             searchBar.stringValue += String(char)
-            handleSearch(query: searchBar.stringValue)
+            searchDebouncer.search(query: searchBar.stringValue)
         case .deleteLastCharacter:
             if !searchBar.stringValue.isEmpty {
                 searchBar.stringValue.removeLast()
-                handleSearch(query: searchBar.stringValue)
+                // Backspace: 查询变短，debouncer 内部会立即触发
+                searchDebouncer.search(query: searchBar.stringValue)
             }
         case .nextPage:
             handlePageChange(.forward)

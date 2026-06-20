@@ -13,6 +13,10 @@ public class FolderCell: NSCollectionViewItem {
     private let thumbnailGrid = NSView()
     private var thumbnailImageViews: [NSImageView] = []
     private let containerView = NSView()
+    private let frostedBackground = NSVisualEffectView()
+
+    /// 文件夹重命名回调
+    public var onRenamed: ((String) -> Void)?
 
     private static let gridSize = 3
     private static let thumbnailSize: CGFloat = 20
@@ -22,6 +26,22 @@ public class FolderCell: NSCollectionViewItem {
 
     override public func loadView() {
         view = NSView()
+
+        // 毛玻璃背景（圆角矩形）
+        frostedBackground.blendingMode = .withinWindow
+        frostedBackground.material = .hudWindow
+        frostedBackground.state = .active
+        frostedBackground.wantsLayer = true
+        frostedBackground.layer?.cornerRadius = 8
+        frostedBackground.layer?.masksToBounds = true
+        frostedBackground.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(frostedBackground)
+        NSLayoutConstraint.activate([
+            frostedBackground.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
+            frostedBackground.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+            frostedBackground.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -2),
+            frostedBackground.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -2),
+        ])
 
         view.addSubview(containerView)
         containerView.addSubview(thumbnailGrid)
@@ -53,6 +73,13 @@ public class FolderCell: NSCollectionViewItem {
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 2
         titleLabel.isSelectable = false
+        titleLabel.isEditable = false
+        titleLabel.delegate = self
+
+        // 双击进入编辑模式
+        let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick))
+        doubleClick.numberOfClicksRequired = 2
+        titleLabel.addGestureRecognizer(doubleClick)
 
         setupThumbnailGrid()
 
@@ -96,6 +123,14 @@ public class FolderCell: NSCollectionViewItem {
         titleLabel.stringValue = title
         view.setAccessibilityLabel(title)
 
+        // Reduce Transparency 回退
+        let settings = AccessibilitySettings.current()
+        if settings.reduceTransparency {
+            frostedBackground.material = .menu
+            frostedBackground.state = .inactive
+            frostedBackground.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+
         for (index, imageView) in thumbnailImageViews.enumerated() {
             imageView.image = index < childIcons.count ? childIcons[index] : nil
             imageView.isHidden = index >= childIcons.count
@@ -107,7 +142,28 @@ public class FolderCell: NSCollectionViewItem {
     override public func prepareForReuse() {
         super.prepareForReuse()
         titleLabel.stringValue = ""
+        titleLabel.isEditable = false
         thumbnailImageViews.forEach { $0.image = nil }
+    }
+
+    // MARK: - 双击编辑
+
+    @objc private func handleDoubleClick() {
+        titleLabel.isEditable = true
+        titleLabel.window?.makeFirstResponder(titleLabel)
+        titleLabel.selectText(nil)
+    }
+}
+
+// MARK: - NSTextFieldDelegate
+
+extension FolderCell: NSTextFieldDelegate {
+    public func controlTextDidEndEditing(_ obj: Notification) {
+        titleLabel.isEditable = false
+        let newTitle = titleLabel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !newTitle.isEmpty {
+            onRenamed?(newTitle)
+        }
     }
 }
 #endif

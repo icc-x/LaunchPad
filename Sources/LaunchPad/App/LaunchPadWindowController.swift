@@ -139,16 +139,35 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         window.makeKeyAndOrderFront(nil)
 
         let settings = AccessibilitySettings.current()
-        let duration = settings.reduceMotion ? 0.1 : AnimationConstants.appLaunch.duration
 
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = duration
-            window.animator().alphaValue = 1
-        }, completionHandler: { [weak self] in
-            DispatchQueue.main.async {
-                self?.lifecycle.openAnimationDidFinish()
-            }
-        })
+        if settings.reduceMotion {
+            // Reduce Motion: 简单 fade
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = 0.1
+                window.animator().alphaValue = 1
+            }, completionHandler: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.lifecycle.openAnimationDidFinish()
+                }
+            })
+        } else {
+            // 正常: Spring 缩放 + fade
+            window.contentView?.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.windowExpand.duration
+                ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                window.animator().alphaValue = 1
+            }, completionHandler: { [weak self] in
+                DispatchQueue.main.async {
+                    self?.lifecycle.openAnimationDidFinish()
+                }
+            })
+            let spring = CASpringAnimation(keyPath: "transform.scale")
+            spring.fromValue = 0.8
+            spring.toValue = 1.0
+            spring.damping = 0.75
+            window.contentView?.layer?.add(spring, forKey: "scaleIn")
+        }
     }
 
     private func hideWindowAnimated() {

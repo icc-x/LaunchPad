@@ -6,9 +6,9 @@ struct ErrorRecoveryTests {
 
     // MARK: - SQLite database corruption
 
-    @Test("Database corruption -> returns deleteAndRescan strategy")
+    @Test("Database corruption (no file) -> returns deleteAndRescan strategy")
     func corruptedDB_deleteAndRescan() {
-        let result = ErrorRecovery.handleSQLiteCorruption(dbPath: "/tmp/test.db")
+        let result = ErrorRecovery.handleSQLiteCorruption(dbPath: "/tmp/nonexistent_test.db")
         #expect(result == .deleteAndRescan)
     }
 
@@ -52,8 +52,8 @@ struct ErrorRecoveryTests {
         #expect(result == .walModeSerialQueue)
     }
 
-    @Test("ErrorStrategy contains all 6 strategies")
+    @Test("ErrorStrategy contains all 7 strategies")
     func errorStrategy_allCases() {
-        #expect(ErrorRecovery.ErrorStrategy.allCases.count == 6)
+        #expect(ErrorRecovery.ErrorStrategy.allCases.count == 7)
     }
 }
