@@ -15,6 +15,9 @@ public class FolderCell: NSCollectionViewItem {
     private let containerView = NSView()
     private let frostedBackground = NSVisualEffectView()
 
+    /// 文件夹重命名回调
+    public var onRenamed: ((String) -> Void)?
+
     private static let gridSize = 3
     private static let thumbnailSize: CGFloat = 20
     private static let thumbnailSpacing: CGFloat = 2
@@ -70,6 +73,13 @@ public class FolderCell: NSCollectionViewItem {
         titleLabel.lineBreakMode = .byTruncatingTail
         titleLabel.maximumNumberOfLines = 2
         titleLabel.isSelectable = false
+        titleLabel.isEditable = false
+        titleLabel.delegate = self
+
+        // 双击进入编辑模式
+        let doubleClick = NSClickGestureRecognizer(target: self, action: #selector(handleDoubleClick))
+        doubleClick.numberOfClicksRequired = 2
+        titleLabel.addGestureRecognizer(doubleClick)
 
         setupThumbnailGrid()
 
@@ -132,7 +142,28 @@ public class FolderCell: NSCollectionViewItem {
     override public func prepareForReuse() {
         super.prepareForReuse()
         titleLabel.stringValue = ""
+        titleLabel.isEditable = false
         thumbnailImageViews.forEach { $0.image = nil }
+    }
+
+    // MARK: - 双击编辑
+
+    @objc private func handleDoubleClick() {
+        titleLabel.isEditable = true
+        titleLabel.window?.makeFirstResponder(titleLabel)
+        titleLabel.selectText(nil)
+    }
+}
+
+// MARK: - NSTextFieldDelegate
+
+extension FolderCell: NSTextFieldDelegate {
+    public func controlTextDidEndEditing(_ obj: Notification) {
+        titleLabel.isEditable = false
+        let newTitle = titleLabel.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !newTitle.isEmpty {
+            onRenamed?(newTitle)
+        }
     }
 }
 #endif

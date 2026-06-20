@@ -168,7 +168,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             }
         }
 
-        hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
+        let registered = hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
+
+        if !registered && hotkeyManager.hasConflict {
+            // 快捷键被其他应用占用，提示用户
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "Option+Space 快捷键已被占用"
+                alert.informativeText = "另一个应用正在使用 Option+Space 快捷键。请关闭冲突应用或在 LaunchPad 设置中选择其他快捷键。"
+                alert.addButton(withTitle: "OK")
+                alert.runModal()
+            }
+        }
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in
             guard let self else { return event }

@@ -16,6 +16,9 @@ public class AppGridCollectionView: NSCollectionView {
     /// 删除按钮点击回调（编辑模式下）
     public var onItemDelete: ((PageItem) -> Void)?
 
+    /// 文件夹重命名回调
+    public var onFolderRenamed: ((PageItem, String) -> Void)?
+
     /// 拖拽状态机（可选，用于拖拽支持）
     public var dragController: DragController?
 
@@ -173,6 +176,9 @@ public class AppGridCollectionView: NSCollectionView {
                 }
             }
             cell.configure(item: item, childIcons: childIcons)
+            cell.onRenamed = { [weak self] newTitle in
+                self?.onFolderRenamed?(item, newTitle)
+            }
             return cell
 
         case .page:
@@ -183,6 +189,36 @@ public class AppGridCollectionView: NSCollectionView {
         }
     }
 
+    // MARK: - Accessibility
+
+    override public func accessibilityRole() -> NSAccessibility.Role? {
+        return .grid
+    }
+
+    override public func accessibilityLabel() -> String? {
+        return "Application Grid"
+    }
+
+    override public func accessibilityRows() -> [Any]? {
+        let snapshot = diffableDataSource.snapshot()
+        let params = GridLayoutCalculator.calculate(screenWidth: bounds.width > 0 ? bounds.width : 1440)
+        let columns = params.columns
+        let items = snapshot.itemIdentifiers
+
+        // 按列数分组成行
+        var rows: [[Any]] = []
+        for strideStart in stride(from: 0, to: items.count, by: columns) {
+            let rowEnd = min(strideStart + columns, items.count)
+            let rowItems = Array(strideStart..<rowEnd).compactMap { index -> Any? in
+                let indexPath = IndexPath(item: index, section: 0)
+                return self.item(at: indexPath)?.view
+            }
+            if !rowItems.isEmpty {
+                rows.append(rowItems)
+            }
+        }
+        return rows
+    }
 }
 
 // MARK: - NSCollectionViewDelegate
@@ -271,6 +307,37 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
 
         dragController?.handleDrop()
         return true
+    }
+
+    // MARK: - 拖拽预览
+
+    /// 自定义拖拽预览：半透明图标
+    public func collectionView(_ collectionView: NSCollectionView,
+                               draggingImageForItemsAt indexPaths: Set<IndexPath>,
+                               with event: NSEvent,
+                               offset dragImageOffset: NSPoint) -> NSImage? {
+        guard let indexPath = indexPaths.first,
+              let cell = item(at: indexPath) else { return nil }
+
+        let cellView = cell.view
+        let size = cellView.bounds.size
+        let image = NSImage(size: size)
+        image.lockFocus()
+        cellView.draw(cellView.bounds)
+        image.unlockFocus()
+
+        // 缩放到 64×64 并设置半透明
+        let dragSize = NSSize(width: 64, height: 64)
+        let dragImage = NSImage(size: dragSize)
+        dragImage.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: dragSize),
+                   from: .zero,
+                   operation: .copy,
+                   fraction: 0.7)
+        dragImage.unlockFocus()
+
+        return dragImage
     }
 
     // MARK: - 辅助方法
