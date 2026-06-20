@@ -2,6 +2,7 @@ import Foundation
 #if canImport(AppKit)
 import AppKit
 import LaunchPadProtocols
+import ServiceManagement
 
 /// 应用入口 — 菜单栏图标、服务初始化、热键注册
 /// Agent 应用模式（无 Dock 图标）
@@ -15,6 +16,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private var appScanner: AppScanner!
     private var searchEngine: SearchEngine!
     private var hotkeyManager: HotkeyManager!
+    private var fileWatcher: FileWatcher?
 
     // MARK: - Controllers
 
@@ -29,6 +31,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Application Lifecycle
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
+        // 多实例防护：激活已有实例，退出当前
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+        if running.count > 1 {
+            running.first?.activate()
+            NSApp.terminate(nil)
+            return
+        }
+
         // Agent app: no Dock icon
         NSApp.setActivationPolicy(.accessory)
 
@@ -41,6 +52,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         setupMenuBar()
         setupHotkey()
         performInitialScan()
+        setupFileWatcher()
     }
 
     // MARK: - Service Setup
@@ -114,6 +126,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         let menu = NSMenu()
         menu.addItem(NSMenuItem(title: "Toggle LaunchPad", action: #selector(statusItemClicked), keyEquivalent: ""))
+
+        // 登录自启动开关
+        let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
+        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        menu.addItem(loginItem)
+
         menu.addItem(NSMenuItem.separator())
         menu.addItem(NSMenuItem(title: "Quit", action: #selector(NSApplication.terminate(_:)), keyEquivalent: "q"))
         statusItem.menu = menu
@@ -121,6 +139,23 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     @objc private func statusItemClicked() {
         windowController.toggle()
+    }
+
+    @objc private func toggleLoginItem() {
+        do {
+            if SMAppService.mainApp.status == .enabled {
+                try SMAppService.mainApp.unregister()
+            } else {
+                try SMAppService.mainApp.register()
+            }
+            // 更新菜单状态
+            if let menu = statusItem.menu,
+               let item = menu.items.first(where: { $0.action == #selector(toggleLoginItem) }) {
+                item.state = SMAppService.mainApp.status == .enabled ? .on : .off
+            }
+        } catch {
+            NSLog("[AppDelegate] Failed to toggle login item: \(error)")
+        }
     }
 
     // MARK: - Hotkey
@@ -161,6 +196,50 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             return nil
         }
         hotkeyManager.registerLocalMonitor()
+    }
+
+    // MARK: - File System Monitoring
+
+    private func setupFileWatcher() {
+        let watcher = FileWatcher(debounceInterval: 2.0)
+        let paths = [
+            "/Applications",
+            NSHomeDirectory() + "/Applications",
+            "/System/Applications",
+        ]
+        watcher.start(paths: paths) { [weak self] in
+            self?.performIncrementalScan()
+        }
+        self.fileWatcher = watcher
+    }
+
+    /// 增量扫描（由 FileWatcher 触发）
+    private func performIncrementalScan() {
+        let directories = [
+            URL(fileURLWithPath: "/Applications"),
+            URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
+            URL(fileURLWithPath: "/System/Applications"),
+        ]
+        do {
+            let existingItems = try storage.fetchAllItems(parentId: nil)
+            let scanned = appScanner.scanDirectories(directories)
+            let pages = existingItems.filter { $0.type == .page }
+                .sorted { $0.ordering < $1.ordering }
+            let lastPageId = pages.last?.id
+
+            appScanner.incrementalSync(
+                scannedApps: scanned,
+                existingItems: existingItems,
+                lastPageId: lastPageId,
+                writer: storage
+            )
+            // 刷新 UI
+            DispatchQueue.main.async { [weak self] in
+                self?.viewController.loadData()
+            }
+        } catch {
+            NSLog("[AppDelegate] Incremental scan failed: \(error)")
+        }
     }
 
     // MARK: - Initial Scan
