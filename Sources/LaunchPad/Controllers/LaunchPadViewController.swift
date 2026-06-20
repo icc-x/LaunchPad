@@ -18,6 +18,7 @@ public class LaunchPadViewController: NSViewController {
     private var pageControl: PageControlView!
     private var emptyStateView: EmptyStateView!
     private var folderOverlay: FolderOverlayView!
+    private let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
 
@@ -102,6 +103,14 @@ public class LaunchPadViewController: NSViewController {
         folderOverlay.isHidden = true
         view.addSubview(folderOverlay)
 
+        // 搜索结果计数标签（搜索时替换页码点）
+        resultCountLabel.font = NSFont.systemFont(ofSize: 13, weight: .light)
+        resultCountLabel.textColor = .secondaryLabelColor
+        resultCountLabel.alignment = .center
+        resultCountLabel.isHidden = true
+        resultCountLabel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(resultCountLabel)
+
         // Layout
         NSLayoutConstraint.activate([
             // Search bar at top
@@ -120,6 +129,10 @@ public class LaunchPadViewController: NSViewController {
             pageControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             pageControl.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
             pageControl.heightAnchor.constraint(equalToConstant: 10),
+
+            // 搜索结果计数（与页码点同一位置）
+            resultCountLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            resultCountLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -18),
 
             // Empty state centered
             emptyStateView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
@@ -262,6 +275,7 @@ public class LaunchPadViewController: NSViewController {
         if query.isEmpty {
             // 空查询：主线程快速处理
             emptyStateView.hide()
+            resultCountLabel.isHidden = true
             let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
             pageControlViewModel.isSearchActive = false
             pageControl.update()
@@ -283,6 +297,9 @@ public class LaunchPadViewController: NSViewController {
                     }
                     self.pageControlViewModel.isSearchActive = true
                     self.pageControl.update()
+                    // 显示结果计数
+                    self.resultCountLabel.stringValue = "\(results.count) results"
+                    self.resultCountLabel.isHidden = false
                     self.collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: capturedQuery)
                 }
             }

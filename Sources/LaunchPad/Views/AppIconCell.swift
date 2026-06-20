@@ -16,6 +16,8 @@ public class AppIconCell: NSCollectionViewItem {
     private let runningIndicator = NSView()
     private var isJiggling = false
     private var currentBundleId: String?
+    private var iconWidthConstraint: NSLayoutConstraint?
+    private var iconHeightConstraint: NSLayoutConstraint?
 
     /// 删除按钮点击回调
     public var onDelete: (() -> Void)?
@@ -41,9 +43,16 @@ public class AppIconCell: NSCollectionViewItem {
 
             iconImageView.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 4),
             iconImageView.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
-            iconImageView.widthAnchor.constraint(equalToConstant: 64),
-            iconImageView.heightAnchor.constraint(equalToConstant: 64),
+        ])
 
+        let iconW = iconImageView.widthAnchor.constraint(equalToConstant: 64)
+        let iconH = iconImageView.heightAnchor.constraint(equalToConstant: 64)
+        iconWidthConstraint = iconW
+        iconHeightConstraint = iconH
+        iconW.isActive = true
+        iconH.isActive = true
+
+        NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: iconImageView.bottomAnchor, constant: 4),
             titleLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 2),
             titleLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -2),
@@ -127,14 +136,31 @@ public class AppIconCell: NSCollectionViewItem {
 
     // MARK: - Configuration
 
-    public func configure(item: PageItem, icon: NSImage?) {
+    public func configure(item: PageItem, icon: NSImage?, iconSize: CGFloat = 64) {
         let title = item.app?.title ?? item.group?.title ?? ""
         titleLabel.stringValue = title
         iconImageView.image = icon ?? NSImage(named: NSImage.applicationIconName)
         view.setAccessibilityLabel(title)
 
+        // 动态更新图标尺寸
+        iconWidthConstraint?.constant = iconSize
+        iconHeightConstraint?.constant = iconSize
+
         currentBundleId = item.app?.bundleId
         updateRunningState()
+
+        // Increase Contrast: 边框 + 加粗文字
+        let settings = AccessibilitySettings.current()
+        if settings.increaseContrast {
+            iconImageView.wantsLayer = true
+            iconImageView.layer?.borderWidth = 1
+            iconImageView.layer?.borderColor = NSColor.labelColor.cgColor
+            iconImageView.layer?.cornerRadius = 8
+            titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        } else {
+            iconImageView.layer?.borderWidth = 0
+            titleLabel.font = NSFont.systemFont(ofSize: 11)
+        }
     }
 
     // MARK: - Jiggle Animation
