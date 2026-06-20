@@ -26,49 +26,19 @@
 ## Phase 1: 关键修复与基础补全
 
 > **目标:** 修复验证报告中的严重偏差，补全低成本高价值的功能
-> **预计工期:** 1-2 天（已完成 3/6）
-> **进度:** ✅ Task 1.2, 1.3 已完成 | ⬜ Task 1.1, 1.4, 1.5, 1.6 待实现
+> **预计工期:** 1-2 天（✅ 已全部完成）
+> **进度:** ✅ Task 1.1, 1.2, 1.3, 1.4, 1.5, 1.6 全部完成
 
-### Task 1.1: 搜索防抖 100ms
+### Task 1.1: 搜索防抖 100ms ✅
 
 **设计文档:** §9 搜索系统 — 防抖策略
 
-**当前状态:** `SearchBar.controlTextDidChange` 直接转发每次击键到 `handleSearch`，无 debounce
-
-**实现步骤:**
-
-1. **RED — 编写防抖测试**
-
-   在 `Tests/LaunchPadTests/Services/` 创建 `SearchDebounceTests.swift`：
-
-   ```swift
-   // 测试用例（设计文档 §16 明确要求）：
-   // - 输入 "sa" 间隔 < 100ms → 仅触发 1 次搜索
-   // - 输入 "s" 后 50ms 按 Backspace → 立即触发搜索（不防抖）
-   // - 快速输入 5 个字符 → 防抖结束后仅触发 1 次搜索
-   // - 搜索缓存：相同查询第二次命中缓存，不重复计算
-   ```
-
-   注入 `MockScheduler` 精确控制时间，避免 flaky test。
-
-2. **GREEN — 实现防抖**
-
-   **修改 `Sources/LaunchPad/Views/SearchBar.swift`:**
-   - 添加 `debounceInterval: TimeInterval = 0.1` 属性
-   - 添加 `scheduler: Scheduler` 依赖（init 注入）
-   - `controlTextDidChange` 中调用 `scheduler.schedule(after: debounceInterval)`
-   - 新增 `searchFieldDidStartSearching` 中立即触发（Backspace 不防抖）
-
-   **或修改 `Sources/LaunchPad/Controllers/LaunchPadViewController.swift`:**
-   - 在 `setupCallbacks()` 中的 `searchBar.onQueryChanged` 闭包里添加防抖逻辑
-   - 使用 `DispatchQueueScheduler` 实现 100ms 延迟
-
-3. **REFACTOR:** 确保 Backspace 立即响应不防抖
-
-**验收标准:**
-- [ ] 4 个防抖测试用例全部通过
-- [ ] 快速输入不会产生多余搜索调用
-- [ ] Backspace 立即触发搜索
+**完成情况:** 已在 commit `2e84581` 中实现。新建 `SearchDebouncer` 类，注入 `Scheduler` 可测试。
+- 空查询 → 立即触发
+- Backspace（查询变短）→ 立即触发
+- 正常输入 → 100ms debounce
+- 集成到 `LaunchPadViewController.setupCallbacks`
+- 6 个新测试全部通过
 
 ---
 
@@ -95,139 +65,34 @@
 
 ---
 
-### Task 1.4: `/System/Applications` 扫描目录补全
+### Task 1.4: `/System/Applications` 扫描目录补全 ✅
 
 **设计文档:** §7 — 扫描目录包含 `/System/Applications`
 
-**当前状态:** `AppDelegate.swift` 只传入 `/Applications` 和 `~/Applications`
-
-**实现步骤:**
-
-1. **修改 `Sources/LaunchPad/App/AppDelegate.swift` `performInitialScan()`：**
-   ```swift
-   let directories = [
-       URL(fileURLWithPath: "/Applications"),
-       URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
-       URL(fileURLWithPath: "/System/Applications"),  // 新增
-   ]
-   ```
-
-2. **RED — 添加测试:**
-   - Mock FileSystemService 返回 `/System/Applications` 下的 .app bundle
-   - 验证扫描结果包含系统应用
-
-3. **GREEN — 运行验证**
-
-**验收标准:**
-- [ ] 系统应用（Safari、Maps 等）出现在 LaunchPad 网格中
-- [ ] 测试通过
+**完成情况:** 已在 commit `b00e949` 中修复，`performInitialScan()` 的 directories 数组添加了 `/System/Applications`
 
 ---
 
-### Task 1.5: 应用启动动画三阶段
+### Task 1.5: 应用启动动画三阶段 ✅
 
 **设计文档:** §12 — 点击图标 → 高亮反馈(scale 0.95→1.0) → 放大淡出(scale→2.0, opacity→0) → 关闭窗口
 
-**当前状态:** 仅窗口级 alpha 渐变
-
-**实现步骤:**
-
-1. **修改 `Sources/LaunchPad/App/LaunchPadWindowController.swift`:**
-
-   将 `showWindowAnimated()` 改为使用 Spring 动画：
-   ```swift
-   private func showWindowAnimated() {
-       guard let window = window, let screen = NSScreen.main else { return }
-       window.setFrame(screen.frame, display: true)
-       window.alphaValue = 0
-       window.makeKeyAndOrderFront(nil)
-
-       let settings = AccessibilitySettings.current()
-       if settings.reduceMotion {
-           // Reduce Motion: 简单 fade
-           NSAnimationContext.runAnimationGroup({ ctx in
-               ctx.duration = 0.1
-               window.animator().alphaValue = 1
-           }, completionHandler: { [weak self] in
-               self?.lifecycle.openAnimationDidFinish()
-           })
-       } else {
-           // 正常: Spring 缩放 + fade
-           window.contentView?.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
-           NSAnimationContext.runAnimationGroup({ ctx in
-               ctx.duration = AnimationConstants.windowExpand.duration
-               ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-               window.animator().alphaValue = 1
-           }, completionHandler: { [weak self] in
-               self?.lifecycle.openAnimationDidFinish()
-           })
-           // Layer-level spring animation for scale
-           let spring = CASpringAnimation(keyPath: "transform.scale")
-           spring.fromValue = 0.8
-           spring.toValue = 1.0
-           spring.damping = 0.75
-           window.contentView?.layer?.add(spring, forKey: "scaleIn")
-       }
-   }
-   ```
-
-2. **添加 `LaunchPadViewController` 中的图标启动动画:**
-   - 在 `handleItemSelection(.app)` 中：
-     - 找到选中 cell 的 frame
-     - 执行 scale 0.95→1.0（0.1s）高亮反馈
-     - 执行 scale→2.0 + alpha→0（0.3s）放大淡出
-     - 完成后调用 `lifecycle.handleAppClick(bundleId:)`
-
-**验收标准:**
-- [ ] 打开 LaunchPad 有 Spring 缩放弹入动画
-- [ ] 点击图标有高亮→放大淡出三阶段动画
-- [ ] Reduce Motion 时仅 fade
+**完成情况:** 已在 commit `a018465` 中实现
+- 窗口打开: CASpringAnimation scale 0.8→1.0 (damping 0.75) + fade
+- 图标点击: scale 0.95→1.0 高亮 (0.1s) → scale→2.0 + alpha→0 放大淡出 (0.3s)
+- Reduce Motion 回退: 简单 fade / 直接启动
 
 ---
 
-### Task 1.6: 后台线程搜索
+### Task 1.6: 后台线程搜索 ✅
 
 **设计文档:** §9 — 后台线程（`DispatchQueue.global(qos: .userInitiated)`）执行搜索
 
-**当前状态:** `LaunchPadViewController.handleSearch` 在主线程同步调用 `searchEngine.cachedSearch`
-
-**实现步骤:**
-
-1. **修改 `Sources/LaunchPad/Controllers/LaunchPadViewController.swift`:**
-   ```swift
-   private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
-
-   private func handleSearch(query: String) {
-       currentSearchQuery = query
-       if query.isEmpty {
-           // 空查询仍然在主线程处理（快速）
-           emptyStateView.hide()
-           // ... 恢复原始布局
-       } else {
-           searchQueue.async { [weak self] in
-               guard let self else { return }
-               let allItems = self.allPages.flatMap { self.itemsByPage[$0.id] ?? [] }
-               let results = self.searchEngine.cachedSearch(items: allItems, query: query)
-               DispatchQueue.main.async {
-                   // 仅当查询未过期时更新 UI
-                   guard self.currentSearchQuery == query else { return }
-                   if results.isEmpty {
-                       self.emptyStateView.show()
-                   } else {
-                       self.emptyStateView.hide()
-                   }
-                   self.pageControlViewModel.isSearchActive = true
-                   self.pageControl.update()
-                   self.collectionView.reload(pages: [], searchResults: results, searchQuery: query)
-               }
-           }
-       }
-   }
-   ```
-
-**验收标准:**
-- [ ] 搜索不阻塞主线程
-- [ ] 快速输入时仅最后一次查询结果更新 UI（query stale check）
+**完成情况:** 已在 commit `bac5c7d` 中实现
+- 非空查询派发到 `DispatchQueue.global(qos: .userInitiated)`
+- Stale query 检查：查询变化时丢弃结果
+- 空查询在主线程快速处理
+- UI 更新始终在主线程
 
 ---
 
