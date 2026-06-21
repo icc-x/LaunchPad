@@ -166,27 +166,28 @@ public class FolderOverlayView: NSView {
 
         isHidden = false
 
-        // Scale 弹出动画（Task 4.2）
-        let settings = AccessibilitySettings.current()
-        if settings.reduceMotion {
-            // Reduce Motion: 简单 fade
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = 0.15
-                animator().alphaValue = 1
-            })
-        } else {
-            // 正常: scale 0.8→1.0 + fade
-            backgroundView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = AnimationConstants.folderExpand.duration
-                animator().alphaValue = 1
-            })
-            let spring = CASpringAnimation(keyPath: "transform.scale")
-            spring.fromValue = 0.8
-            spring.toValue = 1.0
-            spring.damping = 0.8
-            backgroundView.layer?.add(spring, forKey: "scaleIn")
-        }
+        // Scale 弹出动画（Task 4.2）— 使用 AnimationRunner 统一 Reduce Motion 处理
+        AnimationRunner.animate(
+            animation: AnimationConstants.folderExpand,
+            normal: { [self] in
+                backgroundView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = AnimationConstants.folderExpand.duration
+                    animator().alphaValue = 1
+                })
+                let spring = CASpringAnimation(keyPath: "transform.scale")
+                spring.fromValue = 0.8
+                spring.toValue = 1.0
+                spring.damping = 0.8
+                backgroundView.layer?.add(spring, forKey: "scaleIn")
+            },
+            reduced: { [self] in
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = 0.15
+                    animator().alphaValue = 1
+                })
+            }
+        )
     }
 
     public func closeFolder() {
