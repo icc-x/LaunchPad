@@ -8,6 +8,7 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
 
     private var db: OpaquePointer?
     private let writeQueue = DispatchQueue(label: "com.launchpad.storage.write", qos: .utility)
+    private let readQueue = DispatchQueue(label: "com.launchpad.storage.read", qos: .userInitiated)
 
     public init(dbPath: String) throws {
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
@@ -29,7 +30,8 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
     public func insertItem(_ item: PageItem) throws -> Int64 {
         try writeQueue.sync {
             sqlite3_exec(db, "BEGIN", nil, nil, nil)
-            defer { sqlite3_exec(db, "COMMIT", nil, nil, nil) }
+            var committed = false
+            defer { if !committed { sqlite3_exec(db, "ROLLBACK", nil, nil, nil) } }
 
             let sql = """
                 INSERT INTO items (uuid, type, parent_id, ordering)
@@ -70,6 +72,8 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
                 break
             }
 
+            committed = true
+            sqlite3_exec(db, "COMMIT", nil, nil, nil)
             return itemId
         }
     }
@@ -162,7 +166,7 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
     // MARK: - ItemReading
 
     public func fetchAllItems(parentId: Int64?) throws -> [PageItem] {
-        try writeQueue.sync {
+        try readQueue.sync {
             let sql = """
                 SELECT i.id, i.uuid, i.type, i.ordering, i.parent_id,
                        a.title, a.bundle_id, a.path, a.store_id, a.category,
@@ -275,7 +279,7 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
     }
 
     public func fetchImage(itemId: Int64) throws -> (Data, Data)? {
-        try writeQueue.sync {
+        try readQueue.sync {
             let sql = "SELECT icon_1x, icon_2x FROM image_cache WHERE item_id = ?"
             var stmt: OpaquePointer?
             defer { sqlite3_finalize(stmt) }
