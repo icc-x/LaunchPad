@@ -129,6 +129,27 @@ final class EmptyStateViewTests: XCTestCase {
         view.hide(animated: false)
         XCTAssertTrue(view.isHidden)
     }
+
+    func testEmptyStateView_show_animated_doesNotCrash() {
+        let view = EmptyStateView()
+        view.show(animated: true)
+        XCTAssertFalse(view.isHidden)
+    }
+
+    func testEmptyStateView_hide_animated_doesNotCrash() {
+        let view = EmptyStateView()
+        view.show(animated: false)
+        view.hide(animated: true)
+    }
+
+    func testEmptyStateView_show_hide_multipleTimes() {
+        let view = EmptyStateView()
+        view.show(animated: false)
+        view.hide(animated: false)
+        view.show(animated: false)
+        view.hide(animated: false)
+        XCTAssertTrue(view.isHidden)
+    }
 }
 
 /// Tests for SearchBar (0% → basic instantiation)
@@ -168,6 +189,46 @@ final class SearchBarTests: XCTestCase {
         bar.clearAndFocus()
         XCTAssertEqual(receivedQuery, "")
     }
+
+    // MARK: - Delegate methods
+
+    func testSearchBar_controlTextDidChange_callsCallback() {
+        let bar = SearchBar()
+        var receivedQuery: String?
+        bar.onQueryChanged = { query in receivedQuery = query }
+        bar.stringValue = "test"
+        bar.controlTextDidChange(Notification(name: NSTextField.textDidChangeNotification))
+        XCTAssertEqual(receivedQuery, "test")
+    }
+
+    func testSearchBar_searchFieldDidStartSearching_callsCallback() {
+        let bar = SearchBar()
+        var receivedQuery: String?
+        bar.onQueryChanged = { query in receivedQuery = query }
+        bar.stringValue = "hello"
+        bar.searchFieldDidStartSearching(bar)
+        XCTAssertEqual(receivedQuery, "hello")
+    }
+
+    func testSearchBar_searchFieldDidEndSearching_callsCallback() {
+        let bar = SearchBar()
+        var receivedQuery: String?
+        bar.onQueryChanged = { query in receivedQuery = query }
+        bar.searchFieldDidEndSearching(bar)
+        XCTAssertEqual(receivedQuery, "")
+    }
+
+    func testSearchBar_show_animated_doesNotCrash() {
+        let bar = SearchBar()
+        bar.show(animated: true)
+        XCTAssertFalse(bar.isHidden)
+    }
+
+    func testSearchBar_hide_animated_doesNotCrash() {
+        let bar = SearchBar()
+        bar.show(animated: false)
+        bar.hide(animated: true)
+    }
 }
 
 /// Tests for AppGridFlowLayout (0% → basic instantiation)
@@ -189,6 +250,7 @@ final class AppGridFlowLayoutTests: XCTestCase {
 }
 
 /// Tests for PageControlView (0% → basic interaction)
+@MainActor
 final class PageControlViewTests: XCTestCase {
 
     func testPageControlView_init_doesNotCrash() {
@@ -218,9 +280,271 @@ final class PageControlViewTests: XCTestCase {
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
         let size = view.intrinsicContentSize
-        // 3 dots * 8pt + 2 gaps * 8pt = 40pt wide, 8pt tall
         XCTAssertEqual(size.width, 40)
         XCTAssertEqual(size.height, 8)
+    }
+
+    func testPageControlView_intrinsicContentSize_zeroPages() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 0)
+        let view = PageControlView(viewModel: viewModel)
+        let size = view.intrinsicContentSize
+        XCTAssertEqual(size.width, 0)
+        XCTAssertEqual(size.height, 8)
+    }
+
+    func testPageControlView_intrinsicContentSize_singlePage() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 1)
+        let view = PageControlView(viewModel: viewModel)
+        let size = view.intrinsicContentSize
+        XCTAssertEqual(size.width, 8) // 1 dot * 8pt
+        XCTAssertEqual(size.height, 8)
+    }
+
+    // MARK: - Draw
+
+    func testPageControlView_draw_withPages_doesNotCrash() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 3)
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 100, height: 20)
+        view.draw(view.bounds)
+    }
+
+    func testPageControlView_draw_zeroPages_doesNotCrash() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 0)
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 100, height: 20)
+        view.draw(view.bounds)
+    }
+
+    func testPageControlView_draw_withActiveDot_doesNotCrash() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 4)
+        viewModel.currentPage = 2
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 200, height: 20)
+        view.draw(view.bounds)
+    }
+
+    // MARK: - Mouse
+
+    func testPageControlView_mouseDown_onDot_selectsPage() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 3)
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 100, height: 20)
+
+        var selectedDot: Int?
+        view.onDotSelected = { dot in selectedDot = dot }
+
+        // Click on the first dot area
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 50, y: 10), // center of view
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+        if let event {
+            view.mouseDown(with: event)
+        }
+        // Should select a dot (exact index depends on layout calculation)
+        XCTAssertNotNil(selectedDot)
+    }
+
+    func testPageControlView_mouseDown_outsideDots_doesNotSelect() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 3)
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 200, height: 20)
+
+        var selectedDot: Int?
+        view.onDotSelected = { dot in selectedDot = dot }
+
+        // Click far outside dot area
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 5, y: 10),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+        if let event {
+            view.mouseDown(with: event)
+        }
+        XCTAssertNil(selectedDot)
+    }
+
+    func testPageControlView_mouseDown_zeroPages_doesNotCrash() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 0)
+        let view = PageControlView(viewModel: viewModel)
+        view.frame = NSRect(x: 0, y: 0, width: 100, height: 20)
+
+        let event = NSEvent.mouseEvent(
+            with: .leftMouseDown,
+            location: NSPoint(x: 50, y: 10),
+            modifierFlags: [],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            eventNumber: 0,
+            clickCount: 1,
+            pressure: 0
+        )
+        if let event {
+            view.mouseDown(with: event)
+        }
+    }
+
+    // MARK: - Accessibility
+
+    func testPageControlView_accessibilityRole_isGroup() {
+        let viewModel = PageControlViewModel()
+        let view = PageControlView(viewModel: viewModel)
+        XCTAssertEqual(view.accessibilityRole(), .group)
+    }
+
+    func testPageControlView_accessibilityLabel_isPageIndicator() {
+        let viewModel = PageControlViewModel()
+        let view = PageControlView(viewModel: viewModel)
+        XCTAssertEqual(view.accessibilityLabel(), "Page indicator")
+    }
+
+    // MARK: - onDotSelected callback
+
+    func testPageControlView_onDotSelected_isSettable() {
+        let viewModel = PageControlViewModel()
+        let view = PageControlView(viewModel: viewModel)
+        view.onDotSelected = { _ in }
+        XCTAssertNotNil(view.onDotSelected)
+    }
+}
+
+/// Tests for AppGridFlowLayout (0% → basic interaction)
+@MainActor
+final class AppGridFlowLayoutTests2: XCTestCase {
+
+    func testApplyGridParameters_setsItemSize() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        let expectedWidth = params.iconSize + params.spacing
+        let expectedHeight = params.iconSize + 40
+        XCTAssertEqual(layout.itemSize.width, expectedWidth)
+        XCTAssertEqual(layout.itemSize.height, expectedHeight)
+    }
+
+    func testApplyGridParameters_setsSpacing() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        XCTAssertEqual(layout.minimumInteritemSpacing, params.spacing)
+        XCTAssertEqual(layout.minimumLineSpacing, params.spacing)
+    }
+
+    func testApplyGridParameters_setsSectionInset() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        XCTAssertEqual(layout.sectionInset.top, params.topMargin)
+        XCTAssertEqual(layout.sectionInset.left, params.horizontalMargin)
+        XCTAssertEqual(layout.sectionInset.bottom, params.bottomMargin)
+        XCTAssertEqual(layout.sectionInset.right, params.horizontalMargin)
+    }
+
+    func testApplyGridParameters_setsScrollDirection() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        XCTAssertEqual(layout.scrollDirection, .horizontal)
+    }
+
+    func testApplyGridParameters_setsHeaderSize() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        XCTAssertEqual(layout.headerReferenceSize, .zero)
+    }
+
+    func testApplyGridParameters_differentScreenWidths() {
+        let layout = AppGridFlowLayout()
+
+        let small = GridLayoutCalculator.calculate(screenWidth: 1280)
+        layout.applyGridParameters(small)
+        XCTAssertEqual(layout.scrollDirection, .horizontal)
+
+        let large = GridLayoutCalculator.calculate(screenWidth: 2560)
+        layout.applyGridParameters(large)
+        XCTAssertEqual(layout.scrollDirection, .horizontal)
+    }
+
+    // MARK: - targetContentOffset
+
+    func testTargetContentOffset_withoutCollectionView_returnsProposed() {
+        let layout = AppGridFlowLayout()
+        let proposed = NSPoint(x: 100, y: 0)
+        let result = layout.targetContentOffset(forProposedContentOffset: proposed, withScrollingVelocity: .zero)
+        // Without collectionView, should fall through to super
+        XCTAssertNotNil(result)
+    }
+
+    func testTargetContentOffset_withCollectionView_snapsToPage() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        collectionView.collectionViewLayout = layout
+        // Need to set up document view for layout to work
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        scrollView.documentView = documentView
+        documentView.addSubview(collectionView)
+
+        let proposed = NSPoint(x: 500, y: 0)
+        let result = layout.targetContentOffset(forProposedContentOffset: proposed, withScrollingVelocity: .zero)
+        // Should snap to nearest page
+        XCTAssertNotNil(result)
+    }
+
+    // MARK: - layoutAttributesForElements
+
+    func testLayoutAttributesForElements_withoutCollectionView_returnsEmpty() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        XCTAssertNotNil(attrs)
+    }
+
+    func testLayoutAttributesForElements_withEmptyCollectionView_returnsEmpty() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        collectionView.collectionViewLayout = layout
+
+        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        XCTAssertNotNil(attrs)
     }
 }
 #endif

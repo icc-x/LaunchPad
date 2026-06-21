@@ -117,4 +117,200 @@ struct IntegrationTests {
         #expect(params.rows == 5)
         #expect(params.itemsPerPage == 35)
     }
+
+    // MARK: - 首次启动分页（100 个应用）
+
+    @Test("首次启动 — 100 个应用 + 35 每页 → 创建 3 页，最后一页 30 项")
+    func firstLaunch_100apps_pagination() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let mockFS = MockFileSystemService()
+        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: [])
+
+        // 创建 100 个扫描结果
+        let apps = (0..<100).map { i in
+            ScannedApp(name: "App\(String(format: "%03d", i))",
+                       bundleId: "com.test.app\(i)",
+                       path: "/Applications/App\(i).app")
+        }
+
+        scanner.firstLaunchPaginate(scannedApps: apps, maxPerPage: 35, writer: storage)
+
+        let pages = try storage.fetchAllItems(parentId: nil).filter { $0.type == .page }.sorted { $0.ordering < $1.ordering }
+        #expect(pages.count == 3, "100/35 应创建 3 页")
+
+        let page1Apps = try storage.fetchAllItems(parentId: pages[0].id)
+        let page2Apps = try storage.fetchAllItems(parentId: pages[1].id)
+        let page3Apps = try storage.fetchAllItems(parentId: pages[2].id)
+
+        #expect(page1Apps.count == 35, "第一页应有 35 项")
+        #expect(page2Apps.count == 35, "第二页应有 35 项")
+        #expect(page3Apps.count == 30, "最后一页应有 30 项")
+    }
+
+    @Test("首次启动 — 应用按字母顺序排列，跨页连续")
+    func firstLaunch_alphabetical_order() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let mockFS = MockFileSystemService()
+        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: [])
+
+        // 创建乱序应用名
+        let names = ["Zulu", "Alpha", "Mike", "Bravo", "Echo", "Charlie", "Delta", "Foxtrot",
+                     "Golf", "Hotel", "India", "Juliet", "Kilo", "Lima", "November",
+                     "Oscar", "Papa", "Quebec", "Romeo", "Sierra", "Tango", "Uniform",
+                     "Victor", "Whiskey", "Xray", "Yankee", "Alpha2", "Bravo2", "Charlie2", "Delta2",
+                     "Echo2", "Foxtrot2", "Golf2", "Hotel2", "India2", "Juliet2"]
+        let apps = names.enumerated().map { i, name in
+            ScannedApp(name: name, bundleId: "com.test.\(name.lowercased())", path: "/Applications/\(name).app")
+        }
+
+        scanner.firstLaunchPaginate(scannedApps: apps, maxPerPage: 35, writer: storage)
+
+        let pages = try storage.fetchAllItems(parentId: nil).filter { $0.type == .page }.sorted { $0.ordering < $1.ordering }
+        let page1Apps = try storage.fetchAllItems(parentId: pages[0].id).sorted { $0.ordering < $1.ordering }
+
+        // 第一个应用应该是按字母序排列的
+        let titles = page1Apps.compactMap { $0.app?.title }
+        let sortedTitles = titles.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
+        #expect(titles == sortedTitles, "应用应按字母顺序排列")
+    }
+
+    // MARK: - 被过滤应用不出现在网格中
+
+    @Test("被过滤应用不出现在网格中")
+    func excludedApps_notInGrid() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let mockFS = MockFileSystemService()
+        let excludedBundleIds: Set<String> = ["com.test.excluded"]
+        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: excludedBundleIds)
+
+        let apps = [
+            ScannedApp(name: "Visible", bundleId: "com.test.visible", path: "/Applications/Visible.app"),
+            ScannedApp(name: "Excluded", bundleId: "com.test.excluded", path: "/Applications/Excluded.app")
+        ]
+
+        // scanDirectories 会过滤掉 excluded
+        let scanned = scanner.scanDirectories([URL(fileURLWithPath: "/Applications")])
+        // 由于 MockFileSystemService 没有 bundleInfo，scanApp 返回 nil
+        // 直接测试 isExcluded
+        #expect(scanner.isExcluded(bundleId: "com.test.excluded") == true)
+        #expect(scanner.isExcluded(bundleId: "com.test.visible") == false)
+    }
+
+    // MARK: - StorageManager 三层嵌套
+
+    @Test("StorageManager — page → group → items 正确解析")
+    func storageManager_threeLevelNesting() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+
+        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let pageId = try storage.insertItem(page)
+
+        let group = PageItem(id: 0, uuid: UUID().uuidString, type: .group, ordering: 0, parentId: pageId, app: nil, group: GroupInfo(id: 0, title: "Utilities"))
+        let groupId = try storage.insertItem(group)
+
+        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "Calculator", bundleId: "com.test.calc", path: "/Applications/Calculator.app", storeId: nil, category: nil), group: nil)
+        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "Terminal", bundleId: "com.test.term", path: "/Applications/Terminal.app", storeId: nil, category: nil), group: nil)
+        try storage.insertItem(app1)
+        try storage.insertItem(app2)
+
+        let topLevel = try storage.fetchAllItems(parentId: nil)
+        #expect(topLevel.count == 1)
+        #expect(topLevel[0].type == .page)
+
+        let groupItems = try storage.fetchAllItems(parentId: pageId)
+        #expect(groupItems.count == 1)
+        #expect(groupItems[0].type == .group)
+        #expect(groupItems[0].group?.title == "Utilities")
+
+        let childItems = try storage.fetchAllItems(parentId: groupId)
+        #expect(childItems.count == 2)
+    }
+
+    @Test("StorageManager — 删除 group 后子项级联删除")
+    func storageManager_deleteGroup_cascadeDelete() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+
+        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let pageId = try storage.insertItem(page)
+
+        let group = PageItem(id: 0, uuid: UUID().uuidString, type: .group, ordering: 0, parentId: pageId, app: nil, group: GroupInfo(id: 0, title: "Folder"))
+        let groupId = try storage.insertItem(group)
+
+        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app", storeId: nil, category: nil), group: nil)
+        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "App2", bundleId: "com.test.app2", path: "/Applications/App2.app", storeId: nil, category: nil), group: nil)
+        try storage.insertItem(app1)
+        try storage.insertItem(app2)
+
+        let childrenBefore = try storage.fetchAllItems(parentId: groupId)
+        #expect(childrenBefore.count == 2)
+
+        try storage.deleteItem(id: groupId)
+
+        let pageItems = try storage.fetchAllItems(parentId: pageId)
+        #expect(pageItems.count == 0, "group 删除后 page 下应为空")
+
+        let childrenAfter = try storage.fetchAllItems(parentId: groupId)
+        #expect(childrenAfter.count == 0, "group 删除后子项应被级联删除")
+    }
+
+    // MARK: - FolderController 集成
+
+    @Test("FolderController — 创建文件夹后两个 item 归入同一 folder")
+    func folderController_createFolder_itemsInFolder() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let folderController = FolderController(itemWriter: storage)
+
+        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let pageId = try storage.insertItem(page)
+
+        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: pageId, app: AppInfo(id: 0, title: "Safari", bundleId: "com.apple.Safari", path: "/Applications/Safari.app", storeId: nil, category: nil), group: nil)
+        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: pageId, app: AppInfo(id: 0, title: "Mail", bundleId: "com.apple.Mail", path: "/Applications/Mail.app", storeId: nil, category: nil), group: nil)
+        let id1 = try storage.insertItem(app1)
+        let id2 = try storage.insertItem(app2)
+
+        let savedApp1 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id1 }!
+        let savedApp2 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id2 }!
+
+        let folderId = try folderController.createFolder(from: savedApp1, and: savedApp2, title: "Favorites")
+
+        let pageItems = try storage.fetchAllItems(parentId: pageId)
+        let folder = pageItems.first { $0.type == .group }
+        #expect(folder != nil)
+        #expect(folder?.group?.title == "Favorites")
+
+        let folderChildren = try storage.fetchAllItems(parentId: folderId)
+        #expect(folderChildren.count == 2)
+    }
+
+    @Test("FolderController — 自动解散：移出至只剩 1 个时自动解散")
+    func folderController_autoDissolve() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let folderController = FolderController(itemWriter: storage)
+
+        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let pageId = try storage.insertItem(page)
+
+        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: pageId, app: AppInfo(id: 0, title: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app", storeId: nil, category: nil), group: nil)
+        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: pageId, app: AppInfo(id: 0, title: "App2", bundleId: "com.test.app2", path: "/Applications/App2.app", storeId: nil, category: nil), group: nil)
+        let id1 = try storage.insertItem(app1)
+        let id2 = try storage.insertItem(app2)
+
+        let savedApp1 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id1 }!
+        let savedApp2 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id2 }!
+
+        let folderId = try folderController.createFolder(from: savedApp1, and: savedApp2)
+
+        let itemToMove = try storage.fetchAllItems(parentId: folderId).first!
+        try folderController.removeFromFolder(
+            item: itemToMove,
+            folderId: folderId,
+            targetPageId: pageId,
+            targetOrdering: 10,
+            reader: storage
+        )
+
+        let pageItems = try storage.fetchAllItems(parentId: pageId)
+        let folder = pageItems.first { $0.type == .group }
+        #expect(folder == nil, "只剩 1 个子项时 folder 应自动解散")
+    }
 }

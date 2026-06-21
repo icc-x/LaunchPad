@@ -8,6 +8,7 @@ let package = Package(
     ],
     products: [
         .library(name: "LaunchPad", targets: ["LaunchPad"]),
+        .executable(name: "LaunchPadApp", targets: ["LaunchPadApp"]),
     ],
     targets: [
         .target(
@@ -27,5 +28,10 @@ let package = Package(
             dependencies: ["LaunchPad", "LaunchPadProtocols"],
             path: "Tests/LaunchPadTests"
         ),
-    ]
+        .executableTarget(
+            name: "LaunchPadApp",
+            dependencies: ["LaunchPad"],
+            path: "Sources/LaunchPadApp"
+        ),
+    ],
 )

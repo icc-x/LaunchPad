@@ -1,5 +1,6 @@
 import Testing
 import CoreGraphics
+import AppKit
 @testable import LaunchPad
 
 @Suite("PageScrollView target page calculation")
@@ -215,6 +216,45 @@ struct PageScrollViewTests {
             totalPages: 1
         )
         #expect(result == 0)
+    }
+
+    // MARK: - scrollToPage
+
+    @Test("scrollToPage with valid page does not crash")
+    func scrollToPage_validPage_noCrash() {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        scrollView.documentView = documentView
+        scrollView.scrollToPage(1)
+    }
+
+    @Test("scrollToPage with page 0 does not crash")
+    func scrollToPage_page0_noCrash() {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        scrollView.documentView = documentView
+        scrollView.scrollToPage(0)
+    }
+
+    @Test("scrollToPage with custom pageWidth does not crash")
+    func scrollToPage_customPageWidth_noCrash() {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        scrollView.documentView = documentView
+        scrollView.scrollToPage(2, pageWidth: 720)
+    }
+
+    @Test("scrollToPage with zero pageWidth does not crash")
+    func scrollToPage_zeroPageWidth_noCrash() {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        scrollView.scrollToPage(0, pageWidth: 0)
+    }
+
+    // MARK: - velocityThreshold
+
+    @Test("velocityThreshold is 300")
+    func velocityThreshold_is300() {
+        #expect(PageScrollView.velocityThreshold == 300.0)
     }
 }
 
