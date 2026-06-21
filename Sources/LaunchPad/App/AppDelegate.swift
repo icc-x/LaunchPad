@@ -183,6 +183,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.addButton(withTitle: "OK")
                 alert.runModal()
             }
+        } else if !registered {
+            // 无 Input Monitoring 权限，引导用户授权
+            DispatchQueue.main.async {
+                let alert = NSAlert()
+                alert.messageText = "需要辅助功能权限"
+                alert.informativeText = "LaunchPad 需要 Input Monitoring（输入监控）权限才能响应 Option+Space 快捷键。\n\n请在「系统设置 → 隐私与安全性 → 输入监控」中启用 LaunchPad。"
+                alert.addButton(withTitle: "打开系统设置")
+                alert.addButton(withTitle: "稍后设置")
+                let response = alert.runModal()
+                if response == .alertFirstButtonReturn {
+                    // 打开 Input Monitoring 设置页面
+                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
+                        NSWorkspace.shared.open(url)
+                    }
+                }
+            }
         }
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in
