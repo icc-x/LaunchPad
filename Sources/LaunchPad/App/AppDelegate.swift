@@ -110,6 +110,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             lifecycle: lifecycle,
             viewController: viewController
         )
+        // ESC 关闭窗口：ViewController.onClose → lifecycle.handleEscape()
+        viewController.onClose = { [weak self] in
+            self?.windowController.escape()
+        }
     }
 
     // MARK: - Menu Bar

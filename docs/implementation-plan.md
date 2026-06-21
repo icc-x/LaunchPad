@@ -219,7 +219,7 @@
 
 **验收标准:**
 - [x] 长按 0.5s 触发所有图标抖动 + ✕ 按钮显示 — ✅ 已实现（NSPressGestureRecognizer + startJiggling + deleteButton）
-- [ ] ESC 或点击空白退出编辑模式 — ❌ executeAction(.exitEditMode) 为空 break，ESC 退出编辑模式失效
+- [x] ESC 或点击空白退出编辑模式 — ✅ 已修复（executeAction 调用 dragController.handleCancel + updateJiggleState，keyboardNavigator.mode 同步）
 - [x] Reduce Motion 时缩放脉冲替代抖动 — ✅ 已实现（AppIconCell.startJiggling 检查 reduceMotion）
 - [x] ✕ 按钮点击触发删除流程 — ✅ 已实现（onDelete 回调 + handleItemDelete）
 
@@ -1019,7 +1019,7 @@
 
 ### 功能完整度
 - [x] P0 (5 项) 代码已实现（拖拽 delegate、分页滚动 scrollWheel、搜索防抖、启动动画、编辑模式 UI）
-- [ ] P0 行为缺陷：executeAction 中 .closeWindow / .exitEditMode / moveUp/moveDown/selectNext 为空 break，ESC 关闭窗口与退出编辑模式无效
+- [x] P0 行为缺陷已修复：.closeWindow → onClose 回调、.exitEditMode → handleCancel + updateJiggleState、moveUp/moveDown/selectNext → moveSelection（方向键导航）
 - [~] P1 — 多数已实现，FolderOverlayView 内部分页（Task 4.3）仍未实现
 - [~] P2 — 多数已实现
 - [~] 技术债务 (6 项) — TD-1/4/5/6 已修复，TD-2 未修复（无独立读队列），TD-3 部分改善（均用事务，但 insertItem 用 defer COMMIT、updateItem 用 committed 标志，风格仍不完全一致）

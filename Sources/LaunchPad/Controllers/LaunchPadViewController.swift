@@ -25,10 +25,16 @@ public class LaunchPadViewController: NSViewController {
     private let storage: DataStoring
     private let iconCache: IconCache
     private let searchEngine: SearchEngine
-    private let keyboardNavigator: KeyboardNavigator
-    private let dragController: DragController
+    let keyboardNavigator: KeyboardNavigator
+    let dragController: DragController
     private let folderController: FolderController
     private let searchScheduler: Scheduler
+
+    /// 窗口关闭回调 — 由 AppDelegate/WindowController 注入，ESC 关闭窗口时调用
+    public var onClose: (() -> Void)?
+
+    /// 当前键盘选中的图标索引（nil = 未选中）
+    public private(set) var selectedIndex: Int?
 
     // MARK: - State
 
@@ -238,6 +244,13 @@ public class LaunchPadViewController: NSViewController {
 
     /// 根据 DragController 状态更新所有可见 cell 的抖动
     private func updateJiggleState() {
+        // 同步键盘导航器模式（不依赖视图加载状态）
+        if dragController.state == .jiggling {
+            keyboardNavigator.mode = .edit
+        } else {
+            keyboardNavigator.mode = .idle
+        }
+        guard isViewLoaded else { return }
         let snapshot = collectionView.diffableDataSource.snapshot()
         for indexPath in collectionView.indexPathsForVisibleItems() {
             guard let cell = collectionView.item(at: indexPath) as? AppIconCell else { continue }
@@ -470,13 +483,14 @@ public class LaunchPadViewController: NSViewController {
     private func executeAction(_ action: KeyboardNavigator.Action) {
         switch action {
         case .closeWindow:
-            break
+            onClose?()
         case .clearSearch:
             searchBar.hide()
             searchDebouncer.cancelPending()
             handleSearch(query: "")
         case .exitEditMode:
-            break
+            dragController.handleCancel()
+            updateJiggleState()
         case .enterSearchMode:
             searchBar.show()
         case .appendToQuery(let char):
@@ -497,11 +511,65 @@ public class LaunchPadViewController: NSViewController {
             if let firstItem = collectionView.diffableDataSource.itemIdentifier(for: IndexPath(item: 0, section: 0)) {
                 handleItemSelection(firstItem)
             }
-        case .moveUp, .moveDown, .selectNext:
-            break
+        case .moveUp:
+            moveSelection(.up)
+        case .moveDown:
+            moveSelection(.down)
+        case .selectNext:
+            moveSelection(.next)
         case .ignored:
             break
         }
+    }
+
+    // MARK: - Selection Navigation
+
+    /// 方向键/Tab 移动选中位置
+    private func moveSelection(_ direction: SelectionDirection) {
+        guard isViewLoaded else { return }
+        let snapshot = collectionView.diffableDataSource.snapshot()
+        let totalItems = snapshot.numberOfItems
+        guard totalItems > 0 else { return }
+
+        let gridParams = GridLayoutCalculator.calculate(screenWidth: view.bounds.width)
+        let columns = gridParams.columns
+
+        switch direction {
+        case .down:
+            // 首次按下选中第一个
+            if selectedIndex == nil {
+                selectedIndex = 0
+                return
+            }
+            let next = (selectedIndex ?? 0) + columns
+            if next < totalItems {
+                selectedIndex = next
+            }
+        case .up:
+            guard let current = selectedIndex else { return }
+            let prev = current - columns
+            if prev >= 0 {
+                selectedIndex = prev
+            }
+        case .next:
+            // Tab: 顺序下一个
+            let current = selectedIndex ?? -1
+            if current + 1 < totalItems {
+                selectedIndex = current + 1
+            }
+        }
+
+        // 同步选中到 collection view
+        if let idx = selectedIndex {
+            let indexPath = IndexPath(item: idx, section: 0)
+            collectionView.selectItems(at: [indexPath], scrollPosition: [])
+        }
+    }
+
+    private enum SelectionDirection {
+        case up
+        case down
+        case next
     }
 }
 #endif
