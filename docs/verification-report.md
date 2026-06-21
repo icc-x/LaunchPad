@@ -188,15 +188,15 @@ idle/search/edit 三态、8 种按键映射、ESC 二级行为。覆盖率 100%�
 
 **覆盖率:** 86.08% 行 / 75.00% 函数。
 
-#### `LaunchPadViewController.swift` — ⚠️ 框架完整，核心键盘交互为空实现
+#### `LaunchPadViewController.swift` — ✅ 框架完整，核心键盘交互已修复
 
 **已实现:** 6 个子视图组装 + Auto Layout、搜索防抖（SearchDebouncer）、后台线程搜索、页面导航、项目选择（应用启动+三阶段动画+文件夹打开）、长按手势连接 DragController、jiggle 状态同步、DiffableDataSource 加载。
 
-**真实缺陷（发布阻塞项 B3）:**
-- ❌ `executeAction(.closeWindow)` 是空 break — ESC 无法关闭窗口
-- ❌ `executeAction(.exitEditMode)` 是空 break — ESC 无法退出编辑模式
-- ❌ `moveUp/moveDown/selectNext` 是空 break — 方向键/Tab 焦点导航无效
-- ❌ `navigateToPage` 用 `contentView.scrollToVisible` 而非 `PageScrollView.scrollToPage`，绕过 0.35s 翻页动画
+**已修复（2026-06-21 验证）:**
+- ✅ `executeAction(.closeWindow)` → 调用 `onClose?()`（commit d92e1af）
+- ✅ `executeAction(.exitEditMode)` → 调用 `dragController.handleCancel()` + `updateJiggleState()`（commit d92e1af）
+- ✅ `moveUp/moveDown/selectNext` → 调用 `moveSelection(.up/.down/.next)`（commit d92e1af）
+- ✅ `navigateToPage` → 使用 `scrollView.scrollToPage(index)` 获得 0.35s easeInOut 翻页动画
 
 **覆盖率:** 0% — 529 行、55 个函数完全未测试。这是 TDD 项目的重大违反。
 
@@ -300,14 +300,14 @@ App / View / Controllers / Services / Data 五层清晰，依赖方向基本正�
 | P1 | 文件夹内部网格分页（Task 4.3） | §11 | FolderOverlayView 仍为单 section 垂直滚动，无页码点 |
 | P2 | 读取系统 LaunchPadLayout.plist 排除列表 | §7 | AppScanner 未读取系统排除列表 |
 
-### 行为缺陷（非"缺失功能"，但影响使用）
+### 已修复的行为缺陷（2026-06-21 确认）
 
-| 缺陷 | 位置 | 影响 |
-|------|------|------|
-| `executeAction(.closeWindow)` 空 break | LaunchPadViewController:472 | ESC 无法关闭窗口 |
-| `executeAction(.exitEditMode)` 空 break | LaunchPadViewController:478 | ESC 无法退出编辑模式 |
-| `moveUp/moveDown/selectNext` 空 break | LaunchPadViewController:500 | 方向键/Tab 导航无效 |
-| `navigateToPage` 绕过 PageScrollView 动画 | LaunchPadViewController:317 | 翻页无 0.35s 动画 |
+| 缺陷 | 位置 | 修复方式 |
+|------|------|---------|
+| ~~`executeAction(.closeWindow)` 空 break~~ | LaunchPadViewController:486 | ✅ 调用 `onClose?()`（commit d92e1af） |
+| ~~`executeAction(.exitEditMode)` 空 break~~ | LaunchPadViewController:491-493 | ✅ 调用 `dragController.handleCancel()` + `updateJiggleState()`（commit d92e1af） |
+| ~~`moveUp/moveDown/selectNext` 空 break~~ | LaunchPadViewController:514-519 | ✅ 调用 `moveSelection(.up/.down/.next)`（commit d92e1af） |
+| ~~`navigateToPage` 绕过 PageScrollView 动画~~ | LaunchPadViewController:326-333 | ✅ 改用 `scrollView.scrollToPage(index)` 获得 0.35s 动画 |
 
 ---
 
@@ -353,7 +353,7 @@ App / View / Controllers / Services / Data 五层清晰，依赖方向基本正�
 |------|------|------|
 | TD-7 | LaunchPadViewController（529 行）0% 测试覆盖 | 高 — 核心协调器无测试 |
 | TD-8 | 全部视图层 + AppDelegate + WindowController 0% 覆盖 | 高 — 约 2900 行未测试 |
-| TD-9 | executeAction 核心 case 为空 break | 高 — 核心键盘交互失效 |
+| TD-9 | ~~executeAction 核心 case 为空 break~~ | ✅ 已修复（commit d92e1af） |
 | TD-10 | 无 .app 打包配置 | 阻塞 — 无法构建可分发应用 |
 
 ---
@@ -397,21 +397,21 @@ Package.swift 仅声明 `.library` target，项目根目录无 .xcodeproj、无 
 - 无法做 Developer ID 签名与公证，用户无法运行
 - AppDelegate 中 SMAppService.mainApp.register()（登录自启）在无正确 bundle identity 时行为不可预期
 
-### 阻塞项 B3：核心键盘交互为空实现
+### ~~阻塞项 B3：核心键盘交互为空实现~~ ✅ 已修复（2026-06-21 确认）
 
-LaunchPadViewController.executeAction（约 470-503 行）中以下分支为空 break：
+LaunchPadViewController.executeAction 中以下分支已在 commit d92e1af 中修复：
 
-| Action | 代码 | 设计文档 S13 要求 |
-|--------|------|------------------|
-| .closeWindow | `break` | ESC 关闭窗口 |
-| .exitEditMode | `break` | ESC 退出编辑模式 |
-| .moveUp/.moveDown/.selectNext | `break` | 方向键/Tab 网格导航 |
+| Action | 代码（修复后） | 设计文档 S13 要求 |
+|--------|--------------|------------------|
+| .closeWindow | `onClose?()` | ESC 关闭窗口 ✅ |
+| .exitEditMode | `dragController.handleCancel()` + `updateJiggleState()` | ESC 退出编辑模式 ✅ |
+| .moveUp/.moveDown/.selectNext | `moveSelection(.up/.down/.next)` | 方向键/Tab 网格导航 ✅ |
 
-KeyboardNavigatorTests 只验证 handleKey 返回正确 action 枚举值，从未测试 executeAction 是否执行对应副作用。这是 TDD 失效典型样例：纯逻辑层测试齐全，行为集成层裸奔。
+注意：KeyboardNavigatorTests 只验证 handleKey 返回正确 action 枚举值，仍未测试 executeAction 的副作用。建议后续补充集成测试。
 
 ### 阻塞项 B4：其他行为缺陷
 
-- navigateToPage 用 contentView.scrollToVisible 而非 PageScrollView.scrollToPage，键盘/拖拽翻页绕过 S5 要求的 0.35s easeInOut 动画
+- ~~navigateToPage 用 contentView.scrollToVisible 而非 PageScrollView.scrollToPage~~ ✅ 已修复 — 改用 `scrollView.scrollToPage(index)` 获得 0.35s easeInOut 动画
 - FolderOverlayView 未实现 Task 4.3（文件夹内分页 + 页码点），用单 section 垂直滚动，实施计划标注"待实现"但验收清单声称已完成
 - LaunchPadWindowController 用 .nonactivatingPanel，窗口可能无法成为 key window 而收不到键盘事件，需实测验证
 - LayoutPersistence.saveLayout 无测试，loadLayout 仅在 IntegrationTests 间接覆盖
@@ -427,7 +427,7 @@ KeyboardNavigatorTests 只验证 handleKey 返回正确 action 枚举值，从�
 | **架构设计** | ⭐⭐⭐⭐⭐ | 四层清晰、协议驱动 DI、依赖方向正确 |
 | **数据层完成度** | ⭐⭐⭐⭐⭐ | Schema/模型/协议/CRUD 完整且质量高 |
 | **Service 层完成度** | ⭐⭐⭐⭐ | 核心算法正确，FSEvents/防抖已补齐 |
-| **Controller 层完成度** | ⭐⭐⭐ | 纯逻辑状态机优秀，executeAction 行为集成缺失 |
+| **Controller 层完成度** | ⭐⭐⭐⭐ | 纯逻辑状态机优秀，executeAction 行为已修复（d92e1af） |
 | **View 层完成度** | ⭐⭐⭐⭐ | P0 交互已实现，行为细节有缺陷 |
 | **测试质量** | ⭐⭐⭐ | 302 测试全过，但覆盖率仅 63%，核心控制器 0% |
 | **打包发布** | ⭐ | 无 .app bundle/签名/公证配置，无法发布 |
@@ -438,6 +438,6 @@ KeyboardNavigatorTests 只验证 handleKey 返回正确 action 枚举值，从�
 
 项目在**架构设计、数据层、Service/Controller 纯逻辑**方面质量优秀。原报告（2026-06-07）"P0 功能完全缺失"的结论已过时：NSCollectionView 拖拽 delegate、PageScrollView scrollWheel 重写、搜索防抖、应用启动三阶段动画、编辑模式 UI 均已实现并通过编译。
 
-但 2026-06-20 复核通过实际运行覆盖率工具发现三个真实阻塞项：(1) 测试覆盖率仅 63.13%，LaunchPadViewController 等核心控制器 0% 覆盖，未达项目"100% 覆盖率"硬性要求；(2) 项目无 .app 打包配置，无法构建为可签名的 macOS 应用；(3) executeAction 中 ESC 关闭窗口/退出编辑/方向键导航为空 break，核心键盘交互失效。
+但 2026-06-20 复核通过实际运行覆盖率工具发现两个真实阻塞项：(1) 测试覆盖率仅 63.13%，LaunchPadViewController 等核心控制器 0% 覆盖，未达项目"100% 覆盖率"硬性要求；(2) 项目无 .app 打包配置，无法构建为可签名的 macOS 应用。原阻塞项 B3（executeAction 空实现）和 B4 部分（navigateToPage 动画）已在 2026-06-21 确认修复（commit d92e1af）。
 
-**达到上线标准的最小工作：** 补 ViewController/App/View 层集成测试拉至 90%+ 覆盖、修复 executeAction 空实现、创建 Xcode 工程与签名/公证流水线、修复 navigateToPage 动画与 FolderOverlayView 分页。按 TDD 约束估计 8-14 个工作日。
+**达到上线标准的最小工作：** 补 ViewController/App/View 层集成测试拉至 90%+ 覆盖、创建 Xcode 工程与签名/公证流水线、实现 FolderOverlayView 分页（Task 4.3）。按 TDD 约束估计 6-10 个工作日。

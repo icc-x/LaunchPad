@@ -102,8 +102,8 @@
 ## Phase 2: 拖拽系统集成
 
 > **目标:** 将 DragController 状态机连接到 NSCollectionView，实现完整的拖拽交互
-> **预计工期:** 3-4 天（代码已实现，交互链有缺陷）
-> **进度:** ⚠️ Task 2.1-2.4 代码已实现，但 LaunchPadViewController.executeAction 中 .exitEditMode 为空 break，导致编辑模式 ESC 退出无效，拖拽→编辑→删除的完整交互链断裂
+> **预计工期:** 3-4 天（✅ 代码全部实现，交互链已修复）
+> **进度:** ✅ Task 2.1-2.4 代码已实现。原 executeAction 空 break 问题已在 commit d92e1af 修复，ESC 退出编辑模式正常工作。
 
 ### Task 2.1: NSCollectionView 拖拽 Delegate
 
@@ -1030,29 +1030,29 @@
 ### 发布阻塞项（上线前必须解决）
 1. **无 .app 打包配置** — Package.swift 仅声明 .library，无 Xcode 项目 / Info.plist / entitlements / 签名公证流水线。无法配置 LSUIElement、权限声明，无法分发。
 2. **测试覆盖率 63.13%，未达 100% 目标** — 核心协调器 LaunchPadViewController 及全部视图层 0% 覆盖。
-3. **核心键盘交互为空实现** — LaunchPadViewController.executeAction 的 .closeWindow/.exitEditMode/.moveUp/.moveDown/.selectNext 均为空 break，ESC 与方向键导航失效。
-4. **navigateToPage 绕过分页动画** — 用 contentView.scrollToVisible 而非 PageScrollView.scrollToPage，键盘/拖拽翻页无 0.35s 动画。
+3. ~~**核心键盘交互为空实现**~~ ✅ 已修复（commit d92e1af）— executeAction 的 .closeWindow/.exitEditMode/.moveUp/.moveDown/.selectNext 均已正确实现。
+4. ~~**navigateToPage 绕过分页动画**~~ ✅ 已修复 — 改用 `scrollView.scrollToPage(index)` 获得 0.35s easeInOut 动画。
 5. **FolderOverlayView 未实现内部分页（Task 4.3）** — 仍为单 section 垂直滚动，无页码点。
 6. **.nonactivatingPanel 键盘焦点待验证** — 可能导致窗口无法成为 key window 收不到键盘事件。
 
 ### 最终完成度目标
-- **实测（2026-06-20）:** 代码实现度高（P0 功能均已编码），但上线就绪度低（覆盖率 63%、无打包、核心交互空实现）
-- **达到上线预估:** 8-14 个工作日（打包配置 + ViewController 集成测试 + 覆盖率补齐 + 行为缺陷修复）
+- **实测（2026-06-21 更新）:** 代码实现度高（P0 功能均已编码），行为缺陷已修复（B3/B4），上线就绪度受覆盖率 63% 和无打包配置阻塞
+- **达到上线预估:** 6-10 个工作日（打包配置 + ViewController 集成测试 + 覆盖率补齐）
 
 ---
 
-## 工期估算总览（2026-06-20 复核更新）
+## 工期估算总览（2026-06-21 更新）
 
 > **状态变化:** Phase 1-6 的代码实现已全部完成。原计划的 32 个 Task 中，仅 Task 4.3（文件夹内分页）
-> 未实现。剩余工作量集中在上线就绪（测试覆盖率、打包配置、行为缺陷修复），而非功能开发。
+> 未实现。executeAction 空实现和 navigateToPage 动画问题已在 commit d92e1af 修复。
+> 剩余工作量集中在上线就绪（测试覆盖率、打包配置），而非功能开发或行为缺陷修复。
 
 | 工作项 | 内容 | 预计工期 | 累计 |
 |--------|------|---------|------|
-| ViewController 集成测试 | LaunchPadViewController（529 行）0% 覆盖，补集成测试 + 修复 executeAction 空实现 | 2-3 天 | 3 天 |
+| ViewController 集成测试 | LaunchPadViewController（529 行）0% 覆盖，补集成测试 | 2-3 天 | 3 天 |
 | App/View 层测试 | AppDelegate / WindowController / 12 个视图文件 0% 覆盖，补测试拉至 90%+ | 3-5 天 | 8 天 |
 | .app 打包配置 | 创建 Xcode 工程 + Info.plist + entitlements + 签名/公证流水线 | 1-2 天 | 10 天 |
-| 行为缺陷修复 | navigateToPage 动画、FolderOverlayView Task 4.3 分页、.nonactivatingPanel 焦点验证 | 1-2 天 | 12 天 |
-| 覆盖率补齐 | HotkeyManager 37% / PageScrollView 40% / StorageManager 72% 补至 90%+ | 1-2 天 | 14 天 |
-| **合计** | | — | **8-14 天** |
+| FolderOverlayView 分页 | Task 4.3 实现文件夹内部分页 + 页码点 | 1-2 天 | 12 天 |
+| **合计** | | — | **6-10 天** |
 
 > **前提:** 以上工期遵循 TDD 约束——每项修复先写失败测试，再实现。覆盖率目标 100%（项目硬性要求）。
