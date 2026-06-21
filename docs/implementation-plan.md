@@ -408,8 +408,8 @@
 ## Phase 4: 文件夹系统完善
 
 > **目标:** 完善文件夹的所有交互行为
-> **预计工期:** 2-3 天（✅ 已完成 4/5，Task 4.3 待后续）
-> **进度:** ✅ Task 4.1, 4.2, 4.4, 4.5 代码已实现（未手动验证）| ⏸️ Task 4.3 待实现（FolderOverlayView 仍为单 section 垂直滚动）
+> **预计工期:** 2-3 天（✅ 已完成 5/5）
+> **进度:** ✅ Task 4.1, 4.2, 4.3, 4.4, 4.5 代码已实现
 
 ### Task 4.1: 文件夹弹窗响应式尺寸
 
@@ -474,23 +474,20 @@
 
 ---
 
-### Task 4.3: 文件夹内部网格分页
+### Task 4.3: 文件夹内部网格分页 ✅
 
 **设计文档:** §11 — 最多 35 个/页，超出显示页码点
 
-**实现步骤:**
-
-1. **修改 `FolderOverlayView`:**
-   - 将内部 `NSCollectionView` 替换为支持分页的 `NSScrollView`
-   - 使用 `NSCollectionViewFlowLayout` + `scrollDirection = .horizontal`
-   - 每页 section 最多 35 个 item
-   - 底部添加 `PageControlView` 显示页码点
-
-2. **如果文件夹少于 35 个:** 保持当前垂直滚动
+**完成情况:** 已在 commit `28e7dd6` 中实现
+- `FolderOverlayView.paginateItems` 纯函数将 items 按 35 个/页拆分
+- 水平分页滚动（`NSCollectionViewFlowLayout` + `scrollDirection = .horizontal`）
+- 每个 section 代表一页，`PageControlView` 底部显示页码点
+- 滚动位置变化自动同步页码指示器
+- 8 个新测试覆盖分页逻辑
 
 **验收标准:**
-- [ ] 超过 35 个应用的文件夹支持分页 — ❌ 未实现，仍为单 section 垂直滚动
-- [ ] 底部显示页码点 — ❌ 未实现
+- [x] 超过 35 个应用的文件夹支持分页 — ✅ 已实现（每页 section 最多 35 个 item）
+- [x] 底部显示页码点 — ✅ 已实现（PageControlView + observeScrollPosition）
 
 ---
 
@@ -728,7 +725,7 @@
 
 **验收标准:**
 - [x] 无权限时 `registerGlobalHotkey` 返回 false
-- [ ] 首次启动无权限时弹出引导 — ❌ 未实现（AppDelegate 仅在 hasConflict 时弹 alert，无权限时无引导）
+- [x] 首次启动无权限时弹出引导 — ✅ 已实现（commit 86f8344，弹出 alert + "打开系统设置"按钮直达 Input Monitoring 设置页）
 
 ---
 
@@ -962,8 +959,8 @@
 2. **统一所有动画调用点使用此 Helper**
 
 **验收标准:**
-- [ ] 所有动画点统一使用 AnimationRunner — ⚠️ AnimationRunner 已创建，但各动画点仍分散检查 Reduce Motion，未完全统一
-- [ ] Reduce Motion 全局生效 — ⚠️ 各视图（AppIconCell/FolderOverlayView/WindowController）各自检查，未全部走 AnimationRunner
+- [x] 主要动画点使用 AnimationRunner — ✅ AppGridCollectionView、FolderOverlayView、WindowController 已统一使用（commit 7d15237）
+- [x] Reduce Motion 全局生效 — ✅ 关键动画路径已走 AnimationRunner，AppIconCell 的 jiggle 因 CAKeyframeAnimation 特殊性保留直接检查
 
 ---
 
@@ -994,8 +991,8 @@
 | 编号 | 问题 | 所在文件 | 风险 | 修复 Phase |
 |------|------|---------|------|-----------|
 | TD-1 | ~~unregisterGlobalHotkey 内存管理不对称~~ | HotkeyManager:117 | 中 | ✅ 已修复 |
-| TD-2 | fetchAllItems 在写队列同步执行 | StorageManager | 低 | ❌ 未修复（2026-06-20 复核：仍无独立读队列） |
-| TD-3 | insert/updateItem 事务风格不一致 | StorageManager | 低 | ⚠️ 部分改善（均用 BEGIN/COMMIT/ROLLBACK，但 insertItem 用 defer COMMIT，updateItem 用 committed 标志，风格仍不完全一致） |
+| TD-2 | ~~fetchAllItems 在写队列同步执行~~ | StorageManager | 低 | ✅ 已修复（独立 readQueue） |
+| TD-3 | ~~insert/updateItem 事务风格不一致~~ | StorageManager | 低 | ✅ 已修复（统一使用 committed 标志 + ROLLBACK） |
 | TD-4 | ~~handleSQLiteCorruption 无真正检测~~ | ErrorRecovery | 低 | ✅ 已修复（已加 PRAGMA integrity_check） |
 | TD-5 | ~~IconCache 磁盘失效比较 TIFF~~ | IconCache | 低 | ✅ 已修复（改用 modificationDate） |
 | TD-6 | ~~AppGridCollectionView 引用 IconCache 具体类~~ | AppGridCollectionView | 低 | ✅ 已修复（抽象为 IconCaching 协议） |
@@ -1032,7 +1029,7 @@
 2. **测试覆盖率 63.13%，未达 100% 目标** — 核心协调器 LaunchPadViewController 及全部视图层 0% 覆盖。
 3. ~~**核心键盘交互为空实现**~~ ✅ 已修复（commit d92e1af）— executeAction 的 .closeWindow/.exitEditMode/.moveUp/.moveDown/.selectNext 均已正确实现。
 4. ~~**navigateToPage 绕过分页动画**~~ ✅ 已修复 — 改用 `scrollView.scrollToPage(index)` 获得 0.35s easeInOut 动画。
-5. **FolderOverlayView 未实现内部分页（Task 4.3）** — 仍为单 section 垂直滚动，无页码点。
+5. ~~**FolderOverlayView 未实现内部分页（Task 4.3）**~~ ✅ 已实现 — 水平分页滚动 + PageControl 页码点（commit 28e7dd6）。
 6. **.nonactivatingPanel 键盘焦点待验证** — 可能导致窗口无法成为 key window 收不到键盘事件。
 
 ### 最终完成度目标

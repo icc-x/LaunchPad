@@ -240,7 +240,7 @@ idle/search/edit 三态、8 种按键映射、ESC 二级行为。覆盖率 100%�
 | `AppGridFlowLayout.swift` | 90% | 0% | 垂直居中 + snap-to-page |
 | `AppIconCell.swift` | 95% | 0% | 图标尺寸自适应（iconSize 参数）+ 抖动 + ✕删除按钮 + 运行指示器 + Increase Contrast |
 | `FolderCell.swift` | 95% | 0% | 毛玻璃背景 + 3×3 预览 + 双击编辑名称 + Reduce Transparency 回退 |
-| `FolderOverlayView.swift` | 75% | 0% | 毛玻璃面板 + 响应式尺寸 + scale 弹出动画 + 点击外部关闭。**未实现内部网格分页（Task 4.3）** |
+| `FolderOverlayView.swift` | 90% | 0% | 毛玻璃面板 + 响应式尺寸 + scale 弹出动画 + 点击外部关闭 + **内部网格分页（Task 4.3 已实现）** |
 | `SearchBar.swift` | 80% | 0% | NSSearchField + 显示隐藏。防抖由 SearchDebouncer 在 ViewController 层实现 |
 | `PageControl.swift` | 90% | 0% | 圆点指示器 + 点击跳转 + PageControlViewModel |
 | `PageScrollView.swift` | 70% | 40.14% | scrollWheel 重写 + targetPage 纯函数 + scrollToPage 动画。scrollWheel/scrollToPage 路径未测试 |
@@ -297,7 +297,7 @@ App / View / Controllers / Services / Data 五层清晰，依赖方向基本正�
 
 | 优先级 | 缺失项 | 设计文档章节 | 说明 |
 |--------|--------|------------|------|
-| P1 | 文件夹内部网格分页（Task 4.3） | §11 | FolderOverlayView 仍为单 section 垂直滚动，无页码点 |
+| P1 | ~~文件夹内部网格分页（Task 4.3）~~ | §11 | ✅ 已实现（commit 28e7dd6）— 水平分页 + 页码点 |
 | P2 | 读取系统 LaunchPadLayout.plist 排除列表 | §7 | AppScanner 未读取系统排除列表 |
 
 ### 已修复的行为缺陷（2026-06-21 确认）
@@ -341,8 +341,8 @@ App / View / Controllers / Services / Data 五层清晰，依赖方向基本正�
 | 编号 | 问题 | 状态 | 说明 |
 |------|------|------|------|
 | TD-1 | HotkeyManager unregister 内存管理不对称 | ✅ 已修复 | 已用类级 retained 引用对称管理 |
-| TD-2 | fetchAllItems 在写队列同步执行 | ❌ 未修复 | 仍阻塞写队列 |
-| TD-3 | insert/updateItem 事务风格不一致 | ⚠️ 部分改善 | 均用 BEGIN/COMMIT/ROLLBACK，但 insertItem 用 defer COMMIT、updateItem 用 committed 标志，风格仍不完全一致 |
+| TD-2 | ~~fetchAllItems 在写队列同步执行~~ | ✅ 已修复 | 已添加独立 readQueue（b055956） |
+| TD-3 | ~~insert/updateItem 事务风格不一致~~ | ✅ 已修复 | 统一使用 committed 标志 + ROLLBACK（b055956） |
 | TD-4 | handleSQLiteCorruption 无真正检测 | ✅ 已修复 | 已加 PRAGMA integrity_check |
 | TD-5 | IconCache 磁盘失效比较 TIFF | ✅ 已修复 | 已改为比较 modificationDate |
 | TD-6 | AppGridCollectionView 引用 IconCache 具体类 | ✅ 已修复 | 已抽象为 IconCaching 协议 |
