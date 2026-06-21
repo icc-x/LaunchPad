@@ -325,9 +325,9 @@ public class LaunchPadViewController: NSViewController {
 
     private func navigateToPage(_ index: Int) {
         guard index >= 0 && index < allPages.count else { return }
-        let pageWidth = scrollView.bounds.width
-        let targetX = CGFloat(index) * pageWidth
-        scrollView.contentView.scrollToVisible(NSRect(x: targetX, y: 0, width: pageWidth, height: 1))
+        // 使用 PageScrollView.scrollToPage 获得 0.35s easeInOut 翻页动画，
+        // 而非 contentView.scrollToVisible（无动画的瞬时跳转）。
+        scrollView.scrollToPage(index)
         pageControlViewModel.currentPage = index
         pageControl.update()
     }
@@ -485,6 +485,7 @@ public class LaunchPadViewController: NSViewController {
         case .closeWindow:
             onClose?()
         case .clearSearch:
+            guard isViewLoaded else { return }
             searchBar.hide()
             searchDebouncer.cancelPending()
             handleSearch(query: "")
@@ -492,12 +493,15 @@ public class LaunchPadViewController: NSViewController {
             dragController.handleCancel()
             updateJiggleState()
         case .enterSearchMode:
+            guard isViewLoaded else { return }
             searchBar.show()
         case .appendToQuery(let char):
+            guard isViewLoaded else { return }
             searchBar.show()
             searchBar.stringValue += String(char)
             searchDebouncer.search(query: searchBar.stringValue)
         case .deleteLastCharacter:
+            guard isViewLoaded else { return }
             if !searchBar.stringValue.isEmpty {
                 searchBar.stringValue.removeLast()
                 // Backspace: 查询变短，debouncer 内部会立即触发
@@ -508,6 +512,7 @@ public class LaunchPadViewController: NSViewController {
         case .previousPage:
             handlePageChange(.backward)
         case .launchSelected, .launchFirstMatch:
+            guard isViewLoaded else { return }
             if let firstItem = collectionView.diffableDataSource.itemIdentifier(for: IndexPath(item: 0, section: 0)) {
                 handleItemSelection(firstItem)
             }

@@ -34,7 +34,7 @@ public class FolderOverlayView: NSView {
     // MARK: - Page Splitting (pure function, testable)
 
     /// 将 items 按 pageSize 拆分为多页
-    public static func paginateItems(_ items: [PageItem], pageSize: Int) -> [[PageItem]] {
+    nonisolated public static func paginateItems(_ items: [PageItem], pageSize: Int) -> [[PageItem]] {
         guard !items.isEmpty, pageSize > 0 else { return [] }
         return stride(from: 0, to: items.count, by: pageSize).map { start in
             Array(items[start..<min(start + pageSize, items.count)])
