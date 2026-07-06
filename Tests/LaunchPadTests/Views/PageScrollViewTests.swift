@@ -4,6 +4,7 @@ import AppKit
 @testable import LaunchPad
 
 @Suite("PageScrollView target page calculation")
+@MainActor
 struct PageScrollViewTests {
 
     // MARK: - Helper

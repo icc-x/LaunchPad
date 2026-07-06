@@ -22,6 +22,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     // MARK: - Event monitors
 
     private var eventTap: CFMachPort?
+    private var runLoopSource: CFRunLoopSource?
     private var localMonitor: Any?
 
     // MARK: - Class-level strong reference with lock protection
@@ -115,8 +116,9 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
             return false
         }
 
-        let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        runLoopSource = source
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
         return true
@@ -125,9 +127,13 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     public func unregisterGlobalHotkey() {
         if let tap = eventTap {
             CGEvent.tapEnable(tap: tap, enable: false)
-            // Remove from run loop before releasing the strong reference
-            let runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            // Reuse the source created in registerGlobalHotkey — creating a new one here
+            // would be a different instance and CFRunLoopRemoveSource would be a no-op,
+            // leaking the original source on the run loop.
+            if let source = runLoopSource {
+                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
+                runLoopSource = nil
+            }
             eventTap = nil
         }
         // The retain from passRetained(self) is balanced by clearing the class-level

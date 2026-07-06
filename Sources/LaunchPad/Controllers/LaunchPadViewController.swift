@@ -202,6 +202,11 @@ public class LaunchPadViewController: NSViewController {
             self?.handleCreateGroup(targetId: targetId)
         }
 
+        // 文件夹重命名：连接 FolderCell.onRenamed → FolderController.renameFolder
+        collectionView.onFolderRenamed = { [weak self] item, newTitle in
+            self?.handleFolderRename(item: item, newTitle: newTitle)
+        }
+
         // Folder overlay
         folderOverlay.onAppSelected = { [weak self] item in
             self?.handleItemSelection(item)
@@ -454,6 +459,15 @@ public class LaunchPadViewController: NSViewController {
             } catch {
                 NSLog("[LaunchPadViewController] Failed to create folder: \(error)")
             }
+        }
+    }
+
+    private func handleFolderRename(item: PageItem, newTitle: String) {
+        do {
+            try folderController.renameFolder(item: item, newTitle: newTitle)
+            loadData()
+        } catch {
+            NSLog("[LaunchPadViewController] Failed to rename folder: \(error)")
         }
     }
 
