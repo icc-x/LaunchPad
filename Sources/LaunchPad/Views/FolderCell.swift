@@ -9,14 +9,17 @@ public class FolderCell: NSCollectionViewItem {
 
     static let identifier = NSUserInterfaceItemIdentifier("FolderCell")
 
-    private let titleLabel = NSTextField(labelWithString: "")
+    let titleLabel = NSTextField(labelWithString: "")
     private let thumbnailGrid = NSView()
     private var thumbnailImageViews: [NSImageView] = []
-    private let containerView = NSView()
-    private let frostedBackground = NSVisualEffectView()
+    let containerView = NSView()
+    let frostedBackground = NSVisualEffectView()
 
     /// 文件夹重命名回调
     public var onRenamed: ((String) -> Void)?
+
+    /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduceTransparency 回退分支。
+    internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
 
     private static let gridSize = 3
     private static let thumbnailSize: CGFloat = 20
@@ -67,6 +70,8 @@ public class FolderCell: NSCollectionViewItem {
             titleLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -2),
             titleLabel.bottomAnchor.constraint(lessThanOrEqualTo: containerView.bottomAnchor, constant: -2),
         ])
+
+        containerView.wantsLayer = true
 
         titleLabel.font = NSFont.systemFont(ofSize: 11)
         titleLabel.alignment = .center
@@ -124,11 +129,21 @@ public class FolderCell: NSCollectionViewItem {
         view.setAccessibilityLabel(title)
 
         // Reduce Transparency 回退
-        let settings = AccessibilitySettings.current()
+        let settings = accessibilitySettingsProvider()
         if settings.reduceTransparency {
             frostedBackground.material = .menu
             frostedBackground.state = .inactive
             frostedBackground.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
+        }
+
+        // Increase Contrast: 边框 + 加粗文字
+        if settings.increaseContrast {
+            containerView.layer?.borderWidth = 1
+            containerView.layer?.borderColor = NSColor.labelColor.cgColor
+            titleLabel.font = NSFont.systemFont(ofSize: 11, weight: .semibold)
+        } else {
+            containerView.layer?.borderWidth = 0
+            titleLabel.font = NSFont.systemFont(ofSize: 11)
         }
 
         for (index, imageView) in thumbnailImageViews.enumerated() {

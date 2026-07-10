@@ -50,7 +50,7 @@ public final class DragController: @unchecked Sendable {
     private let itemWriter: ItemWriting?
     private let scheduler: Scheduler
     private var pressStartPoint: CGPoint = .zero
-    private var currentPoint: CGPoint = .zero
+    var currentPoint: CGPoint = .zero
     private var lastHoverLocation: HoverLocation = .empty
 
     // MARK: - 初始化

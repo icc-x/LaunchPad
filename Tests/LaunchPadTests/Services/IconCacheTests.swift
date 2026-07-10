@@ -205,5 +205,144 @@ struct IconCacheTests {
         let result = sut.icon(forItemId: 1, path: path)
         #expect(result.size.width > 0)
     }
+
+    // MARK: - disk hit + modification cache 命中（覆盖 isStillValid 的 current==cached 分支）
+
+    @Test("Memory evicted 后 disk hit + modCache 命中 -> isStillValid by date equality")
+    func memoryEvicted_diskHit_modCacheHit_validatesByDate() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        // memoryLimit=1：存第二个 path 时第一个被 evict，但 modificationCache（Dictionary）保留
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 1)
+
+        let image = makeTestImage()
+        let pngData = makePNGData(image)
+        let path1 = "/app1"
+        let path2 = "/app2"
+        let fixedDate = Date(timeIntervalSince1970: 5000)
+        provider.icons[path1] = image
+        provider.icons[path2] = image
+        provider.modificationDates[path1] = fixedDate
+        provider.modificationDates[path2] = Date(timeIntervalSince1970: 6000)
+
+        // 预设 disk 数据，确保后续 disk hit（绕过 storeToDisk 在 headless 环境的不确定性）
+        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+        store.stored[2] = (icon1x: pngData, icon2x: pngData)
+
+        // 1. icon(path1): memory miss -> disk hit -> cachedModDate nil -> 比较 live -> isStillValid false -> live -> 存 memory(path1) + modCache(path1)
+        _ = sut.icon(forItemId: 1, path: path1)
+        // 2. icon(path2): memory miss -> disk hit -> live -> 存 memory(path2, evict path1) + modCache(path2)
+        _ = sut.icon(forItemId: 2, path: path2)
+        // 3. icon(path1): memory miss (evicted) -> disk hit -> modCache 命中 -> current==cached -> isStillValid true
+        let result = sut.icon(forItemId: 1, path: path1)
+        #expect(result.size.width > 0)
+    }
+
+    @Test("Disk hit + currentModDate 非 nil 但 modCache 未命中 -> 比较 live icon")
+    func diskHit_currentModDateSet_modCacheMiss_comparesLive() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
+
+        // 预设 disk 数据 + provider 返回 modDate，但不先触发 live 存 modCache
+        let image = makeTestImage()
+        let path = "/app"
+        provider.icons[path] = image
+        provider.modificationDates[path] = Date()
+
+        // 直接预设 store 的 disk 数据（绕过 storeToDisk，使首次即 disk hit 且 modCache 为空）
+        let pngData = makePNGData(image)
+        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+
+        // 调用：memory miss -> disk hit -> currentModDate 非 nil -> cachedModDate nil -> 比较 live
+        let result = sut.icon(forItemId: 1, path: path)
+        #expect(result.size.width > 0)
+    }
+
+    // MARK: - storeToDisk PNG 编码失败分支
+
+    @Test("storeToDisk 1x PNG 编码失败 -> 不写入 disk")
+    func storeToDisk_1xPngEncodingFails_noWrite() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        // pngEncoder 总返回 nil，模拟 1x 编码失败
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500,
+                            pngEncoder: { _, _ in nil })
+
+        let image = makeTestImage()
+        let path = "/app"
+        provider.icons[path] = image
+
+        _ = sut.icon(forItemId: 1, path: path)
+
+        // 1x 编码失败，storeToDisk 提前 return，不写入 disk
+        #expect(store.stored[1] == nil)
+    }
+
+    @Test("storeToDisk 2x PNG 编码失败 -> 不写入 disk")
+    func storeToDisk_2xPngEncodingFails_noWrite() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let validPng = makePNGData(makeTestImage())
+        // 1x (128) 返回有效，2x (256) 返回 nil，模拟 2x 编码失败
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500,
+                            pngEncoder: { _, size in
+                                size.width == 128 ? validPng : nil
+                            })
+
+        let image = makeTestImage()
+        let path = "/app"
+        provider.icons[path] = image
+
+        _ = sut.icon(forItemId: 1, path: path)
+
+        // 2x 编码失败，storeToDisk 提前 return，不写入 disk
+        #expect(store.stored[1] == nil)
+    }
+
+    @Test("defaultPngEncoder size 为零 -> 安全返回 nil（覆盖 size guard 分支）")
+    @MainActor
+    func defaultPngEncoder_zeroSize_returnsNil() {
+        let image = makeTestImage()
+        // size 为零时 size guard 提前返回 nil，不触发 lockFocus（避免 precondition failure）
+        let result = IconCache.defaultPngEncoder(image, size: NSSize(width: 0, height: 0))
+        #expect(result == nil)
+    }
+
+    @Test("defaultPngEncoder tiffProvider 注入无效 Data -> rep 解析失败返回 nil（覆盖 tiff guard 分支）")
+    @MainActor
+    func defaultPngEncoder_invalidTiff_returnsNil() {
+        let image = makeTestImage()
+        // 注入无效 tiff Data，使 NSBitmapImageRep(data:) 返回 nil -> guard return nil
+        let result = IconCache.defaultPngEncoder(
+            image, size: NSSize(width: 64, height: 64),
+            tiffProvider: { _ in Data([0xFF, 0xD8, 0xFF]) }
+        )
+        #expect(result == nil)
+    }
+
+    @Test("clearMemoryCache 后 disk hit + modCache 命中 -> isStillValid by date equality")
+    func diskHit_afterClearMemory_modCacheHit_validatesByDate() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
+
+        let image = makeTestImage()
+        let pngData = makePNGData(image)
+        let path = "/app"
+        let fixedDate = Date(timeIntervalSince1970: 5000)
+        provider.icons[path] = image
+        provider.modificationDates[path] = fixedDate
+        // 预设 disk 数据
+        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+
+        // 1. 首次调用：disk hit + cachedModDate nil -> 比较 live -> isStillValid false -> live -> 存 modCache(path)
+        _ = sut.icon(forItemId: 1, path: path)
+        // 2. 清空 memory cache（modCache 保留）
+        sut.clearMemoryCache()
+        // 3. 再次调用：memory miss -> disk hit -> modCache 命中 -> current==cached -> isStillValid true
+        let result = sut.icon(forItemId: 1, path: path)
+        #expect(result.size.width > 0)
+    }
 }
 #endif

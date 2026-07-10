@@ -28,6 +28,10 @@ public class FolderOverlayView: NSView {
     private var childItems: [PageItem] = []
     private var pages: [[PageItem]] = []
     private var iconCache: IconCache?
+    /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduced 动画分支
+    internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
+    /// 测试注入：驱动 closeFolder 动画完成回调，确定性覆盖 isHidden/onClosed 分支。
+    internal var closeFolderCompletionRunner: (@escaping () -> Void) -> Void = { $0() }
     private var backgroundWidthConstraint: NSLayoutConstraint?
     private var backgroundHeightConstraint: NSLayoutConstraint?
 
@@ -133,6 +137,13 @@ public class FolderOverlayView: NSView {
 
         alphaValue = 0
         isHidden = true
+
+        closeFolderCompletionRunner = { [weak self] completion in
+            NSAnimationContext.runAnimationGroup({ ctx in
+                ctx.duration = AnimationConstants.folderCollapse.duration
+                self?.animator().alphaValue = 0
+            }, completionHandler: { completion() })
+        }
     }
 
     // MARK: - Open / Close
@@ -143,15 +154,13 @@ public class FolderOverlayView: NSView {
         self.pages = Self.paginateItems(childItems, pageSize: Self.maxItemsPerPage)
         titleLabel.stringValue = item.group?.title ?? "Folder"
 
-        // 响应式尺寸：60% 屏幕宽度，最大 70% 屏幕高度
-        if let screen = NSScreen.main {
-            let screenWidth = screen.frame.width
-            let screenHeight = screen.frame.height
-            let targetWidth = min(screenWidth * 0.6, 800)
-            let targetHeight = min(screenHeight * 0.7, 600)
-            backgroundWidthConstraint?.constant = targetWidth
-            backgroundHeightConstraint?.constant = targetHeight
-        }
+        // 响应式尺寸：基于 superview（多显示器正确），回退到 NSScreen.main
+        let viewWidth = superview?.bounds.width ?? NSScreen.main?.frame.width ?? 800
+        let viewHeight = superview?.bounds.height ?? NSScreen.main?.frame.height ?? 600
+        let targetWidth = min(viewWidth * 0.6, 800)
+        let targetHeight = min(viewHeight * 0.7, 600)
+        backgroundWidthConstraint?.constant = targetWidth
+        backgroundHeightConstraint?.constant = targetHeight
 
         // 配置页码控制
         pageControlViewModel.configure(totalPages: pages.count)
@@ -168,6 +177,7 @@ public class FolderOverlayView: NSView {
 
         // Scale 弹出动画（Task 4.2）— 使用 AnimationRunner 统一 Reduce Motion 处理
         AnimationRunner.animate(
+            settings: accessibilitySettingsProvider(),
             animation: AnimationConstants.folderExpand,
             normal: { [self] in
                 backgroundView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
@@ -191,15 +201,14 @@ public class FolderOverlayView: NSView {
     }
 
     public func closeFolder() {
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = AnimationConstants.folderCollapse.duration
-            self.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            self?.isHidden = true
-            self?.childItems = []
-            self?.pages = []
-            self?.onClosed?()
-        })
+        closeFolderCompletionRunner { [weak self] in
+            MainActor.assumeIsolated {
+                self?.isHidden = true
+                self?.childItems = []
+                self?.pages = []
+                self?.onClosed?()
+            }
+        }
     }
 
     // MARK: - Page Navigation
@@ -298,7 +307,9 @@ extension FolderOverlayView {
             object: scrollView.contentView,
             queue: .main
         ) { [weak self] _ in
-            self?.updatePageFromScrollPosition()
+            MainActor.assumeIsolated {
+                self?.updatePageFromScrollPosition()
+            }
         }
     }
 }

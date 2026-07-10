@@ -42,11 +42,15 @@ final class MockItemWriter: ItemWriting, @unchecked Sendable {
         return id
     }
 
+    var updateError: Error?
     func updateItem(_ item: PageItem) throws {
+        if let error = updateError { throw error }
         updatedItems.append(item)
     }
 
+    var deleteError: Error?
     func deleteItem(id: Int64) throws {
+        if let error = deleteError { throw error }
         deletedIds.append(id)
     }
 
@@ -88,8 +92,10 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var directoryContents: [URL] = []
     var bundleInfos: [URL: [String: any Sendable]] = [:]
     var existingFiles: Set<URL> = []
+    var shouldThrowOnContentsOfDirectory = false
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
+        if shouldThrowOnContentsOfDirectory { throw TestError.generic }
         return directoryContentsMap[url] ?? directoryContents
     }
 

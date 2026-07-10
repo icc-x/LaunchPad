@@ -256,6 +256,16 @@ struct DragControllerLongPressTests {
         #expect(controller.state == .dragging)
     }
 
+    @Test("长按定时器超阈值（currentPoint 注入）-> 进入 dragging（定时器路径）")
+    func longPressTimer_highMovement_entersDragging() {
+        let mockScheduler = MockScheduler()
+        let controller = DragController(scheduler: mockScheduler)
+        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        controller.currentPoint = CGPoint(x: 250, y: 100) // distance 150 > 10
+        mockScheduler.advance(by: 0.5)
+        #expect(controller.state == .dragging)
+    }
+
     @Test("Already jiggling state, long press callback does not re-trigger")
     func alreadyJiggling_longPressCallback_noop() {
         let mockScheduler = MockScheduler()
@@ -476,6 +486,21 @@ struct DragControllerDropTests {
         #expect(mockWriter.reorderedParentIds.count == 1)
         #expect(mockWriter.reorderedParentIds[0].parentId == 100)
         #expect(mockWriter.reorderedParentIds[0].orderedIds == [2, 3, 4, 1, 5])
+    }
+
+    @Test("drop 时 reorderItems 抛错 -> 回滚到原始顺序")
+    func drop_reorderThrows_rollsBack() {
+        let mockWriter = MockItemWriter()
+        mockWriter.reorderError = TestError.generic
+        let controller = DragController(itemWriter: mockWriter)
+        let original: [Int64] = [1, 2, 3, 4, 5]
+        controller.beginEditing(originalOrder: original, parentId: 100)
+        controller.handleLongPress(movementDistance: 5)
+        controller.handleDragStart()
+        controller.simulateReorder(from: 0, to: 3)
+        #expect(controller.currentOrder != original)
+        controller.handleDrop() // commitReorder -> reorderItems 抛错 -> rollbackReorder
+        #expect(controller.currentOrder == original)
     }
 
     @Test("drop returns to idle state")

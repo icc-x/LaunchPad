@@ -14,11 +14,11 @@ public class LaunchPadViewController: NSViewController {
 
     private var scrollView: PageScrollView!
     private var collectionView: AppGridCollectionView!
-    private var searchBar: SearchBar!
-    private var pageControl: PageControlView!
+    var searchBar: SearchBar!
+    var pageControl: PageControlView!
     private var emptyStateView: EmptyStateView!
-    private var folderOverlay: FolderOverlayView!
-    private let resultCountLabel = NSTextField(labelWithString: "")
+    var folderOverlay: FolderOverlayView!
+    let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
 
@@ -29,6 +29,28 @@ public class LaunchPadViewController: NSViewController {
     let dragController: DragController
     private let folderController: FolderController
     private let searchScheduler: Scheduler
+
+    // MARK: - Test injection points
+
+    /// 无障碍设置提供器（默认读取系统，测试可注入 reduceMotion）
+    var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
+
+    /// 启动动画 cell 视图解析器（默认从 collectionView 取，测试可注入以绕过真实布局）
+    var launchCellResolver: ((PageItem) -> NSView?)?
+
+    /// 启动动画调度器（默认走 DispatchQueue.main.asyncAfter，测试可注入为同步执行）
+    var launchAnimationScheduler: (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
+        DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
+    }
+
+    /// 抖动状态注入点：可见 cell 的 indexPath 列表（默认从 collectionView 取，测试注入以驱动循环体）
+    var visibleJiggleIndexPathsProvider: (() -> [IndexPath])?
+
+    /// 抖动状态注入点：指定 indexPath 对应的 AppIconCell（默认从 collectionView 取，测试注入覆盖 startJiggling/stopJiggling）
+    var jiggleCellProvider: ((IndexPath) -> AppIconCell?)?
+
+    /// 启动应用 URL 解析器（默认走 NSWorkspace，测试注入 fake URL 避免真实启动应用）
+    var bundleURLResolver: (String) -> URL? = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
 
     /// 窗口关闭回调 — 由 AppDelegate/WindowController 注入，ESC 关闭窗口时调用
     public var onClose: (() -> Void)?
@@ -67,7 +89,8 @@ public class LaunchPadViewController: NSViewController {
     }
 
     public required init?(coder: NSCoder) {
-        fatalError("init(coder:) not supported")
+        // 不支持 NSCoding，返回 nil（可测且不崩溃）替代 fatalError
+        return nil
     }
 
     // MARK: - View Lifecycle
@@ -224,7 +247,7 @@ public class LaunchPadViewController: NSViewController {
         collectionView.addGestureRecognizer(longPress)
     }
 
-    @objc private func handleLongPress(_ gesture: NSPressGestureRecognizer) {
+    @objc func handleLongPress(_ gesture: NSPressGestureRecognizer) {
         let location = gesture.location(in: collectionView)
 
         switch gesture.state {
@@ -248,22 +271,14 @@ public class LaunchPadViewController: NSViewController {
     }
 
     /// 根据 DragController 状态更新所有可见 cell 的抖动
-    private func updateJiggleState() {
+    func updateJiggleState() {
         // 同步键盘导航器模式（不依赖视图加载状态）
-        if dragController.state == .jiggling {
-            keyboardNavigator.mode = .edit
-        } else {
-            keyboardNavigator.mode = .idle
-        }
+        let jiggling = dragController.state == .jiggling
+        keyboardNavigator.mode = jiggling ? .edit : .idle
         guard isViewLoaded else { return }
-        let snapshot = collectionView.diffableDataSource.snapshot()
-        for indexPath in collectionView.indexPathsForVisibleItems() {
-            guard let cell = collectionView.item(at: indexPath) as? AppIconCell else { continue }
-            if dragController.state == .jiggling {
-                cell.startJiggling()
-            } else {
-                cell.stopJiggling()
-            }
+        for indexPath in visibleJiggleIndexPathsProvider?() ?? Array(collectionView.indexPathsForVisibleItems()) {
+            guard let cell = jiggleCellProvider?(indexPath) ?? (collectionView.item(at: indexPath) as? AppIconCell) else { continue }
+            if jiggling { cell.startJiggling() } else { cell.stopJiggling() }
         }
     }
 
@@ -287,11 +302,10 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Search
 
-    private func handleSearch(query: String) {
+    func handleSearch(query: String) {
         currentSearchQuery = query
 
         if query.isEmpty {
-            // 空查询：主线程快速处理
             emptyStateView.hide()
             resultCountLabel.isHidden = true
             let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
@@ -304,26 +318,33 @@ public class LaunchPadViewController: NSViewController {
             let capturedQuery = query
             let capturedSearchQuery = currentSearchQuery
             // 后台线程执行搜索，避免阻塞 UI
-            searchQueue.async { [searchEngine] in
-                let results = searchEngine.cachedSearch(items: allItems, query: capturedQuery)
-                DispatchQueue.main.async { [weak self] in
-                    guard let self else { return }
-                    // 仅当查询未过期时更新 UI
-                    guard self.currentSearchQuery == capturedSearchQuery else { return }
-                    if results.isEmpty {
-                        self.emptyStateView.show()
-                    } else {
-                        self.emptyStateView.hide()
-                    }
-                    self.pageControlViewModel.isSearchActive = true
-                    self.pageControl.update()
-                    // 显示结果计数
-                    self.resultCountLabel.stringValue = "\(results.count) results"
-                    self.resultCountLabel.isHidden = false
-                    self.collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: capturedQuery)
+            searchQueue.async { [searchEngine, weak self] in
+                let results = self?.executeSearch(items: allItems, query: capturedQuery) ?? []
+                DispatchQueue.main.async {
+                    self?.applySearchResults(results, query: capturedQuery, expectedQuery: capturedSearchQuery)
                 }
             }
         }
+    }
+
+    /// 在后台执行搜索（抽出便于同步测试，无需后台线程）
+    func executeSearch(items: [PageItem], query: String) -> [PageItem] {
+        searchEngine.cachedSearch(items: items, query: query)
+    }
+
+    /// 应用搜索结果到 UI（抽出便于同步测试，覆盖过期守卫与结果展示）
+    func applySearchResults(_ results: [PageItem], query: String, expectedQuery: String) {
+        guard currentSearchQuery == expectedQuery else { return }
+        if results.isEmpty {
+            emptyStateView.show()
+        } else {
+            emptyStateView.hide()
+        }
+        pageControlViewModel.isSearchActive = true
+        pageControl.update()
+        resultCountLabel.stringValue = "\(results.count) results"
+        resultCountLabel.isHidden = false
+        collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: query)
     }
 
     // MARK: - Navigation
@@ -350,7 +371,7 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Item Selection
 
-    private func handleItemSelection(_ item: PageItem) {
+    func handleItemSelection(_ item: PageItem) {
         switch item.type {
         case .app:
             if let bundleId = item.app?.bundleId {
@@ -365,7 +386,7 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Item Deletion (Edit Mode)
 
-    private func handleItemDelete(_ item: PageItem) {
+    func handleItemDelete(_ item: PageItem) {
         do {
             try storage.deleteItem(id: item.id)
             // 退出编辑模式
@@ -379,61 +400,91 @@ public class LaunchPadViewController: NSViewController {
     }
 
     /// 三阶段启动动画：高亮反馈 → 放大淡出 → 启动应用
-    private func animateAppLaunch(item: PageItem, bundleId: String) {
-        let settings = AccessibilitySettings.current()
+    func animateAppLaunch(item: PageItem, bundleId: String) {
+        let settings = accessibilitySettingsProvider()
 
-        // 找到对应的 cell
-        guard let indexPath = collectionView.diffableDataSource.indexPath(for: item),
-              let cell = collectionView.item(at: indexPath) else {
+        // Reduce Motion: 直接启动（先于 cell 查找，便于无布局测试）
+        if settings.reduceMotion {
+            launchApp(bundleId: bundleId)
+            return
+        }
+
+        // 找到对应的 cell 视图（注入优先，默认从 collectionView 解析；同行写法保证注入即覆盖）
+        guard let cellView = resolveLaunchCellView(for: item) else {
             // 找不到 cell，直接启动
             launchApp(bundleId: bundleId)
             return
         }
 
-        if settings.reduceMotion {
-            // Reduce Motion: 直接启动
-            launchApp(bundleId: bundleId)
-            return
-        }
-
-        let cellView = cell.view
         cellView.wantsLayer = true
-
-        // 阶段 1: 高亮反馈 scale 0.95→1.0 (0.1s)
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = 0.1
-            cellView.animator().alphaValue = 0.8
-        }, completionHandler: { [weak self] in
-            // 阶段 2: 放大淡出 scale→2.0 + alpha→0 (0.3s)
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = AnimationConstants.appLaunch.duration
-                cellView.animator().alphaValue = 0
-            })
-            let zoom = CABasicAnimation(keyPath: "transform.scale")
-            zoom.fromValue = 1.0
-            zoom.toValue = 2.0
-            zoom.duration = AnimationConstants.appLaunch.duration
-            zoom.isRemovedOnCompletion = false
-            zoom.fillMode = .forwards
-            cellView.layer?.add(zoom, forKey: "zoomOut")
-
-            // 阶段 3: 动画完成后启动应用
-            DispatchQueue.main.asyncAfter(deadline: .now() + AnimationConstants.appLaunch.duration) {
-                self?.launchApp(bundleId: bundleId)
-                // 恢复 cell 状态
-                cellView.layer?.removeAnimation(forKey: "zoomOut")
-                cellView.alphaValue = 1
-            }
-        })
+        performLaunchHighlight(cellView: cellView)
+        performLaunchZoom(cellView: cellView)
+        scheduleLaunchCompletion(cellView: cellView, bundleId: bundleId)
     }
 
-    private func launchApp(bundleId: String) {
-        guard let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleId) else { return }
+    /// 解析启动动画所需的 cell 视图：launchCellResolver 优先（无需 collectionView 已就绪，便于无布局测试），
+    /// 默认从 collectionView 解析（可选链保证 collectionView 未加载时不崩溃）
+    func resolveLaunchCellView(for item: PageItem) -> NSView? {
+        if let resolved = launchCellResolver?(item) { return resolved }
+        guard let indexPath = collectionView?.diffableDataSource?.indexPath(for: item) else { return nil }
+        return collectionView?.item(at: indexPath)?.view
+    }
+
+    /// 阶段 1: 高亮反馈 scale 0.95→1.0 + alpha 0.8 (0.1s)
+    func performLaunchHighlight(cellView: NSView) {
+        cellView.layer?.transform = CATransform3DMakeScale(0.95, 0.95, 1)
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = 0.1
+            cellView.animator().alphaValue = 0.8
+            let highlight = CABasicAnimation(keyPath: "transform.scale")
+            highlight.fromValue = 0.95
+            highlight.toValue = 1.0
+            highlight.duration = 0.1
+            cellView.layer?.add(highlight, forKey: "highlightScale")
+        }
+    }
+
+    /// 阶段 2: 放大淡出 scale→2.0 + alpha→0 (0.3s)
+    func performLaunchZoom(cellView: NSView) {
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = AnimationConstants.appLaunch.duration
+            cellView.animator().alphaValue = 0
+        }
+        let zoom = CABasicAnimation(keyPath: "transform.scale")
+        zoom.fromValue = 1.0
+        zoom.toValue = 2.0
+        zoom.duration = AnimationConstants.appLaunch.duration
+        zoom.isRemovedOnCompletion = false
+        zoom.fillMode = .forwards
+        cellView.layer?.add(zoom, forKey: "zoomOut")
+    }
+
+    /// 阶段 3: 动画完成后启动应用（经注入调度器，测试可同步执行）
+    func scheduleLaunchCompletion(cellView: NSView, bundleId: String) {
+        launchAnimationScheduler(AnimationConstants.appLaunch.duration) { [weak self] in
+            self?.completeLaunchAnimation(cellView: cellView, bundleId: bundleId)
+        }
+    }
+
+    /// 启动应用并恢复 cell 状态（抽出便于同步测试）
+    func completeLaunchAnimation(cellView: NSView, bundleId: String) {
+        launchApp(bundleId: bundleId)
+        cellView.layer?.removeAnimation(forKey: "zoomOut")
+        cellView.alphaValue = 1
+    }
+
+    func launchApp(bundleId: String) {
+        guard let url = bundleURLResolver(bundleId) else { return }
+        launchApplication(at: url)
+    }
+
+    /// 实际启动应用（抽出便于测试：传入任意 URL 即覆盖 NSWorkspace 调用行，无需真实可启动应用）
+    func launchApplication(at url: URL) {
         let config = NSWorkspace.OpenConfiguration()
         NSWorkspace.shared.openApplication(at: url, configuration: config)
     }
 
-    private func openFolder(_ folderItem: PageItem) {
+    func openFolder(_ folderItem: PageItem) {
         do {
             let children = try storage.fetchAllItems(parentId: folderItem.id)
                 .sorted { $0.ordering < $1.ordering }
@@ -443,7 +494,7 @@ public class LaunchPadViewController: NSViewController {
         }
     }
 
-    private func handleCreateGroup(targetId: Int64) {
+    func handleCreateGroup(targetId: Int64) {
         // Find the target item and create a folder
         guard let targetItem = findItem(byId: targetId) else { return }
 
@@ -462,7 +513,7 @@ public class LaunchPadViewController: NSViewController {
         }
     }
 
-    private func handleFolderRename(item: PageItem, newTitle: String) {
+    func handleFolderRename(item: PageItem, newTitle: String) {
         do {
             try folderController.renameFolder(item: item, newTitle: newTitle)
             loadData()

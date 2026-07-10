@@ -10,14 +10,21 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
     private let writeQueue = DispatchQueue(label: "com.launchpad.storage.write", qos: .utility)
     private let readQueue = DispatchQueue(label: "com.launchpad.storage.read", qos: .userInitiated)
 
-    public init(dbPath: String) throws {
+    public convenience init(dbPath: String) throws {
+        try self.init(dbPath: dbPath, schemaSetup: { Schema.setupSchema(db: $0) })
+    }
+
+    /// 测试用 init：可注入自定义 schema 设置闭包以触发各表的 prepare 失败分支
+    /// - 传 `{ _ in }` 跳过建表 -> 所有 prepare 失败（表不存在）
+    /// - 传只建 items 表的闭包 -> insertApp/insertGroup 的 prepare 失败
+    internal init(dbPath: String, schemaSetup: (OpaquePointer) -> Void) throws {
         if sqlite3_open(dbPath, &db) != SQLITE_OK {
             throw StorageError.openFailed
         }
         guard let db else { throw StorageError.openFailed }
         sqlite3_exec(db, "PRAGMA journal_mode=WAL", nil, nil, nil)
         sqlite3_exec(db, "PRAGMA foreign_keys=ON", nil, nil, nil)
-        Schema.setupSchema(db: db)
+        schemaSetup(db)
     }
 
     deinit {
@@ -266,10 +273,10 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
                 throw StorageError.prepareFailed
             }
             sqlite3_bind_int64(stmt, 1, itemId)
-            icon1x.withUnsafeBytes { ptr in
+            _ = icon1x.withUnsafeBytes { ptr in
                 sqlite3_bind_blob(stmt, 2, ptr.baseAddress, Int32(icon1x.count), nil)
             }
-            icon2x.withUnsafeBytes { ptr in
+            _ = icon2x.withUnsafeBytes { ptr in
                 sqlite3_bind_blob(stmt, 3, ptr.baseAddress, Int32(icon2x.count), nil)
             }
             guard sqlite3_step(stmt) == SQLITE_DONE else {

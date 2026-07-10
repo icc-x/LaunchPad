@@ -17,7 +17,11 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     private let iconProvider: IconProviding
     private let imageStore: ImageStoring
     private let memoryCache: NSCache<NSString, NSImage>
-    private let modificationCache: NSCache<NSString, NSDate>
+    // modification date 是小对象，用带锁 Dictionary 保证行为确定（NSCache 在测试环境会积极 evict，导致缓存命中分支不可测）
+    private var modificationDates: [String: Date] = [:]
+    private let modLock = NSLock()
+    /// PNG 编码器（可注入，测试用于模拟编码失败覆盖 guard return 分支）
+    private let pngEncoder: (NSImage, NSSize) -> Data?
 
     /// Create icon cache
     ///
@@ -25,17 +29,71 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     ///   - iconProvider: Icon extraction provider
     ///   - imageStore: Disk storage
     ///   - memoryLimit: Memory cache entry limit, default 500
+    ///   - pngEncoder: PNG 编码器（测试注入 nil 模拟编码失败）
     public init(
         iconProvider: IconProviding,
         imageStore: ImageStoring,
-        memoryLimit: Int = 500
+        memoryLimit: Int = 500,
+        pngEncoder: ((NSImage, NSSize) -> Data?)? = nil
     ) {
         self.iconProvider = iconProvider
         self.imageStore = imageStore
         self.memoryCache = NSCache<NSString, NSImage>()
         self.memoryCache.countLimit = memoryLimit
-        self.modificationCache = NSCache<NSString, NSDate>()
-        self.modificationCache.countLimit = memoryLimit
+        self.pngEncoder = pngEncoder ?? { image, size in
+            IconCache.defaultPngEncoder(image, size: size)
+        }
+    }
+
+    /// 默认 PNG 编码：lockFocus 缩放后转 PNG（internal 以便测试覆盖 guard 失败分支）
+    /// - Parameter tiffProvider: 测试注入，返回 nil 模拟 tiff 转换失败
+    static func defaultPngEncoder(
+        _ image: NSImage,
+        size: NSSize,
+        tiffProvider: ((NSImage) -> Data?)? = nil
+    ) -> Data? {
+        // size 为零时 lockFocus 会 precondition failure，提前返回
+        guard size.width > 0, size.height > 0 else { return nil }
+        let scaled = NSImage(size: size)
+        scaled.lockFocus()
+        NSGraphicsContext.current?.imageInterpolation = .high
+        image.draw(in: NSRect(origin: .zero, size: size),
+                   from: .zero,
+                   operation: .copy,
+                   fraction: 1.0)
+        scaled.unlockFocus()
+        let tiff = tiffProvider?(scaled) ?? scaled.tiffRepresentation
+        guard let tiff,
+              let rep = NSBitmapImageRep(data: tiff),
+              let png = rep.representation(using: .png, properties: [:]) else {
+            return nil
+        }
+        return png
+    }
+
+    // MARK: - Modification date cache helpers
+
+    private func cachedModDate(for path: String) -> Date? {
+        modLock.lock()
+        defer { modLock.unlock() }
+        return modificationDates[path]
+    }
+
+    private func setCachedModDate(_ date: Date, for path: String) {
+        modLock.lock()
+        defer { modLock.unlock() }
+        modificationDates[path] = date
+    }
+
+    private func removeCachedModDate(for path: String) {
+        modLock.lock()
+        defer { modLock.unlock() }
+        modificationDates.removeValue(forKey: path)
+    }
+
+    /// 测试用：清空 memory cache 但保留 modification cache，以触发 disk hit + modCache 命中分支
+    internal func clearMemoryCache() {
+        memoryCache.removeAllObjects()
     }
 
     /// Fetch icon — memory cache first, then disk cache, then live extraction
@@ -51,14 +109,14 @@ public final class IconCache: IconCaching, @unchecked Sendable {
         if let cachedImage = memoryCache.object(forKey: cacheKey) {
             // Verify modificationDate hasn't changed
             let currentModDate = iconProvider.modificationDate(forPath: path)
-            let cachedModDate = modificationCache.object(forKey: cacheKey) as Date?
+            let cachedModDate = self.cachedModDate(for: path)
 
             if let current = currentModDate, let cached = cachedModDate, current == cached {
                 return cachedImage
             }
             // modificationDate changed, evict cache
             memoryCache.removeObject(forKey: cacheKey)
-            modificationCache.removeObject(forKey: cacheKey)
+            removeCachedModDate(for: path)
         }
 
         // 2. Check disk cache
@@ -66,7 +124,7 @@ public final class IconCache: IconCaching, @unchecked Sendable {
             let currentModDate = iconProvider.modificationDate(forPath: path)
             if let image = NSImage(data: diskData.0) {
                 // Check if disk cache is still valid
-                let cachedModDate = modificationCache.object(forKey: cacheKey) as Date?
+                let cachedModDate = self.cachedModDate(for: path)
                 let isStillValid: Bool
                 if let current = currentModDate {
                     if let cached = cachedModDate {
@@ -86,10 +144,7 @@ public final class IconCache: IconCaching, @unchecked Sendable {
                     // Disk data valid, populate memory cache and return
                     memoryCache.setObject(image, forKey: cacheKey)
                     if let modDate = currentModDate {
-                        modificationCache.setObject(
-                            NSDate(timeIntervalSince1970: modDate.timeIntervalSince1970),
-                            forKey: cacheKey
-                        )
+                        setCachedModDate(modDate, for: path)
                     }
                     return image
                 }
@@ -104,7 +159,7 @@ public final class IconCache: IconCaching, @unchecked Sendable {
         // Store in memory cache
         memoryCache.setObject(image, forKey: cacheKey)
         if let modDate = iconProvider.modificationDate(forPath: path) {
-            modificationCache.setObject(NSDate(timeIntervalSince1970: modDate.timeIntervalSince1970), forKey: cacheKey)
+            setCachedModDate(modDate, for: path)
         }
 
         // Store in disk cache
@@ -116,36 +171,12 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     /// Write image to disk cache
     private func storeToDisk(image: NSImage, itemId: Int64) {
         // @1x: 128×128pt
-        let size1x = NSSize(width: 128, height: 128)
-        let image1x = NSImage(size: size1x)
-        image1x.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: NSRect(origin: .zero, size: size1x),
-                   from: .zero,
-                   operation: .copy,
-                   fraction: 1.0)
-        image1x.unlockFocus()
-
-        guard let tiff1x = image1x.tiffRepresentation,
-              let rep1x = NSBitmapImageRep(data: tiff1x),
-              let png1x = rep1x.representation(using: .png, properties: [:]) else {
+        guard let png1x = pngEncoder(image, NSSize(width: 128, height: 128)) else {
             return
         }
 
         // @2x: 256×256px
-        let size2x = NSSize(width: 256, height: 256)
-        let image2x = NSImage(size: size2x)
-        image2x.lockFocus()
-        NSGraphicsContext.current?.imageInterpolation = .high
-        image.draw(in: NSRect(origin: .zero, size: size2x),
-                   from: .zero,
-                   operation: .copy,
-                   fraction: 1.0)
-        image2x.unlockFocus()
-
-        guard let tiff2x = image2x.tiffRepresentation,
-              let rep2x = NSBitmapImageRep(data: tiff2x),
-              let png2x = rep2x.representation(using: .png, properties: [:]) else {
+        guard let png2x = pngEncoder(image, NSSize(width: 256, height: 256)) else {
             return
         }
 

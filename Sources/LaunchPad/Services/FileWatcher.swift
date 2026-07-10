@@ -9,13 +9,19 @@ public final class FileWatcher: @unchecked Sendable {
     private var stream: FSEventStreamRef?
     private var retainedSelfPtr: UnsafeMutableRawPointer?
     private let debounceInterval: TimeInterval
+    /// 测试注入：非 nil 时用它替代 FSEventStreamCreate，返回 nil 模拟创建失败（正常流程不可达的防御分支）
+    private let streamCreationOverride: (() -> FSEventStreamRef?)?
     private var debounceWorkItem: DispatchWorkItem?
     private let queue = DispatchQueue(label: "com.launchpad.filewatcher", qos: .utility)
     private let lock = NSLock()
 
-    /// - Parameter debounceInterval: 防抖间隔，默认 2.0s（避免批量操作频繁触发）
-    public init(debounceInterval: TimeInterval = 2.0) {
+    /// - Parameters:
+    ///   - debounceInterval: 防抖间隔，默认 2.0s（避免批量操作频繁触发）
+    ///   - streamCreationOverride: 测试注入，返回 nil 模拟 FSEventStreamCreate 失败
+    public init(debounceInterval: TimeInterval = 2.0,
+                streamCreationOverride: (() -> FSEventStreamRef?)? = nil) {
         self.debounceInterval = debounceInterval
+        self.streamCreationOverride = streamCreationOverride
     }
 
     /// 开始监控指定目录
@@ -46,15 +52,19 @@ public final class FileWatcher: @unchecked Sendable {
 
         let flags: FSEventStreamCreateFlags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
 
-        stream = FSEventStreamCreate(
-            nil,
-            callback,
-            &context,
-            paths as CFArray,
-            FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-            1.0, // latency: 1s 内的事件合并
-            flags
-        )
+        if let override = streamCreationOverride {
+            stream = override()
+        } else {
+            stream = FSEventStreamCreate(
+                nil,
+                callback,
+                &context,
+                paths as CFArray,
+                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
+                1.0, // latency: 1s 内的事件合并
+                flags
+            )
+        }
 
         guard let stream = stream else {
             _ = Unmanaged<FileWatcher>.fromOpaque(selfPtr).takeRetainedValue()
@@ -65,7 +75,7 @@ public final class FileWatcher: @unchecked Sendable {
         self.onChange = onChange
         self.retainedSelfPtr = selfPtr
 
-        FSEventStreamScheduleWithRunLoop(stream, CFRunLoopGetCurrent(), CFRunLoopMode.defaultMode.rawValue)
+        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
         FSEventStreamStart(stream)
     }
 

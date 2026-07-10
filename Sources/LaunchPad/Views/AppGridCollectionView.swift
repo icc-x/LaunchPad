@@ -27,6 +27,23 @@ public class AppGridCollectionView: NSCollectionView {
     private var storage: DataStoring?
     private var currentIconSize: CGFloat = 64
 
+    // MARK: - Test injection points（可选注入；未注入时回退到真实 collectionView 行为）
+
+    /// 可见 cell 提供器（测试可注入以绕过真实布局；默认回退到 item(at:)）
+    var visibleCellProvider: ((IndexPath) -> NSCollectionViewItem?)?
+
+    /// 拖放位置 → indexPath 解析器（测试可注入；默认回退到 indexPathForItem(at:)）
+    var indexPathResolver: ((NSPoint) -> IndexPath?)?
+
+    /// accessibility 行构建时的 cell view 提供器（测试可注入；默认回退到 item(at:)?.view）
+    var cellViewProvider: ((IndexPath) -> NSView?)?
+
+    /// 入场动画调度器（测试可注入为同步执行；默认走 DispatchQueue.main.asyncAfter）
+    var animationScheduler: ((TimeInterval, @escaping () -> Void) -> Void)?
+
+    /// 可见 indexPath 提供器（测试可注入以驱动入场动画循环体；默认回退到 indexPathsForVisibleItems()）
+    var visibleIndexPathsProvider: (() -> [IndexPath])?
+
     // MARK: - Init
 
     public override init(frame frameRect: NSRect) {
@@ -35,8 +52,8 @@ public class AppGridCollectionView: NSCollectionView {
     }
 
     public required init?(coder: NSCoder) {
-        super.init(coder: coder)
-        setup()
+        // 不支持 NSCoding，返回 nil（可测且不崩溃）替代 fatalError
+        return nil
     }
 
     private func setup() {
@@ -91,34 +108,91 @@ public class AppGridCollectionView: NSCollectionView {
         animateEntrance()
     }
 
-    /// 图标入场动画：每个 cell 延迟 colIndex * 0.02s
+    /// 图标入场动画：每个 cell 按列索引延迟 colIndex * 0.02s，从左到右铺开
     private func animateEntrance() {
-        // Reduce Motion: 直接显示，无动画
+        // Reduce Motion: AnimationRunner 自动回退为即时显示
         AnimationRunner.run(animation: AnimationConstants.iconEntrance) { [self] in
-            let visibleItems = indexPathsForVisibleItems().sorted()
-            for (index, indexPath) in visibleItems.enumerated() {
-                guard let cell = item(at: indexPath) else { continue }
-                let cellView = cell.view
-                cellView.wantsLayer = true
-                cellView.alphaValue = 0
-                cellView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
-
-                let delay = Double(index) * AnimationConstants.iconEntranceDelayPerColumn
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = AnimationConstants.iconEntrance.duration
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
-                    ctx.allowsImplicitAnimation = true
-                    // 延迟后动画
-                }, completionHandler: { [weak cellView] in
-                    guard let cellView else { return }
-                    NSAnimationContext.runAnimationGroup { ctx in
-                        ctx.duration = AnimationConstants.iconEntrance.duration
-                        cellView.animator().alphaValue = 1
-                        cellView.layer?.transform = CATransform3DIdentity
-                    }
-                })
+            let columns = GridLayoutCalculator.calculate(
+                screenWidth: bounds.width > 0 ? bounds.width : 1440
+            ).columns
+            let indexPaths = visibleIndexPathsProvider?() ?? Array(indexPathsForVisibleItems())
+            for indexPath in indexPaths.sorted() {
+                guard let cell = visibleCellProvider?(indexPath) ?? item(at: indexPath) else { continue }
+                applyEntranceAnimation(to: cell, at: indexPath, columns: columns)
             }
         }
+    }
+
+    /// 单个 cell 的入场准备（抽出便于同步测试，无需真实布局）
+    func applyEntranceAnimation(to cell: NSCollectionViewItem, at indexPath: IndexPath, columns: Int) {
+        let cellView = cell.view
+        cellView.wantsLayer = true
+        cellView.alphaValue = 0
+        cellView.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+
+        // 按列索引延迟：同一列的 cell 同时动画
+        let delay = entranceDelay(forItemAt: indexPath, columns: columns)
+        animateCellAppear(cellView: cellView, delay: delay)
+    }
+
+    /// 单个 cell 的入场动画（延迟后执行，抽出便于同步测试闭包体）
+    func animateCellAppear(cellView: NSView, delay: TimeInterval) {
+        let block: () -> Void = { [weak self, weak cellView] in
+            self?.applyCellAppearAnimation(cellView: cellView)
+        }
+        if let scheduler = animationScheduler {
+            scheduler(delay, block)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
+        }
+    }
+
+    /// 同步执行单个 cell 的入场动画主体（抽出便于测试）
+    func applyCellAppearAnimation(cellView: NSView?) {
+        guard let cellView else { return }
+        // transform 使用 spring（damping=0.8）
+        cellView.layer?.add(self.entranceSpringAnimation(), forKey: "entranceScale")
+        // alpha 使用 NSAnimationContext
+        NSAnimationContext.runAnimationGroup { ctx in
+            ctx.duration = AnimationConstants.iconEntrance.duration
+            ctx.allowsImplicitAnimation = true
+            cellView.animator().alphaValue = 1
+        }
+        // 动画结束后重置 transform：经调度器触发（未注入时回退到 DispatchQueue.main.asyncAfter）
+        let block: () -> Void = { [weak self] in
+            self?.finalizeCellAppear(cellView: cellView)
+        }
+        if let scheduler = animationScheduler {
+            scheduler(AnimationConstants.iconEntrance.duration, block)
+        } else {
+            DispatchQueue.main.asyncAfter(deadline: .now() + AnimationConstants.iconEntrance.duration, execute: block)
+        }
+    }
+
+    /// 入场动画结束后重置 transform（抽出便于测试）
+    func finalizeCellAppear(cellView: NSView) {
+        cellView.layer?.transform = CATransform3DIdentity
+    }
+
+    /// 入场动画延迟：按列索引计算（同一列的 cell 同时动画）
+    func entranceDelay(forItemAt indexPath: IndexPath, columns: Int) -> TimeInterval {
+        let colIndex = indexPath.item % max(columns, 1)
+        return TimeInterval(colIndex) * AnimationConstants.iconEntranceDelayPerColumn
+    }
+
+    /// 入场 spring 动画（transform.scale，damping 来自 AnimationConstants.iconEntrance）
+    /// timing 可注入以便覆盖非 spring 回退分支
+    func entranceSpringAnimation(timing: AnimationConstants.Timing = AnimationConstants.iconEntrance.timing) -> CASpringAnimation {
+        let spring = CASpringAnimation(keyPath: "transform.scale")
+        spring.fromValue = 0.8
+        spring.toValue = 1.0
+        spring.duration = AnimationConstants.iconEntrance.duration
+        if case .spring(let damping) = timing {
+            spring.damping = damping
+        } else {
+            spring.damping = 0.8
+        }
+        return spring
     }
 
     /// Update layout parameters based on screen width
@@ -187,14 +261,18 @@ public class AppGridCollectionView: NSCollectionView {
         let params = GridLayoutCalculator.calculate(screenWidth: bounds.width > 0 ? bounds.width : 1440)
         let columns = params.columns
         let items = snapshot.itemIdentifiers
+        return buildAccessibilityRows(items: items, columns: columns)
+    }
 
+    /// 按列数将 item 分组成行（抽出便于测试，cell view 解析可注入）
+    func buildAccessibilityRows(items: [PageItem], columns: Int) -> [[Any]] {
         // 按列数分组成行
         var rows: [[Any]] = []
         for strideStart in stride(from: 0, to: items.count, by: columns) {
             let rowEnd = min(strideStart + columns, items.count)
             let rowItems = Array(strideStart..<rowEnd).compactMap { index -> Any? in
                 let indexPath = IndexPath(item: index, section: 0)
-                return self.item(at: indexPath)?.view
+                return cellViewProvider?(indexPath) ?? item(at: indexPath)?.view
             }
             if !rowItems.isEmpty {
                 rows.append(rowItems)
@@ -242,16 +320,19 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
         }
 
         // 检查是否悬停在图标上
-        if let targetIndexPath = collectionView.indexPathForItem(at: location),
-           let targetItem = diffableDataSource.itemIdentifier(for: targetIndexPath),
-           targetItem.type == .group {
-            dragController?.updateDragHover(location: .overIcon(targetId: targetItem.id))
-        } else {
-            dragController?.updateDragHover(location: .empty)
-        }
+        let hover = resolveHoverLocation(at: location)
+        dragController?.updateDragHover(location: hover)
 
         dropOperation.pointee = .on
         return .move
+    }
+
+    /// 根据拖放位置解析悬停类型（抽出便于测试，indexPath 解析可注入）
+    func resolveHoverLocation(at location: NSPoint) -> DragController.HoverLocation {
+        guard let targetIndexPath = indexPathResolver?(location) ?? indexPathForItem(at: location),
+              let targetItem = diffableDataSource.itemIdentifier(for: targetIndexPath),
+              targetItem.type == .group else { return .empty }
+        return .overIcon(targetId: targetItem.id)
     }
 
     /// 接受拖放，执行重排
@@ -259,17 +340,24 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
                                acceptDrop draggingInfo: NSDraggingInfo,
                                indexPath: IndexPath,
                                dropOperation: NSCollectionView.DropOperation) -> Bool {
-        // 从剪贴板提取拖拽 item 的 UUID
-        guard let pasteboard = draggingInfo.draggingPasteboard.propertyList(forType: .string) as? String,
-              let draggedItem = findItem(byUuid: pasteboard) else {
+        // 从拖拽信息提取被拖拽 item，并解析目标位置 item（任一缺失即拒绝）
+        guard let draggedItem = extractDraggedItem(from: draggingInfo),
+              let targetItem = diffableDataSource.itemIdentifier(for: indexPath) else {
             return false
         }
+        return performDrop(draggedItem: draggedItem, targetItem: targetItem)
+    }
 
-        // 获取目标位置的 item
-        guard let targetItem = diffableDataSource.itemIdentifier(for: indexPath) else {
-            return false
+    /// 从拖拽信息中提取被拖拽的 item（抽出便于测试，无需真实剪贴板往返）
+    func extractDraggedItem(from draggingInfo: NSDraggingInfo) -> PageItem? {
+        guard let pasteboard = draggingInfo.draggingPasteboard.propertyList(forType: .string) as? String else {
+            return nil
         }
+        return findItem(byUuid: pasteboard)
+    }
 
+    /// 执行拖放重排/移动到文件夹（抽出便于测试，覆盖 group 与普通重排分支）
+    func performDrop(draggedItem: PageItem, targetItem: PageItem) -> Bool {
         // 如果拖到文件夹上，触发创建/添加到文件夹
         if targetItem.type == .group {
             dragController?.handleDrop()
@@ -278,10 +366,8 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
 
         // 同页重排：找到源和目标的索引，更新 DiffableDataSource
         var snapshot = diffableDataSource.snapshot()
-        let section = snapshot.sectionIdentifier(containingItem: draggedItem)
-            ?? snapshot.sectionIdentifier(containingItem: targetItem)
-
-        if let section {
+        if snapshot.sectionIdentifier(containingItem: draggedItem) != nil
+            || snapshot.sectionIdentifier(containingItem: targetItem) != nil {
             // 移动 item 到目标位置之前
             snapshot.deleteItems([draggedItem])
             snapshot.insertItems([draggedItem], beforeItem: targetItem)
@@ -298,11 +384,14 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
     public func collectionView(_ collectionView: NSCollectionView,
                                draggingImageForItemsAt indexPaths: Set<IndexPath>,
                                with event: NSEvent,
-                               offset dragImageOffset: NSPoint) -> NSImage? {
+                               offset dragImageOffset: NSPointPointer) -> NSImage {
         guard let indexPath = indexPaths.first,
-              let cell = item(at: indexPath) else { return nil }
+              let cell = visibleCellProvider?(indexPath) ?? item(at: indexPath) else { return NSImage() }
+        return makeDragImage(from: cell.view)
+    }
 
-        let cellView = cell.view
+    /// 由 cell view 生成半透明 64×64 拖拽预览图（抽出便于同步测试绘制逻辑）
+    func makeDragImage(from cellView: NSView) -> NSImage {
         let size = cellView.bounds.size
         let image = NSImage(size: size)
         image.lockFocus()

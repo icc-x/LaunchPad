@@ -37,19 +37,31 @@ class PageScrollView: NSScrollView {
     // MARK: - 核心分页逻辑
 
     override func scrollWheel(with event: NSEvent) {
+        processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
+    }
+
+    /// 处理单个滚动阶段的逻辑（从 scrollWheel 抽出，便于单元测试，避免依赖 NSEvent.phase 的构造）。
+    /// - Parameters:
+    ///   - phase: 滚动阶段（changed / ended / cancelled / mayBegin / began 等）
+    ///   - deltaX: 本阶段水平滚动位移
+    ///   - event: 原始事件（仅边缘回弹分支转发给 super 时使用）
+    /// - Returns: `true` 表示事件已转发给 `super`（边缘弹性回弹）；`false` 表示已自行处理或不需处理。
+    @MainActor
+    func processScrollPhase(_ phase: NSEvent.Phase, deltaX: CGFloat, event: NSEvent) -> Bool {
         // 收集滚动位移
-        if event.phase.contains(.changed) {
-            scrollAccumulator += event.scrollingDeltaX
+        if phase.contains(.changed) {
+            scrollAccumulator += deltaX
             isScrolling = true
+            return false
         }
 
         // 滚动结束 → 计算目标页并动画跳转
-        if event.phase.contains(.ended) || event.phase.contains(.cancelled) {
-            guard isScrolling else { return }
+        if phase.contains(.ended) || phase.contains(.cancelled) {
+            guard isScrolling else { return false }
             isScrolling = false
 
             let pageWidth = bounds.width
-            guard pageWidth > 0 else { return }
+            guard pageWidth > 0 else { return false }
 
             let currentOffset = contentView.bounds.origin.x
             let currentPage = Int(round(currentOffset / pageWidth))
@@ -57,7 +69,7 @@ class PageScrollView: NSScrollView {
 
             let target = Self.targetPage(
                 for: scrollAccumulator,
-                velocity: event.scrollingDeltaX * 10, // 近似速度
+                velocity: deltaX * 10, // 近似速度
                 currentPage: currentPage,
                 totalPages: totalPages,
                 pageWidth: pageWidth
@@ -65,23 +77,24 @@ class PageScrollView: NSScrollView {
 
             scrollToPage(target, pageWidth: pageWidth)
             scrollAccumulator = 0
-            return
+            return false
         }
 
         // 边缘弹性回弹：首/末页时允许系统默认弹性行为
-        if event.phase.contains(.mayBegin) || event.phase.contains(.began) {
+        if phase.contains(.mayBegin) || phase.contains(.began) {
             let atFirstPage = contentView.bounds.origin.x <= 0
             let documentWidth = documentView?.bounds.width ?? 0
             let atLastPage = contentView.bounds.origin.x >= documentWidth - bounds.width - 1
 
-            if (atFirstPage && event.scrollingDeltaX > 0) ||
-               (atLastPage && event.scrollingDeltaX < 0) {
+            if (atFirstPage && deltaX > 0) ||
+               (atLastPage && deltaX < 0) {
                 super.scrollWheel(with: event)
-                return
+                return true
             }
         }
 
         // 其他阶段不传递（阻止系统默认滚动，由我们控制翻页）
+        return false
     }
 
     // MARK: - 翻页动画

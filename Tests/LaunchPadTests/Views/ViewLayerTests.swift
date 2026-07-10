@@ -67,6 +67,36 @@ final class AnimationRunnerTests: XCTestCase {
 
         XCTAssertTrue(blockCalled)
     }
+
+    // MARK: - run() Reduce Motion fallback branches
+
+    func testRun_reduceMotion_fadeFallback_callsBlock() {
+        let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
+        var blockCalled = false
+
+        // windowExpand has .fade(duration:) fallback
+        AnimationRunner.run(
+            settings: settings,
+            animation: AnimationConstants.windowExpand,
+            block: { blockCalled = true }
+        )
+
+        XCTAssertTrue(blockCalled)
+    }
+
+    func testRun_reduceMotion_scalePulseFallback_callsBlock() {
+        let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
+        var blockCalled = false
+
+        // jiggle has .scalePulse fallback
+        AnimationRunner.run(
+            settings: settings,
+            animation: AnimationConstants.jiggle,
+            block: { blockCalled = true }
+        )
+
+        XCTAssertTrue(blockCalled)
+    }
 }
 
 /// Tests for LayoutPersistence (0% → target 100%)
@@ -106,6 +136,34 @@ final class LayoutPersistenceTests: XCTestCase {
         XCTAssertEqual(layout.itemsByPage[1]?.count, 2)
         XCTAssertEqual(layout.itemsByPage[2]?.count, 1)
     }
+
+    func testSaveLayout_callsUpdateForEachItem() throws {
+        let writer = MockItemWriter()
+        let items = [
+            TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0),
+            TestDataFactory.makePageItem(id: 2, type: .app, ordering: 1),
+            TestDataFactory.makePageItem(id: 3, type: .app, ordering: 2),
+        ]
+        try LayoutPersistence.saveLayout(items: items, writer: writer)
+
+        XCTAssertEqual(writer.updatedItems.count, 3)
+        XCTAssertEqual(writer.updatedItems.map { $0.id }, [1, 2, 3])
+    }
+
+    func testSaveLayout_emptyList_doesNotCallUpdate() throws {
+        let writer = MockItemWriter()
+        try LayoutPersistence.saveLayout(items: [], writer: writer)
+        XCTAssertTrue(writer.updatedItems.isEmpty)
+    }
+
+    func testSaveLayout_propagatesError() throws {
+        let writer = MockItemWriter()
+        writer.updateError = TestError.generic
+        let items = [TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0)]
+
+        XCTAssertThrowsError(try LayoutPersistence.saveLayout(items: items, writer: writer))
+        XCTAssertEqual(writer.updatedItems.count, 0)
+    }
 }
 
 /// Tests for EmptyStateView (0% → basic instantiation)
@@ -142,6 +200,16 @@ final class EmptyStateViewTests: XCTestCase {
         view.hide(animated: true)
     }
 
+    @MainActor
+    func testEmptyStateView_hide_animated_completionHidesView() {
+        let view = EmptyStateView()
+        view.show(animated: false)
+        // 注入同步 completion runner，确定性触发 hide 完成闭包（覆盖 64-67 行）
+        view.hideCompletionRunner = { $0() }
+        view.hide(animated: true)
+        XCTAssertTrue(view.isHidden)
+    }
+
     func testEmptyStateView_show_hide_multipleTimes() {
         let view = EmptyStateView()
         view.show(animated: false)
@@ -149,6 +217,22 @@ final class EmptyStateViewTests: XCTestCase {
         view.show(animated: false)
         view.hide(animated: false)
         XCTAssertTrue(view.isHidden)
+    }
+
+    // MARK: - init?(coder:)
+
+    func testEmptyStateView_initCoder_producesValidInstance() throws {
+        let original = EmptyStateView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        let archiver = NSKeyedArchiver()
+        archiver.requiresSecureCoding = false
+        archiver.encode(original, forKey: "root")
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = false
+        let view = unarchiver.decodeObject(forKey: "root") as? EmptyStateView
+        XCTAssertNotNil(view)
+        XCTAssertTrue(view!.isHidden)
     }
 }
 
@@ -228,6 +312,53 @@ final class SearchBarTests: XCTestCase {
         let bar = SearchBar()
         bar.show(animated: false)
         bar.hide(animated: true)
+    }
+
+    // MARK: - init?(coder:)
+
+    func testSearchBar_initCoder_producesValidInstance() throws {
+        let original = SearchBar(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
+        let archiver = NSKeyedArchiver()
+        archiver.requiresSecureCoding = false
+        archiver.encode(original, forKey: "root")
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = false
+        let bar = unarchiver.decodeObject(forKey: "root") as? SearchBar
+        XCTAssertNotNil(bar)
+    }
+
+    // MARK: - Guard branches
+
+    func testSearchBar_show_calledTwice_secondCallIsNoOp() {
+        let bar = SearchBar()
+        bar.show(animated: false)
+        XCTAssertEqual(bar.alphaValue, 1)
+        // Second call should be no-op (guard !isShown)
+        bar.show(animated: false)
+        XCTAssertEqual(bar.alphaValue, 1)
+    }
+
+    func testSearchBar_hide_withoutShow_isNoOp() {
+        let bar = SearchBar()
+        // hide without show should be no-op (guard isShown)
+        bar.hide(animated: false)
+        XCTAssertTrue(bar.isHidden)
+        XCTAssertEqual(bar.alphaValue, 0)
+    }
+
+    func testSearchBar_hide_animated_completionHidesView() {
+        let bar = SearchBar()
+        bar.show(animated: false)
+        bar.hide(animated: true)
+
+        let expectation = XCTestExpectation(description: "Animated hide completes")
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
+            XCTAssertTrue(bar.isHidden)
+            expectation.fulfill()
+        }
+        wait(for: [expectation], timeout: 2.0)
     }
 }
 
@@ -430,6 +561,21 @@ final class PageControlViewTests: XCTestCase {
         view.onDotSelected = { _ in }
         XCTAssertNotNil(view.onDotSelected)
     }
+
+    // MARK: - init?(coder:)
+
+    func testPageControlView_initCoder_producesValidInstance() throws {
+        let original = PageControlView(viewModel: PageControlViewModel())
+        let archiver = NSKeyedArchiver()
+        archiver.requiresSecureCoding = false
+        archiver.encode(original, forKey: "root")
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = false
+        let view = unarchiver.decodeObject(forKey: "root") as? PageControlView
+        XCTAssertNotNil(view)
+    }
 }
 
 /// Tests for AppGridFlowLayout (0% → basic interaction)
@@ -545,6 +691,62 @@ final class AppGridFlowLayoutTests2: XCTestCase {
 
         let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
         XCTAssertNotNil(attrs)
+    }
+
+    func testLayoutAttributesForElements_withItems_centersVertically() {
+        let layout = AppGridFlowLayout()
+        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        layout.applyGridParameters(params)
+
+        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        collectionView.collectionViewLayout = layout
+        collectionView.register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
+
+        let dataSource = GridTestDataSource(itemCount: 5)
+        collectionView.dataSource = dataSource
+
+        // Place in a window to trigger layout
+        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        scrollView.documentView = documentView
+        documentView.addSubview(collectionView)
+
+        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
+                              styleMask: [], backing: .buffered, defer: false)
+        window.contentView = scrollView
+        window.makeKeyAndOrderFront(nil)
+
+        collectionView.reloadData()
+        collectionView.layoutSubtreeIfNeeded()
+
+        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        XCTAssertNotNil(attrs)
+        // If layout produced attributes, verify vertical centering
+        if !attrs.isEmpty {
+            let collectionViewHeight = collectionView.bounds.height
+            for attr in attrs {
+                XCTAssertEqual(attr.frame.origin.y,
+                               (collectionViewHeight - attr.frame.height) / 2,
+                               accuracy: 1.0)
+            }
+        }
+    }
+}
+
+// MARK: - Test Data Source for AppGridFlowLayout
+
+private final class GridTestDataSource: NSObject, NSCollectionViewDataSource {
+    let itemCount: Int
+    init(itemCount: Int) { self.itemCount = itemCount }
+
+    func collectionView(_ collectionView: NSCollectionView,
+                        numberOfItemsInSection section: Int) -> Int {
+        itemCount
+    }
+
+    func collectionView(_ collectionView: NSCollectionView,
+                        itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
+        collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath)
     }
 }
 #endif

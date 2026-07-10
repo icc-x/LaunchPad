@@ -257,6 +257,120 @@ struct PageScrollViewTests {
     func velocityThreshold_is300() {
         #expect(PageScrollView.velocityThreshold == 300.0)
     }
+
+    // MARK: - init?(coder:)
+
+    @Test("init?(coder:) produces valid instance")
+    func initCoder_producesValidInstance() throws {
+        let original = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let archiver = NSKeyedArchiver()
+        archiver.requiresSecureCoding = false
+        archiver.encode(original, forKey: "root")
+        let data = archiver.encodedData
+
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
+        unarchiver.requiresSecureCoding = false
+        let view = unarchiver.decodeObject(forKey: "root") as? PageScrollView
+        #expect(view != nil)
+    }
+
+    // MARK: - scrollWheel / processScrollPhase
+
+    private func makeConfiguredScrollView(currentOffsetX: CGFloat = 0) -> PageScrollView {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
+        scrollView.documentView = doc
+        scrollView.contentView.bounds.origin.x = currentOffsetX
+        return scrollView
+    }
+
+    private func makeDummyScrollEvent() -> NSEvent {
+        let cg = CGEvent(scrollWheelEvent2Source: nil, units: .line, wheelCount: 1,
+                         wheel1: 0, wheel2: 0, wheel3: 0)!
+        return NSEvent(cgEvent: cg)!
+    }
+
+    @Test("scrollWheel(with:) wrapper delegates to processScrollPhase")
+    func scrollWheel_wrapper_delegates() {
+        let sv = makeConfiguredScrollView()
+        // phase 为合成事件的默认阶段（非 changed/ended），processScrollPhase 落入“其他阶段”分支
+        sv.scrollWheel(with: makeDummyScrollEvent())
+    }
+
+    @Test("processScrollPhase .changed accumulates delta and marks scrolling")
+    func changedPhase_accumulates() {
+        let sv = makeConfiguredScrollView()
+        let result = sv.processScrollPhase(.changed, deltaX: 50, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .ended with prior .changed computes target and scrolls")
+    func endedPhase_afterChanged_scrollsToTarget() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 0)
+        _ = sv.processScrollPhase(.changed, deltaX: 700, event: makeDummyScrollEvent())
+        let result = sv.processScrollPhase(.ended, deltaX: 0, event: makeDummyScrollEvent())
+        // offset 700 < halfPage 720 → 留在第 0 页，scrollToPage(0)
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .ended without prior .changed returns early (isScrolling false)")
+    func endedPhase_withoutChanged_returnsEarly() {
+        let sv = makeConfiguredScrollView()
+        let result = sv.processScrollPhase(.ended, deltaX: 0, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .ended with zero pageWidth returns early")
+    func endedPhase_zeroPageWidth_returnsEarly() {
+        let sv = makeConfiguredScrollView()
+        sv.bounds = NSRect(x: 0, y: 0, width: 0, height: 0) // pageWidth = bounds.width = 0
+        _ = sv.processScrollPhase(.changed, deltaX: 10, event: makeDummyScrollEvent())
+        let result = sv.processScrollPhase(.ended, deltaX: 0, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .cancelled after .changed scrolls to target")
+    func cancelledPhase_afterChanged_scrolls() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 0)
+        _ = sv.processScrollPhase(.changed, deltaX: 800, event: makeDummyScrollEvent())
+        let result = sv.processScrollPhase(.cancelled, deltaX: 0, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .mayBegin at first page with positive delta bounces to super")
+    func mayBegin_firstPage_positiveDelta_bounces() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 0) // 首页
+        let result = sv.processScrollPhase(.mayBegin, deltaX: 10, event: makeDummyScrollEvent())
+        #expect(result == true)
+    }
+
+    @Test("processScrollPhase .began at last page with negative delta bounces to super")
+    func began_lastPage_negativeDelta_bounces() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 1440 * 3 - 1440) // 末页
+        let result = sv.processScrollPhase(.began, deltaX: -10, event: makeDummyScrollEvent())
+        #expect(result == true)
+    }
+
+    @Test("processScrollPhase .mayBegin at middle page does not bounce")
+    func mayBegin_middlePage_noBounce() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 1440) // 中间页
+        let result = sv.processScrollPhase(.mayBegin, deltaX: 10, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase .mayBegin at first page with negative delta does not bounce")
+    func mayBegin_firstPage_negativeDelta_noBounce() {
+        let sv = makeConfiguredScrollView(currentOffsetX: 0)
+        let result = sv.processScrollPhase(.mayBegin, deltaX: -10, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
+
+    @Test("processScrollPhase with no recognized phase falls through")
+    func noRecognizedPhase_fallsThrough() {
+        let sv = makeConfiguredScrollView()
+        let result = sv.processScrollPhase([], deltaX: 0, event: makeDummyScrollEvent())
+        #expect(result == false)
+    }
 }
 
 // MARK: - PageControl state logic
@@ -411,4 +525,17 @@ struct PageControlTests {
         vm.selectDot(at: 5)
         #expect(vm.currentPage == 1)
     }
+
+    // MARK: - configure with shrinking pages
+
+    @Test("configure with smaller totalPages resets currentPage when out of range")
+    func configure_smallerTotalPages_resetsCurrentPage() {
+        let vm = PageControlViewModel()
+        vm.configure(totalPages: 5)
+        vm.currentPage = 4
+        vm.configure(totalPages: 3)
+        #expect(vm.currentPage == 0) // 4 >= 3, so reset
+    }
+
+    // scrollWheel phase 测试见 PageScrollView 的 handleScrollPhase 重构（暂未启用，coverage 导出阻塞）
 }

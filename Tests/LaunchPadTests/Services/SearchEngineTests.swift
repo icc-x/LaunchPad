@@ -138,6 +138,45 @@ struct SearchEngineTests {
     }
 }
 
+@Suite("LRUCache 直接测试")
+struct LRUCacheTests {
+
+    @Test("set 已存在的 key 更新值并移动到头部")
+    func set_existingKey_updatesValue() {
+        let cache = LRUCache<String, Int>(capacity: 3)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        // set 已存在的 key
+        cache.set("a", value: 10)
+
+        #expect(cache.get("a") == 10)
+    }
+
+    @Test("set 已存在的 key 且不是头节点 - 触发 removeNode+addToHead")
+    func set_existingKey_notHead_movesToHead() {
+        let cache = LRUCache<String, Int>(capacity: 3)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        cache.set("c", value: 3)
+        // "a" 现在是尾节点，set 已存在的 key 触发 moveToHead -> removeNode+addToHead
+        cache.set("a", value: 11)
+
+        #expect(cache.get("a") == 11)
+        #expect(cache.get("b") == 2)
+        #expect(cache.get("c") == 3)
+    }
+
+    @Test("get 已存在的 key 触发 moveToHead")
+    func get_existingKey_movesToHead() {
+        let cache = LRUCache<String, Int>(capacity: 3)
+        cache.set("a", value: 1)
+        cache.set("b", value: 2)
+        cache.set("c", value: 3)
+        // get "a" 触发 moveToHead（"a" 不是头节点）
+        #expect(cache.get("a") == 1)
+    }
+}
+
 @Suite("SearchEngine 完整搜索")
 struct SearchEngineSearchTests {
 

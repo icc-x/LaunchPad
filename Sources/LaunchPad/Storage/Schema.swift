@@ -54,18 +54,13 @@ public enum Schema {
 
     // MARK: - Setup
 
-    /// 在数据库上创建所有表（幂等，可重复调用）
     public static func setupSchema(db: OpaquePointer) {
-        let statements = [
-            "PRAGMA foreign_keys = ON",
-            "PRAGMA journal_mode = WAL",
-            createItemsTable,
-            createAppsTable,
-            createGroupsTable,
-            createImageCacheTable,
-            createSchemaVersionTable,
-        ]
+        setupSchema(db: db, statements: Schema.defaultStatements)
+    }
 
+    /// 在数据库上创建指定语句（幂等）。`statements` 可注入，便于测试触发
+    /// `sqlite3_exec` 失败的错误日志分支（默认走 `defaultStatements` 真实建表语句）。
+    public static func setupSchema(db: OpaquePointer, statements: [String]) {
         for sql in statements {
             if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
                 let errmsg = sqlite3_errmsg(db).map { String(cString: $0) } ?? "unknown"
@@ -73,8 +68,26 @@ public enum Schema {
             }
         }
 
-        // 写入版本号（仅首次）
-        let checkSQL = "SELECT COUNT(*) FROM schema_version"
+        ensureVersionRecord(db: db)
+    }
+
+    private static let defaultStatements: [String] = [
+        "PRAGMA foreign_keys = ON",
+        "PRAGMA journal_mode = WAL",
+        createItemsTable,
+        createAppsTable,
+        createGroupsTable,
+        createImageCacheTable,
+        createSchemaVersionTable,
+    ]
+
+    /// 写入 schema 版本号（仅首次）。
+    /// checkSQL/insertSQL 可注入以便测试覆盖 prepare 失败路径（正常流程不可达的防御分支）。
+    static func ensureVersionRecord(
+        db: OpaquePointer,
+        checkSQL: String = "SELECT COUNT(*) FROM schema_version",
+        insertSQL: String = "INSERT INTO schema_version (version) VALUES (?)"
+    ) {
         var checkStmt: OpaquePointer?
         guard sqlite3_prepare_v2(db, checkSQL, -1, &checkStmt, nil) == SQLITE_OK else {
             return
@@ -84,7 +97,6 @@ public enum Schema {
             let count = sqlite3_column_int(checkStmt, 0)
             if count == 0 {
                 var insertStmt: OpaquePointer?
-                let insertSQL = "INSERT INTO schema_version (version) VALUES (?)"
                 guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStmt, nil) == SQLITE_OK else {
                     return
                 }

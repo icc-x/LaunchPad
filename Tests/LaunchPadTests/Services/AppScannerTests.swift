@@ -128,6 +128,68 @@ struct AppScannerTests {
         #expect(result.count == 1)
         #expect(result.first?.bundleId == "com.apple.Safari")
     }
+
+    @Test("目录读取失败时跳过该目录")
+    func scan_directoryReadError_continues() {
+        let fs = MockFileSystemService()
+        fs.shouldThrowOnContentsOfDirectory = true
+
+        let scanner = AppScanner(fileSystemService: fs)
+        let result = scanner.scanDirectories([appDir])
+
+        #expect(result.isEmpty)
+    }
+
+    @Test("从系统 LaunchPadLayout.plist 读取排除列表")
+    func scan_loadsSystemExcludedBundleIds() {
+        let dir = NSHomeDirectory() + "/Library/Application Support/Dock"
+        let plistPath = dir + "/LaunchPadLayout.plist"
+        let fm = FileManager.default
+
+        // 备份已有文件
+        let backupURL = URL(fileURLWithPath: plistPath + ".backup_test")
+        var hadOriginal = false
+        if fm.fileExists(atPath: plistPath) {
+            try? fm.copyItem(atPath: plistPath, toPath: backupURL.path)
+            try? fm.removeItem(atPath: plistPath)
+            hadOriginal = true
+        }
+        defer {
+            // 清理测试文件
+            try? fm.removeItem(atPath: plistPath)
+            if hadOriginal {
+                try? fm.moveItem(atPath: backupURL.path, toPath: plistPath)
+            }
+        }
+
+        // 创建目录和测试 plist
+        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
+        let plist: [String: Any] = [
+            "pages": [
+                ["items": [
+                    ["bundleid": "com.apple.hidden1", "visible": false],
+                    ["bundleid": "com.apple.visible1", "visible": true],
+                ]],
+                ["items": [
+                    ["bundleid": "com.apple.hidden2", "visible": false],
+                ]],
+            ]
+        ]
+        let data = try! PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
+        try! data.write(to: URL(fileURLWithPath: plistPath))
+
+        let fs = MockFileSystemService()
+        let appURL = self.appURL("HiddenApp")
+        fs.directoryContentsMap[appDir] = [appURL]
+        fs.existingFiles = [appURL]
+        fs.bundleInfos[appURL] = makePlist(name: "HiddenApp", bundleId: "com.apple.hidden1")
+
+        let scanner = AppScanner(fileSystemService: fs)
+        let result = scanner.scanDirectories([appDir])
+
+        // com.apple.hidden1 应被排除
+        #expect(result.isEmpty)
+    }
 }
 
 @Suite("AppScanner 首次启动分页")
@@ -279,6 +341,53 @@ struct AppScannerSyncTests {
 
         #expect(writer.insertedItems.isEmpty)
         #expect(writer.updatedItems.isEmpty)
+        #expect(writer.deletedIds.isEmpty)
+    }
+
+    @Test("插入失败时记录日志不崩溃")
+    func sync_insertError_logsAndContinues() {
+        let writer = MockItemWriter()
+        writer.insertError = TestError.generic
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanned = [
+            ScannedApp(name: "NewApp", bundleId: "com.new.app", path: "/Applications/NewApp.app")
+        ]
+
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [], lastPageId: nil, writer: writer)
+
+        #expect(writer.insertedItems.isEmpty)
+    }
+
+    @Test("更新失败时记录日志不崩溃")
+    func sync_updateError_logsAndContinues() {
+        let writer = MockItemWriter()
+        writer.updateError = TestError.generic
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let existing = TestDataFactory.makePageItem(
+            type: .app,
+            app: TestDataFactory.makeAppInfo(title: "OldName", bundleId: "com.changed.app", path: "/old/path")
+        )
+        let scanned = [
+            ScannedApp(name: "NewName", bundleId: "com.changed.app", path: "/new/path")
+        ]
+
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [existing], lastPageId: nil, writer: writer)
+
+        #expect(writer.updatedItems.isEmpty)
+    }
+
+    @Test("删除失败时记录日志不崩溃")
+    func sync_deleteError_logsAndContinues() {
+        let writer = MockItemWriter()
+        writer.deleteError = TestError.generic
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let existing = TestDataFactory.makePageItem(
+            type: .app,
+            app: TestDataFactory.makeAppInfo(title: "OldApp", bundleId: "com.old.app")
+        )
+
+        scanner.incrementalSync(scannedApps: [], existingItems: [existing], lastPageId: nil, writer: writer)
+
         #expect(writer.deletedIds.isEmpty)
     }
 }

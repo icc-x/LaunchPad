@@ -53,7 +53,7 @@ public final class SearchDebouncer {
         scheduler.cancelPending()
         let handler = searchHandler
         nonisolated(unsafe) let unsafeHandler = handler
-        nonisolated(unsafe) let unsafeQuery = query
+        let unsafeQuery = query
         scheduler.schedule(after: debounceInterval) {
             // DispatchQueueScheduler 在主线程调用此闭包
             // MockScheduler.fireLatest() 也在测试主线程调用

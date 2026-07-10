@@ -31,7 +31,7 @@ public struct AccessibilitySettings {
 
 /// Reactive accessibility settings observer
 /// Monitors system accessibility settings changes via NotificationCenter
-public final class AccessibilityObserver {
+public final class AccessibilityObserver: @unchecked Sendable {
 
     public typealias ChangeCallback = (AccessibilitySettings) -> Void
 

@@ -88,6 +88,61 @@ struct FolderControllerTests {
         #expect(writer.updatedItems.first?.parentId == 1)
     }
 
+    @Test("Remove from folder — 3 children, removing 1 leaves 2, no dissolve")
+    func removeFromFolder_剩2个子项_移除1个后不解散() throws {
+        let (sut, writer, reader) = try makeSUT()
+        let folderId: Int64 = 5
+        let item = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: folderId)
+        let remaining = [
+            TestDataFactory.makePageItem(id: 11, type: .app, ordering: 1, parentId: folderId),
+            TestDataFactory.makePageItem(id: 12, type: .app, ordering: 2, parentId: folderId)
+        ]
+        reader.fetchAllItemsHandler = { _ in remaining }
+
+        try sut.removeFromFolder(item: item, folderId: folderId,
+                                  targetPageId: 1, targetOrdering: 3, reader: reader)
+
+        #expect(writer.updatedItems.count == 1)
+        #expect(writer.updatedItems.first?.parentId == 1)
+        #expect(writer.deletedIds.isEmpty)
+    }
+
+    @Test("Remove from folder — 2 children, removing 1 leaves 1, auto-dissolves")
+    func removeFromFolder_剩1个子项_自动解散() throws {
+        let (sut, writer, reader) = try makeSUT()
+        let folderId: Int64 = 5
+        let item = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: folderId)
+        let lastChild = TestDataFactory.makePageItem(id: 11, type: .app, ordering: 1, parentId: folderId)
+        reader.fetchAllItemsHandler = { _ in [lastChild] }
+
+        try sut.removeFromFolder(item: item, folderId: folderId,
+                                  targetPageId: 1, targetOrdering: 3, reader: reader)
+
+        #expect(reader.fetchAllItemsCallCount == 1)
+        #expect(writer.updatedItems.count == 2)
+        #expect(writer.deletedIds.contains(folderId))
+        #expect(writer.updatedItems.first?.id == 10)
+        #expect(writer.updatedItems.first?.parentId == 1)
+        #expect(writer.updatedItems.last?.id == 11)
+        #expect(writer.updatedItems.last?.parentId == 1)
+        #expect(writer.updatedItems.last?.ordering == 4)
+    }
+
+    @Test("Remove from folder — 1 child, removing it leaves 0, no dissolve")
+    func removeFromFolder_最后一个子项被移除_不解散() throws {
+        let (sut, writer, reader) = try makeSUT()
+        let folderId: Int64 = 5
+        let item = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: folderId)
+        reader.fetchAllItemsHandler = { _ in [] }
+
+        try sut.removeFromFolder(item: item, folderId: folderId,
+                                  targetPageId: 1, targetOrdering: 3, reader: reader)
+
+        #expect(writer.updatedItems.count == 1)
+        #expect(writer.updatedItems.first?.parentId == 1)
+        #expect(writer.deletedIds.isEmpty)
+    }
+
     @Test("Rename folder")
     func renameFolder_updatesTitle() throws {
         let (sut, writer, reader) = try makeSUT()

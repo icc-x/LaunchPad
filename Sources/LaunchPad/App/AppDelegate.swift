@@ -11,37 +11,89 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services
 
-    private var storage: StorageManager!
-    private var iconCache: IconCache!
-    private var appScanner: AppScanner!
-    private var searchEngine: SearchEngine!
-    private var hotkeyManager: HotkeyManager!
-    private var fileWatcher: FileWatcher?
+    var storage: (any DataStoring)!
+    var iconCache: IconCache!
+    var appScanner: AppScanner!
+    var searchEngine: SearchEngine!
+    var hotkeyManager: HotkeyManager!
+    var fileWatcher: FileWatcher?
 
     // MARK: - Controllers
 
-    private var lifecycle: WindowLifecycle!
-    private var windowController: LaunchPadWindowController!
-    private var viewController: LaunchPadViewController!
+    var lifecycle: WindowLifecycle!
+    var windowController: LaunchPadWindowController!
+    var viewController: LaunchPadViewController?
 
     // MARK: - Menu Bar
 
-    private var statusItem: NSStatusItem!
+    var statusItem: NSStatusItem!
+
+    // MARK: - Test Injection Points
+
+    /// 数据库工厂（默认创建真实 StorageManager，测试可注入以触发 SQLite 损坏恢复分支）
+    var storageFactory: (String) throws -> StorageManager = { try StorageManager(dbPath: $0) }
+
+    /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
+    var activationPolicySetter: (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) }
+
+    /// 告警展示器（默认弹真实 NSAlert，测试注入为同步记录以避免 runModal 阻塞）
+    var alertRunner: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() }
+
+    /// 多实例检测（默认查系统运行实例，测试可注入以触发/跳过终止分支）
+    var runningInstanceChecker: () -> Bool = {
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).count > 1
+    }
+
+    /// 激活已有实例（默认调用系统 API，测试注入避免真实激活）
+    var existingInstanceActivator: () -> Void = {
+        let bundleId = Bundle.main.bundleIdentifier ?? ""
+        NSRunningApplication.runningApplications(withBundleIdentifier: bundleId).first?.activate()
+    }
+
+    /// 应用终止器（默认 NSApp.terminate，测试注入避免真实退出）
+    var appTerminator: () -> Void = { NSApp.terminate(nil) }
+
+    /// SQLite 损坏处理策略（默认走 ErrorRecovery，测试可强制 .deleteAndRescan）
+    var corruptionHandler: (String) -> ErrorRecovery.ErrorStrategy = { ErrorRecovery.handleSQLiteCorruption(dbPath: $0) }
+
+    /// 主线程异步派发（默认 DispatchQueue.main.async，测试注入为同步执行以覆盖告警分支）
+    var mainAsyncRunner: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+
+    /// 登录项状态读取（默认 SMAppService.mainApp.status，测试注入）
+    var loginItemStatusProvider: () -> SMAppService.Status = { SMAppService.mainApp.status }
+
+    /// 登录项注销（默认 SMAppService.mainApp.unregister，测试注入）
+    var loginItemUnregister: () throws -> Void = { try SMAppService.mainApp.unregister() }
+
+    /// 登录项注册（默认 SMAppService.mainApp.register，测试注入）
+    var loginItemRegister: () throws -> Void = { try SMAppService.mainApp.register() }
+
+    /// 状态栏图标工厂（默认 NSStatusBar.system.statusItem，测试注入可返回可控实例）
+    var statusItemFactory: () -> NSStatusItem = { NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength) }
+
+    /// 文件监控器工厂（默认创建真实 FileWatcher，测试注入安全检查版本避免真实 FSEvent 监听）
+    var fileWatcherFactory: () -> FileWatcher = { FileWatcher(debounceInterval: 2.0) }
+
+    /// 监控目录（默认系统应用目录，测试注入临时目录以确定性触发变更）
+    var watchedPaths: [String] = [
+        "/Applications",
+        NSHomeDirectory() + "/Applications",
+        "/System/Applications",
+    ]
 
     // MARK: - Application Lifecycle
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
         // 多实例防护：激活已有实例，退出当前
-        let bundleId = Bundle.main.bundleIdentifier ?? ""
-        let running = NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
-        if running.count > 1 {
-            running.first?.activate()
-            NSApp.terminate(nil)
+        if runningInstanceChecker() {
+            existingInstanceActivator()
+            appTerminator()
             return
         }
 
         // Agent app: no Dock icon
-        NSApp.setActivationPolicy(.accessory)
+        activationPolicySetter(.accessory)
 
         setupServices()
         guard storage != nil else {
@@ -57,19 +109,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Service Setup
 
-    private func setupServices() {
+    func setupServices() {
         // Database
         let dbPath = databasePath()
         do {
-            storage = try StorageManager(dbPath: dbPath)
+            storage = try storageFactory(dbPath)
         } catch {
             // If DB is corrupted, delete and retry
-            let strategy = ErrorRecovery.handleSQLiteCorruption(dbPath: dbPath)
+            let strategy = corruptionHandler(dbPath)
             if case .deleteAndRescan = strategy {
                 try? FileManager.default.removeItem(atPath: dbPath)
-                storage = try? StorageManager(dbPath: dbPath)
+                storage = try? storageFactory(dbPath)
             }
         }
+        // 数据库仍不可用则放弃启动，交由 applicationDidFinishLaunching 记录并退出
+        guard storage != nil else { return }
 
         // Icon cache
         let iconProvider = SystemIconProvider()
@@ -86,7 +140,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         hotkeyManager = HotkeyManager()
     }
 
-    private func setupControllers() {
+    func setupControllers() {
         // Drag controller
         let dragController = DragController(itemWriter: storage)
 
@@ -94,13 +148,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let folderController = FolderController(itemWriter: storage)
 
         // View controller
-        viewController = LaunchPadViewController(
+        let vc = LaunchPadViewController(
             storage: storage,
             iconCache: iconCache,
             searchEngine: searchEngine,
             dragController: dragController,
             folderController: folderController
         )
+        viewController = vc
 
         // Lifecycle
         lifecycle = WindowLifecycle()
@@ -108,18 +163,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // Window controller
         windowController = LaunchPadWindowController(
             lifecycle: lifecycle,
-            viewController: viewController
+            viewController: vc
         )
         // ESC 关闭窗口：ViewController.onClose → lifecycle.handleEscape()
-        viewController.onClose = { [weak self] in
-            self?.windowController.escape()
+        vc.onClose = { [weak self] in
+            self?.windowController?.escape()
         }
     }
 
     // MARK: - Menu Bar
 
-    private func setupMenuBar() {
-        statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    func setupMenuBar() {
+        statusItem = statusItemFactory()
 
         if let button = statusItem.button {
             button.image = NSImage(named: NSImage.applicationIconName)
@@ -133,7 +188,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // 登录自启动开关
         let loginItem = NSMenuItem(title: "Open at Login", action: #selector(toggleLoginItem), keyEquivalent: "")
-        loginItem.state = SMAppService.mainApp.status == .enabled ? .on : .off
+        loginItem.state = loginItemStatusProvider() == .enabled ? .on : .off
         menu.addItem(loginItem)
 
         menu.addItem(NSMenuItem.separator())
@@ -141,21 +196,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         statusItem.menu = menu
     }
 
-    @objc private func statusItemClicked() {
+    @objc func statusItemClicked() {
         windowController.toggle()
     }
 
-    @objc private func toggleLoginItem() {
+    @objc func toggleLoginItem() {
         do {
-            if SMAppService.mainApp.status == .enabled {
-                try SMAppService.mainApp.unregister()
+            if loginItemStatusProvider() == .enabled {
+                try loginItemUnregister()
             } else {
-                try SMAppService.mainApp.register()
+                try loginItemRegister()
             }
             // 更新菜单状态
             if let menu = statusItem.menu,
                let item = menu.items.first(where: { $0.action == #selector(toggleLoginItem) }) {
-                item.state = SMAppService.mainApp.status == .enabled ? .on : .off
+                item.state = loginItemStatusProvider() == .enabled ? .on : .off
             }
         } catch {
             NSLog("[AppDelegate] Failed to toggle login item: \(error)")
@@ -164,7 +219,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Hotkey
 
-    private func setupHotkey() {
+    func setupHotkey() {
         hotkeyManager.onToggle = { [weak self] in
             guard let self else { return }
             Task { @MainActor in
@@ -176,22 +231,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         if !registered && hotkeyManager.hasConflict {
             // 快捷键被其他应用占用，提示用户
-            DispatchQueue.main.async {
+            mainAsyncRunner {
                 let alert = NSAlert()
                 alert.messageText = "Option+Space 快捷键已被占用"
                 alert.informativeText = "另一个应用正在使用 Option+Space 快捷键。请关闭冲突应用或在 LaunchPad 设置中选择其他快捷键。"
                 alert.addButton(withTitle: "OK")
-                alert.runModal()
+                self.alertRunner(alert)
             }
         } else if !registered {
             // 无 Input Monitoring 权限，引导用户授权
-            DispatchQueue.main.async {
+            mainAsyncRunner {
                 let alert = NSAlert()
                 alert.messageText = "需要辅助功能权限"
                 alert.informativeText = "LaunchPad 需要 Input Monitoring（输入监控）权限才能响应 Option+Space 快捷键。\n\n请在「系统设置 → 隐私与安全性 → 输入监控」中启用 LaunchPad。"
                 alert.addButton(withTitle: "打开系统设置")
                 alert.addButton(withTitle: "稍后设置")
-                let response = alert.runModal()
+                let response = self.alertRunner(alert)
                 if response == .alertFirstButtonReturn {
                     // 打开 Input Monitoring 设置页面
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
@@ -203,49 +258,49 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in
             guard let self else { return event }
-            // 本地事件监视器在主线程运行，此处通过 nonisolated(unsafe) 访问 @MainActor 状态
-            nonisolated(unsafe) let unsafeSelf = self
-            guard unsafeSelf.lifecycle.state == .visible else { return event }
+            // 提取非 Sendable NSEvent 的数据，避免跨 actor 边界发送
+            let keyCode = event.keyCode
+            let characters = event.characters
+            // 本地事件监视器在主线程运行，此处通过 MainActor.assumeIsolated 安全访问 @MainActor 状态
+            let suppress = MainActor.assumeIsolated { () -> Bool in
+                guard self.lifecycle.state == .visible else { return false }
 
-            let key: KeyboardNavigator.Key? = switch event.keyCode {
-            case 53:  .escape
-            case 36:  .enter
-            case 126: .upArrow
-            case 125: .downArrow
-            case 123: .leftArrow
-            case 124: .rightArrow
-            case 48:  .tab
-            case 51:  .delete
-            default:  nil
-            }
+                let key: KeyboardNavigator.Key? = switch keyCode {
+                case 53:  .escape
+                case 36:  .enter
+                case 126: .upArrow
+                case 125: .downArrow
+                case 123: .leftArrow
+                case 124: .rightArrow
+                case 48:  .tab
+                case 51:  .delete
+                default:  nil
+                }
 
-            if let key {
-                _ = unsafeSelf.viewController.handleKeyEvent(key)
-            } else if let chars = event.characters {
-                _ = unsafeSelf.viewController.handleCharacterInput(chars)
+                if let key {
+                    _ = self.viewController?.handleKeyEvent(key)
+                } else if let chars = characters {
+                    _ = self.viewController?.handleCharacterInput(chars)
+                }
+                return true
             }
-            return nil
+            return suppress ? nil : event
         }
         hotkeyManager.registerLocalMonitor()
     }
 
     // MARK: - File System Monitoring
 
-    private func setupFileWatcher() {
-        let watcher = FileWatcher(debounceInterval: 2.0)
-        let paths = [
-            "/Applications",
-            NSHomeDirectory() + "/Applications",
-            "/System/Applications",
-        ]
-        watcher.start(paths: paths) { [weak self] in
+    func setupFileWatcher() {
+        let watcher = fileWatcherFactory()
+        watcher.start(paths: watchedPaths) { [weak self] in
             self?.performIncrementalScan()
         }
         self.fileWatcher = watcher
     }
 
     /// 增量扫描（由 FileWatcher 触发）
-    private func performIncrementalScan() {
+    func performIncrementalScan() {
         let directories = [
             URL(fileURLWithPath: "/Applications"),
             URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
@@ -265,8 +320,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 writer: storage
             )
             // 刷新 UI
-            DispatchQueue.main.async { [weak self] in
-                self?.viewController.loadData()
+            mainAsyncRunner { [weak self] in
+                self?.viewController?.loadData()
             }
         } catch {
             NSLog("[AppDelegate] Incremental scan failed: \(error)")
@@ -275,7 +330,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Initial Scan
 
-    private func performInitialScan() {
+    func performInitialScan() {
         let directories = [
             URL(fileURLWithPath: "/Applications"),
             URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
@@ -314,7 +369,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Database Path
 
-    private func databasePath() -> String {
+    func databasePath() -> String {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
         let dir = appSupport.appendingPathComponent("LaunchPad")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
@@ -325,7 +380,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 // MARK: - System Service Implementations
 
 /// 生产环境文件系统服务
-private struct SystemFileSystemService: FileSystemService {
+struct SystemFileSystemService: FileSystemService {
     func contentsOfDirectory(at url: URL) throws -> [URL] {
         try FileManager.default.contentsOfDirectory(
             at: url,
@@ -349,7 +404,7 @@ private struct SystemFileSystemService: FileSystemService {
 }
 
 /// 生产环境图标提供者
-private struct SystemIconProvider: IconProviding {
+struct SystemIconProvider: IconProviding {
     func icon(forPath path: String) -> NSImage {
         NSWorkspace.shared.icon(forFile: path)
     }

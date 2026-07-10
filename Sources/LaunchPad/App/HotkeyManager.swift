@@ -36,19 +36,32 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         retainedLock.unlock()
     }
 
-    private static func getRetained() -> HotkeyManager? {
-        retainedLock.lock()
-        defer { retainedLock.unlock() }
-        return retainedSelf
-    }
+    // MARK: - Test injection points
 
-    public init() {}
+    /// 是否拥有辅助功能/输入监控权限（默认查询系统，测试可注入）
+    var accessibilityChecker: () -> Bool
+
+    /// 默认权限查询实现（具名函数避免默认闭包 thunk 噪声，且可被测试直接覆盖）
+    static func defaultAccessibilityCheck() -> Bool { AXIsProcessTrusted() }
+
+    /// 事件 tap 创建器（默认走真实 CGEvent.tapCreate；测试可注入以模拟成功/失败）
+    var tapProvider: (() -> CFMachPort?)?
+
+    /// 本地键盘监视器闭包（抽出为属性，便于测试直接调用）
+    var localMonitorHandler: ((NSEvent) -> NSEvent)?
+
+    public init() {
+        accessibilityChecker = HotkeyManager.defaultAccessibilityCheck
+        localMonitorHandler = { [weak self] event in
+            self?.handleLocalMonitorEvent(event) ?? event
+        }
+    }
 
     // MARK: - HotkeyManaging
 
     /// Whether the current process has Accessibility / Input Monitoring permission.
     public var isAccessibilityTrusted: Bool {
-        AXIsProcessTrusted()
+        accessibilityChecker()
     }
 
     /// Indicates if the last registration failed due to a hotkey conflict
@@ -61,7 +74,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         // CGEvent.tapCreate may succeed without permission on some macOS versions but the
         // callback will never fire, so we treat "no permission" as a registration failure
         // and let the caller surface a permission prompt.
-        guard isAccessibilityTrusted else { return false }
+        guard accessibilityChecker() else { return false }
 
         let mask = CGEventMask(
             (1 << CGEventType.flagsChanged.rawValue) |
@@ -71,44 +84,17 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         // Use passRetained to prevent use-after-free — the callback holds a strong reference
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
 
-        let callback: CGEventTapCallBack = { proxy, type, event, refcon -> Unmanaged<CGEvent>? in
-            guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
-            let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
-
-            switch type {
-            case .flagsChanged:
-                let isOptionNow = event.flags.contains(.maskAlternate)
-                DispatchQueue.main.async {
-                    manager.isOptionHeld = isOptionNow
-                }
-
-            case .keyDown:
-                let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-                DispatchQueue.main.async {
-                    if manager.isOptionHeld && keyCode == 49 { // 49 = Space
-                        manager.onToggle?()
-                    }
-                }
-
-            default:
-                break
-            }
-
-            return Unmanaged.passUnretained(event)
-        }
-
-        HotkeyManager.setRetained(self)
-
-        eventTap = CGEvent.tapCreate(
+        let tap: CFMachPort? = tapProvider?() ?? CGEvent.tapCreate(
             tap: .cgSessionEventTap,
             place: .headInsertEventTap,
             options: .defaultTap,
             eventsOfInterest: mask,
-            callback: callback,
+            callback: HotkeyManager.tapCallback,
             userInfo: selfPtr
         )
+        eventTap = tap
 
-        guard let tap = eventTap else {
+        guard let tap else {
             // tapCreate 失败：可能是快捷键被其他应用占用
             hasConflict = true
             _ = Unmanaged<HotkeyManager>.fromOpaque(selfPtr).takeRetainedValue()
@@ -116,12 +102,42 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
             return false
         }
 
+        HotkeyManager.setRetained(self)
+
         let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
         runLoopSource = source
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
         return true
+    }
+
+    // MARK: - CGEventTap callback
+
+    /// 静态 CGEventTap 回调（@convention(c)，可直接单元测试）。
+    /// 解析 refcon 恢复 manager 实例，调用 handleGlobalEvent（tap 回调本就在主线程 run loop 触发）。
+    static let tapCallback: CGEventTapCallBack = { proxy, type, event, refcon in
+        guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
+        let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
+        manager.handleGlobalEvent(type: type, event: event)
+        return Unmanaged.passUnretained(event)
+    }
+
+    /// CGEventTap 回调核心逻辑（抽出便于测试，主线程执行）。
+    func handleGlobalEvent(type: CGEventType, event: CGEvent) {
+        switch type {
+        case .flagsChanged:
+            isOptionHeld = event.flags.contains(.maskAlternate)
+
+        case .keyDown:
+            let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
+            if isOptionHeld && keyCode == 49 { // 49 = Space
+                onToggle?()
+            }
+
+        default:
+            break
+        }
     }
 
     public func unregisterGlobalHotkey() {
@@ -145,16 +161,18 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     // MARK: - In-app keyboard monitoring
 
     public func registerLocalMonitor() {
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged]) { [weak self] event in
-            guard let self else { return event }
-            if event.type == .flagsChanged {
-                return self.onKeyDown?(event) ?? event
-            }
-            if event.keyCode == 53 { return event }          // ESC
-            if [123, 124, 125, 126].contains(event.keyCode) { return event } // Arrow keys
-            if event.keyCode == 36 { return event }           // Enter
-            return self.onKeyDown?(event) ?? event
+        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged], handler: localMonitorHandler!)
+    }
+
+    /// 本地键盘监视器事件处理（抽出便于测试）。
+    func handleLocalMonitorEvent(_ event: NSEvent) -> NSEvent? {
+        if event.type == .flagsChanged {
+            return onKeyDown?(event) ?? event
         }
+        if event.keyCode == 53 { return event }          // ESC
+        if [123, 124, 125, 126].contains(event.keyCode) { return event } // Arrow keys
+        if event.keyCode == 36 { return event }           // Enter
+        return onKeyDown?(event) ?? event
     }
 
     public func unregisterLocalMonitor() {

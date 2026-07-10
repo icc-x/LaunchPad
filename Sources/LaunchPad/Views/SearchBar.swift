@@ -10,6 +10,9 @@ public class SearchBar: NSSearchField {
 
     private var isShown = false
 
+    /// 测试注入：驱动 hide 动画完成回调（同 EmptyStateView.hideCompletionRunner）。
+    internal var hideCompletionRunner: (@escaping () -> Void) -> Void = { $0() }
+
     // MARK: - Init
 
     public override init(frame frameRect: NSRect) {
@@ -33,6 +36,13 @@ public class SearchBar: NSSearchField {
         // Start hidden
         alphaValue = 0
         isHidden = true
+
+        hideCompletionRunner = { [weak self] completion in
+            NSAnimationContext.runAnimationGroup({ context in
+                context.duration = AnimationConstants.windowExpand.duration
+                self?.animator().alphaValue = 0
+            }, completionHandler: { completion() })
+        }
     }
 
     // MARK: - Show / Hide
@@ -60,12 +70,11 @@ public class SearchBar: NSSearchField {
         stringValue = ""
 
         if animated {
-            NSAnimationContext.runAnimationGroup({ context in
-                context.duration = AnimationConstants.windowExpand.duration
-                animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
-                self?.isHidden = true
-            })
+            hideCompletionRunner { [weak self] in
+                MainActor.assumeIsolated {
+                    self?.isHidden = true
+                }
+            }
         } else {
             alphaValue = 0
             isHidden = true

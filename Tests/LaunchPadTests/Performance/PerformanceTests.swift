@@ -2,6 +2,9 @@ import Foundation
 import Testing
 @testable import LaunchPad
 import LaunchPadProtocols
+#if canImport(AppKit)
+import AppKit
+#endif
 
 @Suite("性能基准测试")
 struct PerformanceTests {
@@ -103,4 +106,72 @@ struct PerformanceTests {
 
         #expect(elapsed < 0.001)
     }
+
+    // MARK: - IconCache
+
+    #if canImport(AppKit)
+    @Test("IconCache 1000 次随机访问性能")
+    func iconCache_1000randomAccess_perf() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        // 不设置 modificationDateResult → IconCache 走 "no current modification date" 分支 → isStillValid=true
+        // 首次访问磁盘命中后写入内存，后续访问纯内存命中
+        let image = NSImage(size: NSSize(width: 16, height: 16))
+        provider.iconResult = image
+        let tiffData = image.tiffRepresentation ?? Data()
+        let itemCount = 50
+        for i in 0..<itemCount {
+            store.storedImages[Int64(i)] = (icon1x: tiffData, icon2x: tiffData)
+        }
+
+        let cache = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 100)
+        let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
+
+        // 预填充内存缓存
+        for (i, path) in paths.enumerated() {
+            _ = cache.icon(forItemId: Int64(i), path: path)
+        }
+
+        // 1000 次随机访问（纯内存命中）
+        let start = Date()
+        for _ in 0..<1000 {
+            let idx = Int.random(in: 0..<paths.count)
+            _ = cache.icon(forItemId: Int64(idx), path: paths[idx])
+        }
+        let elapsed = Date().timeIntervalSince(start)
+
+        #expect(elapsed < 0.3)  // 1000 次内存命中应远低于 300ms
+    }
+
+    @Test("IconCache 1000 次访问后无磁盘重复写入")
+    func iconCache_1000access_noDiskWriteLeak() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        // 不设置 modificationDateResult → 磁盘校验恒为 valid → 不触发 storeToDisk
+        let image = NSImage(size: NSSize(width: 16, height: 16))
+        provider.iconResult = image
+        let tiffData = image.tiffRepresentation ?? Data()
+        let itemCount = 50
+        for i in 0..<itemCount {
+            store.storedImages[Int64(i)] = (icon1x: tiffData, icon2x: tiffData)
+        }
+
+        let cache = IconCache(iconProvider: provider, imageStore: store, memoryLimit: itemCount)
+        let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
+
+        // 预填充：首次访问磁盘命中 → 写入内存
+        for (i, path) in paths.enumerated() {
+            _ = cache.icon(forItemId: Int64(i), path: path)
+        }
+        let saveCountAfterPrefill = store.saveCallCount
+
+        // 1000 次随机访问（内存命中，不触发磁盘写入）
+        for _ in 0..<1000 {
+            let idx = Int.random(in: 0..<paths.count)
+            _ = cache.icon(forItemId: Int64(idx), path: paths[idx])
+        }
+
+        #expect(store.saveCallCount == saveCountAfterPrefill)  // 无重复磁盘写入
+    }
+    #endif
 }

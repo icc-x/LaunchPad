@@ -8,6 +8,20 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     private let lifecycle: WindowLifecycle
     private let viewController: LaunchPadViewController
     private var accessibilityObserver: AccessibilityObserver?
+    /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduced 动画分支
+    internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
+
+    /// 测试注入：驱动「动画 + 完成回调」。生产环境使用真实 NSAnimationContext；
+    /// 测试环境注入为同步立即触发完成回调，确定性覆盖 lifecycle.xxxDidFinish()。
+    internal var runAnimated: (_ duration: TimeInterval, _ animations: () -> Void, _ completion: @escaping () -> Void) -> Void = { duration, animations, completion in
+        NSAnimationContext.runAnimationGroup({ ctx in
+            ctx.duration = duration
+            animations()
+        }, completionHandler: { completion() })
+    }
+
+    /// 测试注入：替代动画完成回调内的 DispatchQueue.main.async，使 lifecycle 状态推进可同步驱动。
+    internal var mainAsyncRunner: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
 
     // MARK: - Init
 
@@ -64,7 +78,8 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     }
 
     public required init?(coder: NSCoder) {
-        fatalError("init(coder:) not supported")
+        // 不支持 NSCoding，返回 nil（可测且不崩溃）替代 fatalError
+        return nil
     }
 
     // MARK: - Public API
@@ -115,13 +130,10 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         DispatchQueue.main.async { [weak self] in
             guard let self else { return }
             // Fade the overlay completely out so the launched app receives focus.
-            NSAnimationContext.runAnimationGroup({ ctx in
-                ctx.duration = AnimationConstants.appLaunch.duration
+            self.runAnimated(AnimationConstants.appLaunch.duration, {
                 self.window?.animator().alphaValue = 0
-            }, completionHandler: { [weak self] in
-                DispatchQueue.main.async {
-                    self?.lifecycle.launchAnimationDidFinish()
-                }
+            }, { [weak self] in
+                self?.mainAsyncRunner { [weak self] in self?.lifecycle.launchAnimationDidFinish() }
             })
         }
     }
@@ -139,17 +151,14 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         window.makeKeyAndOrderFront(nil)
 
         AnimationRunner.animate(
+            settings: accessibilitySettingsProvider(),
             animation: AnimationConstants.windowExpand,
             normal: {
                 window.contentView?.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = AnimationConstants.windowExpand.duration
-                    ctx.timingFunction = CAMediaTimingFunction(name: .easeOut)
+                self.runAnimated(AnimationConstants.windowExpand.duration, {
                     window.animator().alphaValue = 1
-                }, completionHandler: { [weak self] in
-                    DispatchQueue.main.async {
-                        self?.lifecycle.openAnimationDidFinish()
-                    }
+                }, { [weak self] in
+                    self?.mainAsyncRunner { [weak self] in self?.lifecycle.openAnimationDidFinish() }
                 })
                 let spring = CASpringAnimation(keyPath: "transform.scale")
                 spring.fromValue = 0.8
@@ -158,29 +167,23 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
                 window.contentView?.layer?.add(spring, forKey: "scaleIn")
             },
             reduced: {
-                NSAnimationContext.runAnimationGroup({ ctx in
-                    ctx.duration = 0.1
+                self.runAnimated(0.1, {
                     window.animator().alphaValue = 1
-                }, completionHandler: { [weak self] in
-                    DispatchQueue.main.async {
-                        self?.lifecycle.openAnimationDidFinish()
-                    }
+                }, { [weak self] in
+                    self?.mainAsyncRunner { [weak self] in self?.lifecycle.openAnimationDidFinish() }
                 })
             }
         )
     }
 
     private func hideWindowAnimated() {
-        let settings = AccessibilitySettings.current()
+        let settings = accessibilitySettingsProvider()
         let duration = settings.reduceMotion ? 0.1 : AnimationConstants.appLaunch.duration
 
-        NSAnimationContext.runAnimationGroup({ ctx in
-            ctx.duration = duration
+        self.runAnimated(duration, {
             self.window?.animator().alphaValue = 0
-        }, completionHandler: { [weak self] in
-            DispatchQueue.main.async {
-                self?.lifecycle.closeAnimationDidFinish()
-            }
+        }, { [weak self] in
+            self?.mainAsyncRunner { [weak self] in self?.lifecycle.closeAnimationDidFinish() }
         })
     }
 
@@ -189,7 +192,7 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         lifecycle.handleFocusLost()
     }
 
-    private func applyAccessibilitySettings(_ settings: AccessibilitySettings) {
+    internal func applyAccessibilitySettings(_ settings: AccessibilitySettings) {
         guard let visualEffect = window?.contentView as? NSVisualEffectView else { return }
         let material = BackgroundMaterial.strategy(reduceTransparency: settings.reduceTransparency)
         switch material {

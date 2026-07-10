@@ -108,7 +108,7 @@ final class AppScanner: AppScanning {
                     app: appInfo,
                     group: nil
                 )
-                try? writer.insertItem(appItem)
+                _ = try? writer.insertItem(appItem)
             }
         }
     }
@@ -142,7 +142,7 @@ final class AppScanner: AppScanning {
                 ordering: newAppOrdering, parentId: lastPageId, app: appInfo, group: nil
             )
             do {
-                try writer.insertItem(item)
+                _ = try writer.insertItem(item)
                 newAppOrdering += 1
             } catch {
                 NSLog("[AppScanner] Failed to insert app \(scanned.bundleId): \(error)")

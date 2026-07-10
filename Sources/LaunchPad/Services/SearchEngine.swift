@@ -95,7 +95,7 @@ final class MatchCounter: @unchecked Sendable {
 }
 
 /// 搜索引擎 — 提供基于评分的应用匹配与搜索，支持结果缓存
-public struct SearchEngine {
+public struct SearchEngine: @unchecked Sendable {
 
     private let cache: LRUCache<String, [PageItem]>
     private let matchCounter: MatchCounter?

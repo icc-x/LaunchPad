@@ -18,9 +18,13 @@ public class AppIconCell: NSCollectionViewItem {
     private var currentBundleId: String?
     private var iconWidthConstraint: NSLayoutConstraint?
     private var iconHeightConstraint: NSLayoutConstraint?
+    private var workspaceObservers: [NSObjectProtocol] = []
 
     /// 删除按钮点击回调
     public var onDelete: (() -> Void)?
+
+    /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduceMotion 脉冲分支。
+    internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
 
     // MARK: - Lifecycle
 
@@ -134,6 +138,55 @@ public class AppIconCell: NSCollectionViewItem {
         runningIndicator.isHidden = !isRunning
     }
 
+    // MARK: - Workspace Notification Observers (test hooks)
+
+    var isRunningIndicatorVisible: Bool {
+        !runningIndicator.isHidden
+    }
+
+    var hasWorkspaceObservers: Bool {
+        !workspaceObservers.isEmpty
+    }
+
+    // MARK: - Workspace Notification Listening
+
+    private func registerWorkspaceNotifications() {
+        unregisterWorkspaceNotifications()
+        let center = NSWorkspace.shared.notificationCenter
+        let activate = center.addObserver(
+            forName: NSWorkspace.didActivateApplicationNotification,
+            object: nil, queue: nil
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let bundleId = app?.bundleIdentifier
+            MainActor.assumeIsolated {
+                guard let self,
+                      let bundleId,
+                      bundleId == self.currentBundleId else { return }
+                self.runningIndicator.isHidden = false
+            }
+        }
+        let deactivate = center.addObserver(
+            forName: NSWorkspace.didDeactivateApplicationNotification,
+            object: nil, queue: nil
+        ) { [weak self] notification in
+            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
+            let bundleId = app?.bundleIdentifier
+            MainActor.assumeIsolated {
+                guard let self,
+                      let bundleId,
+                      bundleId == self.currentBundleId else { return }
+                self.runningIndicator.isHidden = true
+            }
+        }
+        workspaceObservers = [activate, deactivate]
+    }
+
+    private func unregisterWorkspaceNotifications() {
+        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.removeAll()
+    }
+
     // MARK: - Configuration
 
     public func configure(item: PageItem, icon: NSImage?, iconSize: CGFloat = 64) {
@@ -148,9 +201,10 @@ public class AppIconCell: NSCollectionViewItem {
 
         currentBundleId = item.app?.bundleId
         updateRunningState()
+        registerWorkspaceNotifications()
 
         // Increase Contrast: 边框 + 加粗文字
-        let settings = AccessibilitySettings.current()
+        let settings = accessibilitySettingsProvider()
         if settings.increaseContrast {
             iconImageView.wantsLayer = true
             iconImageView.layer?.borderWidth = 1
@@ -169,7 +223,7 @@ public class AppIconCell: NSCollectionViewItem {
         guard !isJiggling else { return }
         isJiggling = true
 
-        let settings = AccessibilitySettings.current()
+        let settings = accessibilitySettingsProvider()
 
         // 显示 ✕ 删除按钮
         NSAnimationContext.runAnimationGroup { ctx in
@@ -221,6 +275,7 @@ public class AppIconCell: NSCollectionViewItem {
 
     override public func prepareForReuse() {
         super.prepareForReuse()
+        unregisterWorkspaceNotifications()
         stopJiggling()
         iconImageView.image = nil
         titleLabel.stringValue = ""

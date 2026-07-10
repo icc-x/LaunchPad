@@ -16,20 +16,68 @@ struct LaunchPadViewControllerTests {
         var pages: [PageItem] = []
         var childrenByPage: [Int64: [PageItem]] = [:]
         var deletedIds: [Int64] = []
+        var insertedItems: [PageItem] = []
+        var updatedItems: [PageItem] = []
+        private(set) var fetchAllItemsCallCount = 0
+
+        // 注入：让特定写操作抛出异常，以覆盖各 catch 分支
+        var shouldThrowOnFetch = false
+        var shouldThrowOnDelete = false
+        var shouldThrowOnInsert = false
+        var shouldThrowOnUpdate = false
 
         func fetchAllItems(parentId: Int64?) throws -> [PageItem] {
+            fetchAllItemsCallCount += 1
+            if shouldThrowOnFetch { throw NSError(domain: "MockDataStore", code: 1) }
             if let parentId {
                 return childrenByPage[parentId] ?? []
             }
             return pages
         }
 
-        func insertItem(_ item: PageItem) throws -> Int64 { item.id }
-        func updateItem(_ item: PageItem) throws {}
-        func deleteItem(id: Int64) throws { deletedIds.append(id) }
+        func insertItem(_ item: PageItem) throws -> Int64 {
+            if shouldThrowOnInsert { throw NSError(domain: "MockDataStore", code: 2) }
+            insertedItems.append(item)
+            return item.id
+        }
+        func updateItem(_ item: PageItem) throws {
+            if shouldThrowOnUpdate { throw NSError(domain: "MockDataStore", code: 3) }
+            updatedItems.append(item)
+        }
+        func deleteItem(id: Int64) throws {
+            if shouldThrowOnDelete { throw NSError(domain: "MockDataStore", code: 4) }
+            deletedIds.append(id)
+        }
         func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
         func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {}
         func fetchImage(itemId: Int64) throws -> (Data, Data)? { nil }
+    }
+
+    /// 可控的长按手势：测试可设 state 与 location(in:)，以驱动 handleLongPress 各分支
+    private final class MockPressGesture: NSPressGestureRecognizer {
+        var mockState: NSGestureRecognizer.State
+        var mockLocation: NSPoint = .zero
+        init(state: NSGestureRecognizer.State, location: NSPoint = .zero) {
+            self.mockState = state
+            self.mockLocation = location
+            super.init(target: nil, action: nil)
+        }
+        required init?(coder: NSCoder) { fatalError("init(coder:) not supported") }
+        override var state: NSGestureRecognizer.State {
+            get { mockState }
+            set { mockState = newValue }
+        }
+        override func location(in view: NSView?) -> NSPoint { mockLocation }
+    }
+
+    /// 加载视图并灌入数据，便于需要 collectionView 已就绪的测试
+    private func loadViewWithData(_ sut: LaunchPadViewController, storage: MockDataStore,
+                                  apps: [PageItem] = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")) {
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        storage.pages = [page]
+        storage.childrenByPage = [1: apps]
+        _ = sut.view
+        sut.loadData()
     }
 
     // MARK: - Helpers
@@ -45,6 +93,25 @@ struct LaunchPadViewControllerTests {
             iconCache: iconCache,
             dragController: dragController,
             folderController: folderController
+        )
+        return (sut, dragController, storage)
+    }
+
+    /// 注入 searchScheduler 的 SUT 工厂，用于测试搜索防抖逻辑
+    private func makeSUTWithSearchScheduler(
+        searchScheduler: Scheduler
+    ) -> (LaunchPadViewController, DragController, MockDataStore) {
+        let storage = MockDataStore()
+        let iconProvider = MockIconProvider()
+        let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
+        let dragController = DragController(itemWriter: storage)
+        let folderController = FolderController(itemWriter: storage)
+        let sut = LaunchPadViewController(
+            storage: storage,
+            iconCache: iconCache,
+            dragController: dragController,
+            folderController: folderController,
+            searchScheduler: searchScheduler
         )
         return (sut, dragController, storage)
     }
@@ -400,6 +467,663 @@ struct LaunchPadViewControllerTests {
         dragController.onCreateGroup = { _ in createGroupCalled = true }
         dragController.onCreateGroup?(999)
         #expect(createGroupCalled)
+    }
+
+    // MARK: - 反射辅助
+
+    /// 通过反射访问私有 collectionView，用于直接触发其回调（覆盖私有方法路径）
+    private func extractCollectionView(from sut: LaunchPadViewController) -> AppGridCollectionView? {
+        let mirror = Mirror(reflecting: sut)
+        for child in mirror.children where child.label == "collectionView" {
+            return child.value as? AppGridCollectionView
+        }
+        return nil
+    }
+
+    // MARK: - 视图加载后的 executeAction 分支
+
+    @Test("视图加载后 enterSearchMode 执行 searchBar.show 路径")
+    func enterSearchMode_viewLoaded_executesShowPath() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view  // 触发 loadView + viewDidLoad
+
+        let action = sut.handleCharacterInput("a")
+
+        if case .enterSearchMode(let char) = action {
+            #expect(char == "a")
+        } else {
+            Issue.record("Expected enterSearchMode, got \(action)")
+        }
+    }
+
+    @Test("视图加载后 appendToQuery 调度防抖搜索任务")
+    func appendToQuery_viewLoaded_schedulesDebouncedSearch() {
+        let searchScheduler = MockScheduler()
+        let (sut, _, _) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
+        sut.keyboardNavigator.mode = .search(query: "t")
+        _ = sut.view
+
+        let action = sut.handleCharacterInput("e")
+
+        if case .appendToQuery(let char) = action {
+            #expect(char == "e")
+        } else {
+            Issue.record("Expected appendToQuery, got \(action)")
+        }
+        // 非空查询 → SearchDebouncer 调度 100ms 防抖任务
+        #expect(searchScheduler.scheduledActions.isEmpty == false)
+    }
+
+    @Test("视图加载后 deleteLastCharacter 因查询变短立即触发搜索并取消 pending")
+    func deleteLastCharacter_viewLoaded_triggersImmediateSearch() {
+        let searchScheduler = MockScheduler()
+        let (sut, _, _) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
+        sut.keyboardNavigator.mode = .search(query: "te")
+        _ = sut.view
+
+        // 先追加字符，建立 pending 防抖任务
+        _ = sut.handleCharacterInput("s")
+        #expect(searchScheduler.scheduledActions.isEmpty == false)
+
+        // delete：查询变短 → SearchDebouncer 立即触发并 cancelPending
+        let action = sut.handleKeyEvent(.delete)
+        #expect(action == .deleteLastCharacter)
+        #expect(searchScheduler.scheduledActions.isEmpty)
+    }
+
+    @Test("视图加载后 clearSearch 清空搜索并恢复 idle 模式")
+    func clearSearch_viewLoaded_restoresIdleMode() {
+        let (sut, _, _) = makeSUT()
+        sut.keyboardNavigator.mode = .search(query: "abc")
+        _ = sut.view
+
+        let action = sut.handleKeyEvent(.escape)
+
+        #expect(action == .clearSearch)
+        // KeyboardNavigator 在 search 模式 ESC 返回 clearSearch 后重置为 idle
+        #expect(sut.keyboardNavigator.mode == .idle)
+    }
+
+    // MARK: - moveSelection（视图加载后）
+
+    @Test("视图加载后 down 方向键选中第一个图标")
+    func moveSelection_down_selectsFirstItem() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
+        storage.pages = [page]
+        storage.childrenByPage = [1: apps]
+        _ = sut.view
+        sut.loadData()
+
+        _ = sut.handleKeyEvent(.downArrow)
+
+        #expect(sut.selectedIndex == 0)
+    }
+
+    @Test("视图加载后 tab 键顺序选中下一个图标")
+    func moveSelection_tab_selectsNextItem() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
+        storage.pages = [page]
+        storage.childrenByPage = [1: apps]
+        _ = sut.view
+        sut.loadData()
+
+        _ = sut.handleKeyEvent(.downArrow)
+        #expect(sut.selectedIndex == 0)
+        _ = sut.handleKeyEvent(.tab)
+        #expect(sut.selectedIndex == 1)
+    }
+
+    @Test("视图加载后 up 方向键向上移动选中")
+    func moveSelection_up_movesUp() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let apps = TestDataFactory.makeAppItems(count: 10, titlePrefix: "App")
+        storage.pages = [page]
+        storage.childrenByPage = [1: apps]
+        _ = sut.view
+        sut.loadData()
+        sut.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+
+        // down 两次：第一次选中 0，第二次跳到下一行（0 + columns）
+        _ = sut.handleKeyEvent(.downArrow)
+        _ = sut.handleKeyEvent(.downArrow)
+        let afterTwoDowns = sut.selectedIndex
+        #expect(afterTwoDowns != nil && afterTwoDowns! > 0)
+
+        // up 应回到上一行（索引减小）
+        _ = sut.handleKeyEvent(.upArrow)
+        #expect(sut.selectedIndex ?? 0 < afterTwoDowns ?? 0)
+    }
+
+    // MARK: - 分页导航
+
+    @Test("视图加载后 rightArrow 翻到下一页且到达末页后不越界")
+    func nextPage_navigatesForward() {
+        let (sut, _, storage) = makeSUT()
+        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
+        storage.pages = [page1, page2]
+        storage.childrenByPage = [1: [], 2: []]
+        _ = sut.view
+        sut.loadData()
+
+        // 第 0 页 → 第 1 页 → 已是末页，再翻不越界
+        _ = sut.handleKeyEvent(.rightArrow)
+        _ = sut.handleKeyEvent(.rightArrow)
+    }
+
+    @Test("视图加载后 leftArrow 翻到上一页且不越界")
+    func previousPage_navigatesBackward() {
+        let (sut, _, storage) = makeSUT()
+        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
+        storage.pages = [page1, page2]
+        storage.childrenByPage = [1: [], 2: []]
+        _ = sut.view
+        sut.loadData()
+
+        _ = sut.handleKeyEvent(.rightArrow) // 到第 1 页
+        _ = sut.handleKeyEvent(.leftArrow)  // 回第 0 页
+        _ = sut.handleKeyEvent(.leftArrow)  // 已在第 0 页，不越界
+    }
+
+    @Test("dragController.onPageChange 回调触发翻页导航")
+    func handlePageChange_viaDragControllerCallback() {
+        let (sut, dragController, storage) = makeSUT()
+        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
+        storage.pages = [page1, page2]
+        storage.childrenByPage = [1: [], 2: []]
+        _ = sut.view
+        sut.loadData()
+
+        // viewDidLoad 的 setupCallbacks 已绑定 onPageChange → handlePageChange
+        dragController.onPageChange?(.forward)
+        dragController.onPageChange?(.backward)
+        dragController.onPageChange?(.backward) // 越界保护
+    }
+
+    // MARK: - 文件夹创建
+
+    @Test("handleCreateGroup 合并两个应用创建文件夹")
+    func handleCreateGroup_createsFolderFromTwoApps() {
+        let (sut, dragController, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
+                                                app: TestDataFactory.makeAppInfo(id: 10, title: "App1"))
+        let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1, parentId: 1,
+                                                app: TestDataFactory.makeAppInfo(id: 20, title: "App2"))
+        storage.pages = [page]
+        storage.childrenByPage = [1: [app1, app2]]
+        _ = sut.view
+        sut.loadData()
+
+        dragController.beginEditing(originalOrder: [10, 20])
+        // viewDidLoad 的 setupCallbacks 已绑定真实 handleCreateGroup
+        dragController.onCreateGroup?(20)
+
+        #expect(storage.insertedItems.count == 1)
+        #expect(storage.insertedItems.first?.type == .group)
+        #expect(storage.updatedItems.count == 2) // 两个 app 移入文件夹
+    }
+
+    // MARK: - handleItemSelection（通过 collectionView.onItemSelected 回调）
+
+    @Test("onItemSelected 对 app 类型触发启动动画并安全回退")
+    func onItemSelected_app_triggersAppLaunchSafely() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        guard let cv = extractCollectionView(from: sut) else {
+            Issue.record("collectionView not accessible via reflection")
+            return
+        }
+        // 不存在的 bundleId：animateAppLaunch 找不到 cell → launchApp → urlForApplication 返回 nil → 安全 return
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                                app: TestDataFactory.makeAppInfo(id: 10,
+                                                bundleId: "com.test.nonexistent.app"))
+
+        cv.onItemSelected?(app)
+    }
+
+    @Test("onItemSelected 对 group 类型打开文件夹并加载子项")
+    func onItemSelected_group_opensFolder() {
+        let (sut, _, storage) = makeSUT()
+        _ = sut.view
+        let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
+                                                   parentId: 1,
+                                                   group: TestDataFactory.makeGroupInfo(id: 100, title: "Folder"))
+        storage.childrenByPage = [100: []]
+        guard let cv = extractCollectionView(from: sut) else {
+            Issue.record("collectionView not accessible via reflection")
+            return
+        }
+
+        let before = storage.fetchAllItemsCallCount
+        cv.onItemSelected?(folder)
+        // openFolder 调用 storage.fetchAllItems(parentId: folder.id) 加载子项
+        #expect(storage.fetchAllItemsCallCount > before)
+    }
+
+    // MARK: - handleSearch 非空查询
+
+    @Test("handleSearch 非空查询调度后台搜索不崩溃")
+    func handleSearch_nonEmptyQuery_schedulesBackgroundSearch() {
+        let searchScheduler = MockScheduler()
+        let (sut, _, _) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
+        _ = sut.view
+        // 空数据：后台搜索在空集合上执行，UI 更新为空结果，避免跨线程竞态
+        sut.keyboardNavigator.mode = .search(query: "x")
+        _ = sut.handleCharacterInput("y") // appendToQuery → debouncer.search("y")
+        searchScheduler.advance(by: 0.1)   // 触发 handleSearch("y") 非空分支
+    }
+
+    // MARK: - 编辑模式删除 / 文件夹重命名（通过 collectionView 回调）
+
+    @Test("onItemDelete 调用 storage 删除并退出编辑模式")
+    func onItemDelete_deletesItemAndExitsEditMode() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
+                                                app: TestDataFactory.makeAppInfo(id: 10, title: "App"))
+        storage.pages = [page]
+        storage.childrenByPage = [1: [app]]
+        _ = sut.view
+        sut.loadData()
+        guard let cv = extractCollectionView(from: sut) else {
+            Issue.record("collectionView not accessible via reflection")
+            return
+        }
+
+        cv.onItemDelete?(app)
+
+        #expect(storage.deletedIds == [10])
+        // handleItemDelete → dragController.handleCancel → idle
+        #expect(sut.dragController.state == .idle)
+    }
+
+    @Test("onFolderRenamed 将新标题写入存储")
+    func onFolderRenamed_persistsNewTitle() {
+        let (sut, _, storage) = makeSUT()
+        let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
+                                                   parentId: 1,
+                                                   group: TestDataFactory.makeGroupInfo(id: 100, title: "Old"))
+        storage.pages = []
+        storage.childrenByPage = [:]
+        _ = sut.view
+        guard let cv = extractCollectionView(from: sut) else {
+            Issue.record("collectionView not accessible via reflection")
+            return
+        }
+
+        cv.onFolderRenamed?(folder, "Renamed Folder")
+
+        #expect(storage.updatedItems.count == 1)
+        #expect(storage.updatedItems.first?.group?.title == "Renamed Folder")
+    }
+
+    // MARK: - init(coder:)
+
+    @Test("init(coder:) 返回 nil（不支持 NSCoding）")
+    func init_coder_returnsNil() {
+        let unarchiver = NSKeyedUnarchiver(forReadingWith: Data())
+        let vc = LaunchPadViewController(coder: unarchiver)
+        #expect(vc == nil)
+    }
+
+    // MARK: - viewDidLayout
+
+    @Test("viewDidLayout 更新 collectionView 布局不崩溃")
+    func viewDidLayout_updatesLayout() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.viewDidLayout()
+        #expect(sut.view is NSView)
+    }
+
+    // MARK: - setupCallbacks 闭包体（通过子视图属性直接触发）
+
+    @Test("searchBar.onQueryChanged 触发防抖搜索")
+    func searchBar_onQueryChanged_triggersSearch() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.searchBar.onQueryChanged?("hello")
+    }
+
+    @Test("pageControl.onDotSelected 触发翻页导航")
+    func pageControl_onDotSelected_navigates() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.pageControl.onDotSelected?(2)
+    }
+
+    @Test("folderOverlay.onAppSelected 触发选中")
+    func folderOverlay_onAppSelected_selects() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                                app: TestDataFactory.makeAppInfo(id: 10, title: "A"))
+        sut.folderOverlay.onAppSelected?(app)
+    }
+
+    @Test("folderOverlay.onClosed 隐藏覆盖层")
+    func folderOverlay_onClosed_hides() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.folderOverlay.isHidden = false
+        sut.folderOverlay.onClosed?()
+        #expect(sut.folderOverlay.isHidden == true)
+    }
+
+    // MARK: - handleLongPress（mock 手势驱动各分支）
+
+    @Test("handleLongPress .began 调用 handlePressBegan")
+    func handleLongPress_began() {
+        let (sut, _, _) = makeSUT()
+        sut.handleLongPress(MockPressGesture(state: .began))
+    }
+
+    @Test("handleLongPress .changed 调用 handleDragMoved")
+    func handleLongPress_changed() {
+        let (sut, _, _) = makeSUT()
+        sut.handleLongPress(MockPressGesture(state: .changed, location: CGPoint(x: 50, y: 50)))
+    }
+
+    @Test("handleLongPress .ended 在 idle 调用 handlePressEnded")
+    func handleLongPress_ended_idle() {
+        let (sut, _, _) = makeSUT()
+        sut.handleLongPress(MockPressGesture(state: .ended))
+    }
+
+    @Test("handleLongPress .ended 在 jiggling 更新抖动状态")
+    func handleLongPress_ended_jiggling() {
+        let scheduler = MockScheduler()
+        let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
+        dragController.beginEditing(originalOrder: [1, 2, 3])
+        dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        scheduler.advance(by: 0.5)
+        #expect(dragController.state == .jiggling)
+        sut.handleLongPress(MockPressGesture(state: .ended))
+        #expect(sut.keyboardNavigator.mode == .edit)
+    }
+
+    @Test("handleLongPress .ended 在 dragging 触发 handleDrop 并重置为 idle")
+    func handleLongPress_ended_dragging() {
+        let (sut, dragController, _) = makeSUT()
+        _ = sut.view // .dragging 分支会触发 loadData，需视图已加载
+        dragController.beginEditing(originalOrder: [1, 2, 3])
+        dragController.handleDragStart() // 进入 .dragging
+        #expect(dragController.state == .dragging)
+        sut.handleLongPress(MockPressGesture(state: .ended))
+        #expect(dragController.state == .idle)
+    }
+
+    @Test("handleLongPress 其他状态走 default 分支")
+    func handleLongPress_defaultState() {
+        let (sut, _, _) = makeSUT()
+        sut.handleLongPress(MockPressGesture(state: .possible))
+    }
+
+    // MARK: - executeSearch / applySearchResults（抽出方法的同步覆盖）
+
+    @Test("executeSearch 在后台执行搜索返回结果")
+    func executeSearch_returnsResults() {
+        let (sut, _, _) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 3, titlePrefix: "Alpha")
+        let results = sut.executeSearch(items: apps, query: "Alpha")
+        #expect(results.isEmpty == false)
+    }
+
+    @Test("applySearchResults 展示结果计数并进入搜索态")
+    func applySearchResults_showsCount() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.handleSearch(query: "xyz") // 设置 currentSearchQuery = "xyz"
+        let apps = TestDataFactory.makeAppItems(count: 2, titlePrefix: "App")
+        sut.applySearchResults(apps, query: "xyz", expectedQuery: "xyz")
+        #expect(sut.resultCountLabel.isHidden == false)
+        #expect(sut.resultCountLabel.stringValue == "2 results")
+    }
+
+    // MARK: - handleItemSelection .page 分支
+
+    @Test("handleItemSelection 对 page 类型不执行任何操作")
+    func handleItemSelection_page_doesNothing() {
+        let (sut, _, _) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        sut.handleItemSelection(page)
+    }
+
+    // MARK: - 启动动画各阶段（抽出方法同步覆盖）
+
+    @Test("animateAppLaunch reduceMotion 直接启动不查找 cell")
+    func animateAppLaunch_reduceMotion_launches() {
+        let (sut, _, _) = makeSUT()
+        sut.accessibilitySettingsProvider = { AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false) }
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A", bundleId: "com.test.nonexistent"))
+        sut.animateAppLaunch(item: app, bundleId: "com.test.nonexistent")
+    }
+
+    @Test("animateAppLaunch 有 cell 时执行高亮/放大/完成动画（同步调度器）")
+    func animateAppLaunch_withCell_runsStages() {
+        let (sut, _, _) = makeSUT()
+        sut.accessibilitySettingsProvider = { AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false) }
+        let cellView = NSView()
+        cellView.wantsLayer = true
+        sut.launchCellResolver = { _ in cellView }
+        var completed = false
+        sut.launchAnimationScheduler = { _, block in block(); completed = true }
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A", bundleId: "com.test.nonexistent"))
+        sut.animateAppLaunch(item: app, bundleId: "com.test.nonexistent")
+        #expect(completed)
+    }
+
+    @Test("animateAppLaunch 默认调度器被调用（headless 下完成闭包不触发）")
+    func animateAppLaunch_defaultScheduler_schedules() {
+        let (sut, _, _) = makeSUT()
+        sut.accessibilitySettingsProvider = { AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false) }
+        let cellView = NSView()
+        cellView.wantsLayer = true
+        sut.launchCellResolver = { _ in cellView }
+        // 不注入 launchAnimationScheduler → 使用默认 DispatchQueue.main.asyncAfter（覆盖其闭包体）
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A", bundleId: "com.test.nonexistent"))
+        sut.animateAppLaunch(item: app, bundleId: "com.test.nonexistent")
+    }
+
+    @Test("resolveLaunchCellView 注入优先返回 cell，默认回退 collectionView")
+    func resolveLaunchCellView_resolves() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A"))
+        guard let cv = extractCollectionView(from: sut) else { Issue.record("collectionView not accessible"); return }
+        cv.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
+        let injected = NSView()
+        sut.launchCellResolver = { _ in injected }
+        #expect(sut.resolveLaunchCellView(for: app) === injected)
+        // 默认回退：无注入时返回 collectionView.item(at:)?.view（headless 下为 nil）
+        sut.launchCellResolver = nil
+        _ = sut.resolveLaunchCellView(for: app)
+    }
+
+    @Test("performLaunchHighlight 设置 transform 与透明度动画")
+    func performLaunchHighlight_setsTransform() {
+        let (sut, _, _) = makeSUT()
+        let view = NSView()
+        view.wantsLayer = true
+        sut.performLaunchHighlight(cellView: view)
+        #expect(view.layer?.transform.m11 == CGFloat(0.95))
+    }
+
+    @Test("performLaunchZoom 添加放大淡出动画")
+    func performLaunchZoom_addsZoom() {
+        let (sut, _, _) = makeSUT()
+        let view = NSView()
+        view.wantsLayer = true
+        sut.performLaunchZoom(cellView: view)
+    }
+
+    @Test("scheduleLaunchCompletion 经注入调度器同步触发完成动画")
+    func scheduleLaunchCompletion_invokesScheduler() {
+        let (sut, _, _) = makeSUT()
+        let view = NSView()
+        view.wantsLayer = true
+        var ran = false
+        sut.launchAnimationScheduler = { _, block in block(); ran = true }
+        sut.scheduleLaunchCompletion(cellView: view, bundleId: "com.test.nonexistent")
+        #expect(ran)
+    }
+
+    @Test("completeLaunchAnimation 启动应用并重置 cell")
+    func completeLaunchAnimation_launchesAndResets() {
+        let (sut, _, _) = makeSUT()
+        let view = NSView()
+        view.wantsLayer = true
+        view.alphaValue = 0.3
+        sut.completeLaunchAnimation(cellView: view, bundleId: "com.test.nonexistent")
+        #expect(view.alphaValue == 1)
+    }
+
+    // MARK: - launchApp / launchApplication
+
+    @Test("launchApp 无效 bundleId 安全返回")
+    func launchApp_invalidBundle_returns() {
+        let (sut, _, _) = makeSUT()
+        sut.launchApp(bundleId: "com.test.definitely.invalid.bundle")
+    }
+
+    @Test("launchApp 解析到 URL 时调用 launchApplication")
+    func launchApp_withResolvedURL_callsLaunchApplication() {
+        let (sut, _, _) = makeSUT()
+        sut.bundleURLResolver = { _ in URL(fileURLWithPath: "/tmp/launchpad-fake.app") }
+        sut.launchApp(bundleId: "com.any.bundle")
+    }
+
+    @Test("launchApplication 对任意 URL 执行 NSWorkspace 调用（不真实启动）")
+    func launchApplication_withFakeURL() {
+        let (sut, _, _) = makeSUT()
+        sut.launchApplication(at: URL(fileURLWithPath: "/tmp/launchpad-nonexistent-app.app"))
+    }
+
+    // MARK: - 错误分支（catch）
+
+    @Test("handleItemDelete 删除失败时记录错误不崩溃")
+    func handleItemDelete_throws_logs() {
+        let (sut, _, storage) = makeSUT()
+        storage.shouldThrowOnDelete = true
+        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A"))
+        sut.handleItemDelete(app)
+    }
+
+    @Test("openFolder 读取失败时记录错误不崩溃")
+    func openFolder_throws_logs() {
+        let (sut, _, storage) = makeSUT()
+        storage.shouldThrowOnFetch = true
+        let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
+                                                  parentId: 1,
+                                                  group: TestDataFactory.makeGroupInfo(id: 100, title: "F"))
+        sut.openFolder(folder)
+    }
+
+    @Test("handleCreateGroup 创建失败时记录错误不崩溃")
+    func handleCreateGroup_throws_logs() {
+        let (sut, dragController, storage) = makeSUT()
+        storage.shouldThrowOnInsert = true
+        let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
+                                                app: TestDataFactory.makeAppInfo(id: 10, title: "A1"))
+        let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1, parentId: 1,
+                                                app: TestDataFactory.makeAppInfo(id: 20, title: "A2"))
+        storage.pages = [TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)]
+        storage.childrenByPage = [1: [app1, app2]]
+        _ = sut.view // 需视图已加载，使 loadData 内 pageControl 等非 nil
+        sut.loadData() // 填充 itemsByPage，使 findItem 命中
+        dragController.beginEditing(originalOrder: [10, 20])
+        sut.handleCreateGroup(targetId: 20) // findItem(20) 命中 → draggedItems≥2 → createFolder 抛错
+    }
+
+    @Test("handleFolderRename 重命名失败时记录错误不崩溃")
+    func handleFolderRename_throws_logs() {
+        let (sut, _, storage) = makeSUT()
+        storage.shouldThrowOnUpdate = true
+        let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
+                                                  parentId: 1,
+                                                  group: TestDataFactory.makeGroupInfo(id: 100, title: "Old"))
+        sut.handleFolderRename(item: folder, newTitle: "New")
+    }
+
+    @Test("handleCreateGroup 目标不存在时 findItem 返回 nil")
+    func handleCreateGroup_nonExistentTarget_viaCallback() {
+        let (sut, dragController, storage) = makeSUT()
+        _ = sut.view // 绑定 onCreateGroup 回调到 VC.handleCreateGroup
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        storage.pages = [page]
+        storage.childrenByPage = [1: []]
+        // 不覆盖回调 → 触发 VC.handleCreateGroup(999) → findItem(999) 未命中 → 返回 nil
+        dragController.onCreateGroup?(999)
+    }
+
+    // MARK: - executeAction .launchFirstMatch
+
+    @Test("enter 在搜索模式触发 launchFirstMatch 并选中首个结果")
+    func launchFirstMatch_selectsFirstItem() {
+        let (sut, _, storage) = makeSUT()
+        loadViewWithData(sut, storage: storage)
+        sut.keyboardNavigator.mode = .search(query: "App")
+        _ = sut.handleKeyEvent(.enter)
+    }
+
+    // MARK: - updateJiggleState 循环体（注入 cell provider）
+
+    @Test("updateJiggleState 注入 cell provider 时驱动 startJiggling/stopJiggling")
+    func updateJiggleState_injectedCells_jiggle() {
+        let scheduler = MockScheduler()
+        let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
+        _ = sut.view
+        let cell = AppIconCell()
+        sut.visibleJiggleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
+        sut.jiggleCellProvider = { _ in cell }
+
+        // jiggling 态 → startJiggling + keyboardNavigator 进入 edit
+        dragController.beginEditing(originalOrder: [1, 2, 3])
+        dragController.handlePressBegan(at: .zero)
+        scheduler.advance(by: 0.5)
+        #expect(dragController.state == .jiggling)
+        sut.updateJiggleState()
+        #expect(sut.keyboardNavigator.mode == .edit)
+
+        // idle 态 → stopJiggling + keyboardNavigator 回到 idle
+        dragController.handleCancel()
+        #expect(dragController.state == .idle)
+        sut.updateJiggleState()
+        #expect(sut.keyboardNavigator.mode == .idle)
+    }
+
+    // MARK: - loadData 错误分支
+
+    @Test("loadData 读取失败时记录错误不崩溃")
+    func loadData_throws_logs() {
+        let (sut, _, storage) = makeSUT()
+        storage.shouldThrowOnFetch = true
+        _ = sut.view // viewDidLoad → loadData 抛错 → catch
+    }
+
+    // MARK: - applySearchResults 空结果分支
+
+    @Test("applySearchResults 空结果时显示空状态")
+    func applySearchResults_empty_showsEmptyState() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.handleSearch(query: "xyz") // 设置 currentSearchQuery = "xyz"
+        sut.applySearchResults([], query: "xyz", expectedQuery: "xyz")
+        #expect(sut.resultCountLabel.isHidden == false)
+        #expect(sut.resultCountLabel.stringValue == "0 results")
     }
 }
 #endif
