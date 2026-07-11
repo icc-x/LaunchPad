@@ -189,7 +189,7 @@ struct StorageManagerAdvancedTests {
         #expect(children.allSatisfy { $0.parentId == pageId })
     }
 
-    @Test("三层嵌套: page → group → items 正确解析")
+    @Test("三层嵌套: page -> group -> items 正确解析")
     func fetchItems_threeLayerNested() throws {
         let sut = try makeSUT()
 
@@ -219,6 +219,25 @@ struct StorageManagerAdvancedTests {
         #expect(groupChildren.allSatisfy { $0.type == .app })
         let titles = groupChildren.compactMap { $0.app?.title }.sorted()
         #expect(titles == ["Calculator", "Terminal"])
+    }
+
+    @Test("fetchAllItems 遇到无效 type 值时回退为 .app")
+    func fetchAllItems_invalidType_fallsBackToApp() throws {
+        let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
+            sqlite3_exec(db, Schema.createItemsTable, nil, nil, nil)
+            sqlite3_exec(db, Schema.createAppsTable, nil, nil, nil)
+            sqlite3_exec(db, Schema.createGroupsTable, nil, nil, nil)
+            sqlite3_exec(db, Schema.createImageCacheTable, nil, nil, nil)
+            sqlite3_exec(db, Schema.createSchemaVersionTable, nil, nil, nil)
+            // 插入 type=99（无效值），附带 apps 表数据
+            sqlite3_exec(db, "INSERT INTO items (uuid, type, ordering) VALUES ('u1', 99, 0)", nil, nil, nil)
+            sqlite3_exec(db, "INSERT INTO apps (item_id, title, bundle_id, path) VALUES (1, 'BadType', 'com.bad', '/p')", nil, nil, nil)
+        })
+
+        let items = try sut.fetchAllItems(parentId: nil)
+        #expect(items.count == 1)
+        #expect(items.first?.type == .app)
+        #expect(items.first?.app?.title == "BadType")
     }
 }
 
@@ -535,5 +554,45 @@ struct StorageManagerUpdateTests {
         #expect(throws: StorageError.self) {
             _ = try sut.insertItem(TestDataFactory.makePageItem(uuid: "u3", type: .group, group: TestDataFactory.makeGroupInfo()))
         }
+    }
+}
+
+// MARK: - Branch coverage: fetchImage with NULL blobs
+
+@Suite("StorageManager fetchImage NULL blob")
+struct StorageManagerFetchImageNullBlobTests {
+
+    @Test("fetchImage 中 icon_1x 为 NULL 时返回 nil")
+    func fetchImage_icon1xNull_returnsNil() throws {
+        var capturedDB: OpaquePointer?
+        let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
+            Schema.setupSchema(db: db)
+            capturedDB = db
+        })
+        let db = try #require(capturedDB)
+
+        // 直接插入一条 icon_1x=NULL 的记录（绕过 saveImage 的 blob 绑定方式）
+        let insertSQL = "INSERT INTO image_cache (item_id, icon_1x, icon_2x) VALUES (1, NULL, x'010203')"
+        sqlite3_exec(db, insertSQL, nil, nil, nil)
+
+        let result = try sut.fetchImage(itemId: 1)
+        #expect(result == nil)
+    }
+
+    @Test("fetchImage 中 icon_2x 为 NULL 时返回 nil")
+    func fetchImage_icon2xNull_returnsNil() throws {
+        var capturedDB: OpaquePointer?
+        let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
+            Schema.setupSchema(db: db)
+            capturedDB = db
+        })
+        let db = try #require(capturedDB)
+
+        // 直接插入一条 icon_2x=NULL 的记录
+        let insertSQL = "INSERT INTO image_cache (item_id, icon_1x, icon_2x) VALUES (2, x'010203', NULL)"
+        sqlite3_exec(db, insertSQL, nil, nil, nil)
+
+        let result = try sut.fetchImage(itemId: 2)
+        #expect(result == nil)
     }
 }

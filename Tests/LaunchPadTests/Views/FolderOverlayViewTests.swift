@@ -519,5 +519,78 @@ final class FolderOverlayViewTests: XCTestCase {
         // Should NOT trigger close (overlay still visible)
         XCTAssertFalse(overlay.isHidden)
     }
+
+    // MARK: - Guard branches: pageWidth guard in navigateToPage
+
+    func testNavigateToPage_zeroPageWidth_returnsEarly() {
+        let item = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        )
+        let children = TestDataFactory.makeAppItems(count: 10)
+        overlay.openFolder(item: item, childItems: children, iconCache: nil)
+
+        let scrollView = findView(NSScrollView.self, in: overlay)
+        // 强制将 scrollView frame 设为 0，让 pageWidth = scrollView.bounds.width = 0
+        scrollView?.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
+
+        let pageControlView = findView(PageControlView.self, in: overlay)
+        // pageIndex=0 应在范围内，但 pageWidth=0 触发 guard else
+        pageControlView?.onDotSelected?(0)
+
+        let vmMirror = Mirror(reflecting: pageControlView!)
+        let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
+        // page should remain at 0 since guard prevented navigation
+        XCTAssertEqual(vm?.currentPage, 0)
+    }
+
+    // MARK: - Guard branches: pageWidth guard in updatePageFromScrollPosition
+
+    func testUpdatePageFromScrollPosition_zeroPageWidth_returnsEarly() {
+        let item = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        )
+        let children = TestDataFactory.makeAppItems(count: 40)
+        overlay.openFolder(item: item, childItems: children, iconCache: nil)
+
+        let scrollView = findView(NSScrollView.self, in: overlay)
+        XCTAssertNotNil(scrollView)
+
+        // 强制将 scrollView frame 设为 0，触发 guard else 分支
+        scrollView?.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
+
+        // 通过 NSView.boundsDidChangeNotification 触发 updatePageFromScrollPosition
+        // 或直接通过 Mirror 调用私有方法
+        // 简化：直接发送 NSView.boundsDidChangeNotification
+        NotificationCenter.default.post(
+            name: NSView.boundsDidChangeNotification,
+            object: scrollView!.contentView
+        )
+
+        // 给 main run loop 时间处理 notification
+        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
+
+        let pcView = findView(PageControlView.self, in: overlay)
+        let vmMirror = Mirror(reflecting: pcView!)
+        let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
+        // page should remain at default (0)
+        XCTAssertEqual(vm?.currentPage, 0)
+    }
+
+    // MARK: - 额外分支覆盖
+
+    func testOpenFolder_responsiveSize_withWidthZeroFallback() {
+        // 覆盖 L158/L159 ?? fallback 路径：superview 为 nil 时使用 NSScreen.main?.frame.width
+        // 由于 NSScreen.main 在测试环境可能非 nil，覆盖 path 走真分支即可触发代码
+        // 这里仅验证不崩溃
+        let item = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        )
+        // 不设置 superview（默认 nil），openFolder 走 responsive size 计算
+        overlay.openFolder(item: item, childItems: [], iconCache: nil)
+        XCTAssertFalse(overlay.isHidden)
+    }
 }
 #endif

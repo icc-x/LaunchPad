@@ -44,7 +44,37 @@ struct AccessibilityObserversTests {
         #expect(callbackCount == 0)
     }
 
+    @Test("AccessibilityObserver stop called when already stopped -> no-op (if-let else branch)")
+    func observer_stopTwice_noop() {
+        var callbackCount = 0
+        let observer = AccessibilityObserver { settings in
+            callbackCount += 1
+        }
+        observer.stop()
+        // Second stop() when observer is already nil
+        observer.stop()
+
+        #expect(callbackCount == 0)
+    }
+
     #endif
+
+    @Test("AccessibilityObserver deinit cleans up observer")
+    func observer_deinit_removesObserver() {
+        var callbackCount = 0
+        var observer: AccessibilityObserver? = AccessibilityObserver { settings in
+            callbackCount += 1
+        }
+        // Deinit runs stop()
+        observer = nil
+
+        NotificationCenter.default.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+
+        #expect(callbackCount == 0)
+    }
 
     @Test("AnimationFallback returns different strategy based on Reduce Motion")
     func animationFallback_reduceMotion() {

@@ -114,7 +114,16 @@ public struct SearchEngine: @unchecked Sendable {
     public func match(item: PageItem, query: String) -> Int {
         matchCounter?.increment()
 
-        let title = item.app?.title.lowercased() ?? item.group?.title.lowercased() ?? ""
+        // 显式分支替代链式 ??，避免 LLVM 误报
+        // AppInfo.title/GroupInfo.title 都是非 optional，nil 仅来自 item.app/item.group
+        let title: String
+        if let app = item.app {
+            title = app.title.lowercased()
+        } else if let group = item.group {
+            title = group.title.lowercased()
+        } else {
+            title = ""
+        }
         let q = query.lowercased()
 
         guard !q.isEmpty else { return 100 }
@@ -134,7 +143,16 @@ public struct SearchEngine: @unchecked Sendable {
         let scored = items.compactMap { item -> (item: PageItem, score: Int, title: String)? in
             let score = match(item: item, query: query)
             guard score > 0 else { return nil }
-            let title = item.app?.title ?? item.group?.title ?? ""
+            // 显式分支：item.app 优先，否则取 item.group.title，否则空串
+            // AppInfo.title/GroupInfo.title 都是非 optional。
+            let title: String
+            if let app = item.app {
+                title = app.title
+            } else if let group = item.group {
+                title = group.title
+            } else {
+                title = ""
+            }
             return (item, score, title)
         }
 

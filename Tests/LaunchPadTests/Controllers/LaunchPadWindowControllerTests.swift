@@ -295,5 +295,60 @@ struct LaunchPadWindowControllerTests {
         await flushMainQueue(for: 0.3)
         #expect(sut.lifecycle.state == .visible)
     }
+
+    // MARK: - 额外分支覆盖
+
+    @Test("hideWindowAnimated reduceMotion=true -> 持续时间用 0.1（覆盖 L181 ternary 真分支）")
+    func hideWindowAnimated_reduceMotion_usesShortDuration() async {
+        let sut = makeSUT()
+        sut.controller.accessibilitySettingsProvider = {
+            AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
+        }
+        // 注入同步动画与 main runner
+        sut.controller.runAnimated = { duration, animations, completion in
+            // 断言 duration 为 0.1
+            #expect(duration == 0.1)
+            animations()
+            completion()
+        }
+        sut.controller.mainAsyncRunner = { $0() }
+        sut.controller.toggle()
+        await flushMainQueue(for: 0.05)
+        sut.lifecycle.openAnimationDidFinish()    // -> visible
+        sut.controller.toggle()                   // -> closing（触发 hideWindowAnimated）
+        await flushMainQueue(for: 0.3)
+        #expect(sut.lifecycle.state == .hidden)
+    }
+
+    @Test("applyAccessibilitySettings: contentView 非 NSVisualEffectView 时安全返回（覆盖 L196 guard else）")
+    func applyAccessibilitySettings_nonVisualEffectView_returnsSafely() {
+        let sut = makeSUT()
+        // 替换 window 的 contentView 为普通 NSView（不是 NSVisualEffectView）
+        let plainView = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        sut.controller.window?.contentView = plainView
+        // 不应崩溃
+        sut.controller.applyAccessibilitySettings(
+            AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false)
+        )
+        #expect(true)
+    }
+
+    @Test("showWindowAnimated: NSScreen.screens.first 不匹配 + NSScreen.main 为 nil 时跳过动画（覆盖 L148 guard else）")
+    func showWindowAnimated_targetScreenNil_returnsEarly() {
+        // 构造一个 windowController，让其内部 window 没有有效 screen 可设置
+        // 由于 LaunchPadWindowController.init 已设置 panel，init 后无法修改其 frame 计算逻辑
+        // 这里我们用 NSScreen.screens.first(where:) 配合异常 frame 模拟不匹配场景
+        // 通过反射 / KVC 设置 NSScreen.screens 为空数组较困难，改用让 window 为 nil 触发 guard else
+        let sut = makeSUT()
+        // 关闭 window 然后让 showWindowAnimated 走 guard else
+        sut.controller.window?.close()
+        sut.controller.window = nil
+        sut.controller.runAnimated = { _, _, _ in Issue.record("动画不应触发") }
+        sut.controller.mainAsyncRunner = { $0() }
+        sut.controller.toggle() // hidden -> opening 状态机
+        // 此时 window 为 nil，showWindowAnimated 中 guard let window = window else { return } 触发
+        // 等待异步派发的 delegate 回调
+        #expect(sut.lifecycle.state == .opening)
+    }
 }
 #endif

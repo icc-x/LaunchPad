@@ -154,4 +154,15 @@ struct FolderControllerTests {
         #expect(writer.updatedItems.count == 1)
         #expect(writer.updatedItems.first?.group?.title == "New Name")
     }
+
+    @Test("Rename folder - item.group 为 nil 时创建默认 GroupInfo")
+    func renameFolder_nilGroup_createsDefaultGroup() throws {
+        let (sut, writer, reader) = try makeSUT()
+        let item = TestDataFactory.makePageItem(id: 5, type: .group, group: nil)
+
+        try sut.renameFolder(item: item, newTitle: "Created Folder")
+
+        #expect(writer.updatedItems.count == 1)
+        #expect(writer.updatedItems.first?.group?.title == "Created Folder")
+    }
 }

@@ -209,5 +209,27 @@ final class FolderCellTests: XCTestCase {
         cell.controlTextDidEndEditing(Notification(name: NSTextField.textDidEndEditingNotification))
         XCTAssertNil(receivedTitle)
     }
+
+    // MARK: - configure with nil group (covers ?? \"Folder\" fallback)
+
+    func testConfigure_nilGroup_usesDefaultTitle() {
+        let item = TestDataFactory.makePageItem(id: 1, type: .group, ordering: 0, group: nil)
+        cell.configure(item: item, childIcons: [])
+        XCTAssertEqual(cell.view.accessibilityLabel(), "Folder")
+    }
+
+    // MARK: - setupThumbnailGrid with existing subviews (covers forEach closure)
+
+    func testConfigure_twice_removesExistingSubviews() {
+        let group = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        )
+        let icons = (0..<4).map { _ in NSImage(size: NSSize(width: 64, height: 64)) }
+        cell.configure(item: group, childIcons: icons)
+        // 二次 configure 触发 setupThumbnailGrid 内 forEach removeFromSuperview
+        cell.configure(item: group, childIcons: icons)
+        XCTAssertNotNil(cell.view)
+    }
 }
 #endif

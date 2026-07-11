@@ -159,6 +159,198 @@ struct WindowLifecycleTests {
         #expect(sut.state == .hidden)
         #expect(delegate.stateChanges.isEmpty)
     }
+
+    // MARK: - Guard branches: handleAppClick from non-visible state
+
+    @Test("hidden state handleAppClick -> ignored (guard else branch)")
+    func hidden_appClick_ignored() {
+        let (sut, delegate) = makeSUT()
+        #expect(sut.state == .hidden)
+
+        sut.handleAppClick(bundleId: "com.example.Test")
+        #expect(sut.state == .hidden)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("opening state handleAppClick -> ignored (guard else branch)")
+    func opening_appClick_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        #expect(sut.state == .opening)
+        delegate.stateChanges.removeAll()
+
+        sut.handleAppClick(bundleId: "com.example.Test")
+        #expect(sut.state == .opening)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("closing state handleAppClick -> ignored (guard else branch)")
+    func closing_appClick_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleToggle()
+        #expect(sut.state == .closing)
+        delegate.stateChanges.removeAll()
+
+        sut.handleAppClick(bundleId: "com.example.Test")
+        #expect(sut.state == .closing)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("launching state handleAppClick -> ignored (guard else branch)")
+    func launching_appClick_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleAppClick(bundleId: "com.example.Test")
+        #expect(sut.state == .launching)
+        delegate.stateChanges.removeAll()
+
+        sut.handleAppClick(bundleId: "com.example.Other")
+        #expect(sut.state == .launching)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    // MARK: - Guard branches: openAnimationDidFinish from non-opening state
+
+    @Test("hidden state openAnimationDidFinish -> ignored (guard else branch)")
+    func hidden_openAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.openAnimationDidFinish()
+        #expect(sut.state == .hidden)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("visible state openAnimationDidFinish -> ignored (guard else branch)")
+    func visible_openAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        delegate.stateChanges.removeAll()
+
+        sut.openAnimationDidFinish()
+        #expect(sut.state == .visible)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("closing state openAnimationDidFinish -> ignored (guard else branch)")
+    func closing_openAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleToggle()
+        delegate.stateChanges.removeAll()
+
+        sut.openAnimationDidFinish()
+        #expect(sut.state == .closing)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("launching state openAnimationDidFinish -> ignored (guard else branch)")
+    func launching_openAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleAppClick(bundleId: "test")
+        delegate.stateChanges.removeAll()
+
+        sut.openAnimationDidFinish()
+        #expect(sut.state == .launching)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    // MARK: - Guard branches: closeAnimationDidFinish from non-closing state
+
+    @Test("hidden state closeAnimationDidFinish -> ignored (guard else branch)")
+    func hidden_closeAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.closeAnimationDidFinish()
+        #expect(sut.state == .hidden)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("opening state closeAnimationDidFinish -> ignored (guard else branch)")
+    func opening_closeAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.stateChanges.removeAll()
+
+        sut.closeAnimationDidFinish()
+        #expect(sut.state == .opening)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("visible state closeAnimationDidFinish -> ignored (guard else branch)")
+    func visible_closeAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        delegate.stateChanges.removeAll()
+
+        sut.closeAnimationDidFinish()
+        #expect(sut.state == .visible)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("launching state closeAnimationDidFinish -> ignored (guard else branch)")
+    func launching_closeAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleAppClick(bundleId: "test")
+        delegate.stateChanges.removeAll()
+
+        sut.closeAnimationDidFinish()
+        #expect(sut.state == .launching)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    // MARK: - Guard branches: launchAnimationDidFinish from non-launching state
+
+    @Test("hidden state launchAnimationDidFinish -> ignored (guard else branch)")
+    func hidden_launchAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.launchAnimationDidFinish()
+        #expect(sut.state == .hidden)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("opening state launchAnimationDidFinish -> ignored (guard else branch)")
+    func opening_launchAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.stateChanges.removeAll()
+
+        sut.launchAnimationDidFinish()
+        #expect(sut.state == .opening)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("visible state launchAnimationDidFinish -> ignored (guard else branch)")
+    func visible_launchAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        delegate.stateChanges.removeAll()
+
+        sut.launchAnimationDidFinish()
+        #expect(sut.state == .visible)
+        #expect(delegate.stateChanges.isEmpty)
+    }
+
+    @Test("closing state launchAnimationDidFinish -> ignored (guard else branch)")
+    func closing_launchAnimationFinish_ignored() {
+        let (sut, delegate) = makeSUT()
+        sut.handleToggle()
+        delegate.completeOpenAnimation()
+        sut.handleToggle()
+        delegate.stateChanges.removeAll()
+
+        sut.launchAnimationDidFinish()
+        #expect(sut.state == .closing)
+        #expect(delegate.stateChanges.isEmpty)
+    }
 }
 
 // MARK: - Mock Delegate

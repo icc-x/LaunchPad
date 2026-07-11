@@ -830,4 +830,75 @@ private final class MockDraggingInfo: NSObject, @MainActor NSDraggingInfo {
         super.init()
     }
 }
+
+// MARK: - Branch coverage: .app type with nil app data
+
+extension AppGridCollectionViewTests {
+    func testConfigure_cell_appTypeNilApp_doesNotCrash() {
+        // 覆盖 configureCell 中 `if let app = item.app` 的 else 分支
+        let badApp = TestDataFactory.makePageItem(id: 99, type: .app, ordering: 0, app: nil)
+        collectionView.reload(pages: [[badApp]], searchResults: nil, searchQuery: nil)
+        collectionView.layoutSubtreeIfNeeded()
+        // 不应该崩溃
+    }
+
+    // MARK: - 额外分支覆盖
+
+    func testAnimateEntrance_visibleCellProviderNil_fallsBackToCollectionView() {
+        // 覆盖 L120 ?? false 分支：visibleCellProvider 返回 nil 时回退到 item(at:)
+        collectionView.visibleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
+        collectionView.visibleCellProvider = { _ in nil } // provider 返回 nil → ?? 走 else 分支
+        collectionView.animationScheduler = { _, _ in } // 避免异步调度干扰
+        let items = TestDataFactory.makeAppItems(count: 1)
+        collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
+        // 不应崩溃
+    }
+
+    func testApplyCellAppearAnimation_cellViewNil_returnsEarly() {
+        // 覆盖 L152 guard let cellView else { return } 分支
+        collectionView.applyCellAppearAnimation(cellView: nil)
+        // 不应崩溃
+    }
+
+    func testConfigureCell_groupItem_childAppNil_doesNotCrash() {
+        // 覆盖 L230 guard let app = child.app else { return nil } 分支
+        // 构造一个 group cell，其 children 包含 app 为 nil 的 item
+        let storage = MockDataStoring()
+        let childNoApp = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, app: nil)
+        storage.childItems = [childNoApp]
+        collectionView.configure(iconCache: mockIconCache, storage: storage)
+
+        let group = TestDataFactory.makePageItem(id: 1, type: .group, ordering: 0,
+                                                  group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder"))
+        collectionView.reload(pages: [[group]], searchResults: nil, searchQuery: nil)
+
+        // 触发 group cell 的实际创建，调用 configureCell → childIcons 处理 → L230
+        let indexPath = IndexPath(item: 0, section: 0)
+        let _ = collectionView.diffableDataSource.collectionView(collectionView, itemForRepresentedObjectAt: indexPath)
+        // 不应崩溃
+    }
+
+    func testAccessibilityRows_zeroBoundsWidth_usesDefaultWidth() {
+        // 覆盖 L261 bounds.width > 0 ternary false 分支
+        collectionView.bounds = NSRect(x: 0, y: 0, width: 0, height: 0)
+        let items = TestDataFactory.makeAppItems(count: 3)
+        collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
+        let rows = collectionView.accessibilityRows()
+        // 不应崩溃
+        XCTAssertNotNil(rows)
+    }
+
+    func testPerformDrop_bothItemsNotInSnapshot_noOp() {
+        // 覆盖 L370 || 表达式 false 分支：draggedItem 和 targetItem 都不在 section
+        let app1 = TestDataFactory.makePageItem(id: 1, uuid: "pd-bad-1", type: .app, ordering: 0,
+                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "A1"))
+        let app2 = TestDataFactory.makePageItem(id: 2, uuid: "pd-bad-2", type: .app, ordering: 1,
+                                                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2"))
+        // 不 reload，让 snapshot 为空 → 两者都不在 section
+        collectionView.dragController = DragController()
+        // draggedItem 和 targetItem 都不在 snapshot 的 section 中
+        let result = collectionView.performDrop(draggedItem: app1, targetItem: app2)
+        XCTAssertEqual(result, true)
+    }
+}
 #endif

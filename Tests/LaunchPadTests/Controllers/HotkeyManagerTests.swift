@@ -458,6 +458,32 @@ struct HotkeyManagerTests {
         #expect(counter.flag == true)
     }
 
+    @Test("localMonitorHandler 直接调用转发到 handleLocalMonitorEvent")
+    func localMonitorHandler_directCall_forwards() {
+        let manager = HotkeyManager()
+        let counter = SendableCounter()
+        manager.onKeyDown = { event in counter.flag = true; return event }
+        let event = makeNSKeyEvent(type: .keyDown, keyCode: 0)
+        _ = manager.localMonitorHandler?(event)
+        #expect(counter.flag == true)
+    }
+
+    @Test("handleLocalMonitorEvent flagsChanged 无 onKeyDown 时返回原事件")
+    func handleLocalMonitorEvent_flagsChanged_noOnKeyDown_returnsEvent() {
+        let manager = HotkeyManager()
+        let event = makeNSKeyEvent(type: .flagsChanged, keyCode: 0)
+        let result = manager.handleLocalMonitorEvent(event)
+        #expect(result === event)
+    }
+
+    @Test("handleLocalMonitorEvent 常规按键无 onKeyDown 时返回原事件")
+    func handleLocalMonitorEvent_regularKey_noOnKeyDown_returnsEvent() {
+        let manager = HotkeyManager()
+        let event = makeNSKeyEvent(type: .keyDown, keyCode: 0)
+        let result = manager.handleLocalMonitorEvent(event)
+        #expect(result === event)
+    }
+
     @Test("localMonitorHandler closure forwards to handleLocalMonitorEvent")
     func localMonitorHandler_forwards() {
         let manager = HotkeyManager()

@@ -371,6 +371,14 @@ struct PageScrollViewTests {
         let result = sv.processScrollPhase([], deltaX: 0, event: makeDummyScrollEvent())
         #expect(result == false)
     }
+
+    @Test("processScrollPhase .mayBegin 无 documentView 时不崩溃")
+    func mayBegin_noDocumentView_noCrash() {
+        let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
+        // documentView 未设置 -> bounds.width ?? 0 回退路径
+        let result = scrollView.processScrollPhase(.mayBegin, deltaX: 10, event: makeDummyScrollEvent())
+        #expect(result == true)
+    }
 }
 
 // MARK: - PageControl state logic

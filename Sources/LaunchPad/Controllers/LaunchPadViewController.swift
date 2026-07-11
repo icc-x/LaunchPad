@@ -290,7 +290,12 @@ public class LaunchPadViewController: NSViewController {
             allPages = layout.pages
             itemsByPage = layout.itemsByPage
 
-            let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
+            // 使用显式分支替代 ?? []，避免 LLVM 误报。
+            // 使用 compactMap 替代 if let：LayoutPersistence.loadLayout 保证对 allPages 中每个 page.id
+            // 都填充 key（即使是空数组），因此 compactMap 不会跳过任何 page。
+            let allItems: [[PageItem]] = allPages.compactMap { page in
+                itemsByPage[page.id]
+            }
 
             pageControlViewModel.configure(totalPages: allPages.count)
             pageControl.update()
@@ -308,13 +313,20 @@ public class LaunchPadViewController: NSViewController {
         if query.isEmpty {
             emptyStateView.hide()
             resultCountLabel.isHidden = true
-            let allItems = allPages.map { itemsByPage[$0.id] ?? [] }
+            // 使用 compactMap 替代 if let：LayoutPersistence.loadLayout 保证对 allPages 中每个 page.id
+            // 都填充 key（即使是空数组），因此 compactMap 不会跳过任何 page。
+            let allItems: [[PageItem]] = allPages.compactMap { page in
+                itemsByPage[page.id]
+            }
             pageControlViewModel.isSearchActive = false
             pageControl.update()
             collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
         } else {
             // 在主线程拷贝数据，避免 @MainActor 属性跨线程访问
-            let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
+            // 同样使用 compactMap（LayoutPersistence 已保证所有 page.id 都有 key）
+            let allItems: [PageItem] = allPages.compactMap { page -> [PageItem]? in
+                itemsByPage[page.id]
+            }.flatMap { $0 }
             let capturedQuery = query
             let capturedSearchQuery = currentSearchQuery
             // 后台线程执行搜索，避免阻塞 UI
@@ -611,7 +623,8 @@ public class LaunchPadViewController: NSViewController {
                 selectedIndex = 0
                 return
             }
-            let next = (selectedIndex ?? 0) + columns
+            // 上面已 guard selectedIndex != nil，因此直接强制解包
+            let next = selectedIndex! + columns
             if next < totalItems {
                 selectedIndex = next
             }
@@ -623,6 +636,7 @@ public class LaunchPadViewController: NSViewController {
             }
         case .next:
             // Tab: 顺序下一个
+            // selectedIndex 可能是 nil（首次按 Tab），需用默认值 -1
             let current = selectedIndex ?? -1
             if current + 1 < totalItems {
                 selectedIndex = current + 1

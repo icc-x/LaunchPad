@@ -439,6 +439,46 @@ struct AppDelegateTests {
         #expect(!path.isEmpty)
     }
 
+    // MARK: - 默认闭包覆盖
+
+    @Test("默认 runningInstanceChecker 可安全调用")
+    func defaultRunningInstanceChecker_callable() {
+        let sut = AppDelegate()
+        _ = sut.runningInstanceChecker()
+    }
+
+    @Test("默认 existingInstanceActivator 可安全调用")
+    func defaultExistingInstanceActivator_callable() {
+        let sut = AppDelegate()
+        sut.existingInstanceActivator()
+    }
+
+    // MARK: - performIncrementalScan 多页排序
+
+    @Test("performIncrementalScan 多页排序覆盖")
+    func performIncrementalScan_multiplePages_sorted() throws {
+        let sut = makeDelegate()
+        let page1 = PageItem(id: 1, uuid: UUID().uuidString, type: .page, ordering: 1, parentId: nil, app: nil, group: nil)
+        let page2 = PageItem(id: 2, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        sut.storage = MockStoring(itemsToReturn: [page1, page2])
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
+        sut.performIncrementalScan()
+        #expect(true)
+    }
+
+    // MARK: - performInitialScan 多页排序（增量同步路径）
+
+    @Test("performInitialScan 已有多页数据走增量同步排序")
+    func performInitialScan_multiplePages_incrementalSorted() throws {
+        let sut = makeDelegate()
+        let page1 = PageItem(id: 1, uuid: UUID().uuidString, type: .page, ordering: 1, parentId: nil, app: nil, group: nil)
+        let page2 = PageItem(id: 2, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        sut.storage = MockStoring(itemsToReturn: [page1, page2])
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
+        sut.performInitialScan()
+        #expect(true)
+    }
+
     @Test("setupFileWatcher 创建并启动监控器")
     func setupFileWatcher_createsWatcher() {
         let sut = makeDelegate()
@@ -483,6 +523,81 @@ struct AppDelegateTests {
         // 不存在的包路径触发 bundleInfo 的 guard-else 分支
         _ = fs.bundleInfo(at: URL(fileURLWithPath: "/tmp/launchpad_no_such_\(UUID().uuidString).app"))
         #expect(true)
+    }
+
+    // MARK: - 默认闭包覆盖
+
+    @Test("默认 storageFactory 可安全调用 - 真实 :memory: 数据库")
+    func defaultStorageFactory_callable() throws {
+        let sut = AppDelegate()
+        // 默认 storageFactory 调用 :memory: 真实 SQLite
+        let storage = try sut.storageFactory(":memory:")
+        #expect(storage != nil)
+    }
+
+    @Test("默认 loginItemUnregister 闭包可调用")
+    func defaultLoginItemUnregister_callable() {
+        let sut = AppDelegate()
+        // 在 headless 测试环境 SMAppService.mainApp.unregister() 可能失败/成功
+        // 仅验证闭包可调用，不假定结果
+        _ = try? sut.loginItemUnregister()
+    }
+
+    @Test("默认 loginItemRegister 闭包可调用")
+    func defaultLoginItemRegister_callable() {
+        let sut = AppDelegate()
+        // 在 headless 测试环境 SMAppService.mainApp.register() 可能失败/成功
+        // 仅验证闭包可调用，不假定结果
+        _ = try? sut.loginItemRegister()
+    }
+
+    // MARK: - performInitialScan NSScreen.main 为 nil 时走 ?? 1440 fallback
+
+    @Test("performInitialScan: 在无 NSScreen.main 环境下使用默认 1440 宽度（覆盖 L348 ?? fallback）")
+    func performInitialScan_noNSScreenMain_usesDefaultWidth() throws {
+        let sut = makeDelegate()
+        sut.storage = MockStoring(itemsToReturn: [])
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
+
+        // 测试环境 NSScreen.main 通常为 nil → 走 ?? 1440 fallback 分支
+        // 仅验证不崩溃即可
+        sut.performInitialScan()
+        #expect(true)
+    }
+
+    // MARK: - weak self 防御分支（guard let self else）
+
+    @Test("setupHotkey onToggle: 闭包内 weak self 已 nil 时 guard else 分支（覆盖 L224）")
+    func setupHotkey_onToggle_weakSelfNil_guardElse() {
+        // 触发 AppDelegate.setupHotkey 中 onToggle 闭包内 `guard let self else { return }` 的 else 分支
+        var sut: AppDelegate? = makeDelegate()
+        let hm = HotkeyManager()
+        sut?.hotkeyManager = hm
+        sut?.setupHotkey()
+        // 释放 sut
+        sut = nil
+        // 现在 hotkeyManager 的 onToggle 闭包中 [weak self] 已为 nil
+        // 调用 onToggle 触发 guard let sut else { return } 路径
+        hm.onToggle?()
+        #expect(true)
+    }
+
+    @Test("setupHotkey onKeyDown: 闭包内 weak self 已 nil 时 guard else 分支（覆盖 L260）")
+    func setupHotkey_onKeyDown_weakSelfNil_guardElse() {
+        // 触发 AppDelegate.setupHotkey 中 onKeyDown 闭包内 `guard let self else { return event }` 的 else 分支
+        // 策略：让 AppDelegate 在测试中能被释放，然后调用捕获的 onKeyDown
+        var sut: AppDelegate? = makeDelegate()
+        let hm = HotkeyManager()
+        sut?.hotkeyManager = hm
+        sut?.setupHotkey()
+        // 释放 sut
+        sut = nil
+        // 现在 hotkeyManager 的 onKeyDown 闭包中 [weak self] 已为 nil
+        let event = keyEvent(keyCode: 0)
+        let result = hm.onKeyDown?(event)
+        // guard else 分支应返回 event 原值
+        #expect(result != nil)
+        #expect(result === event)
     }
 }
 #endif

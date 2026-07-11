@@ -390,4 +390,78 @@ struct AppScannerSyncTests {
 
         #expect(writer.deletedIds.isEmpty)
     }
+
+    @Test("existingItems 含重复 bundleId 时去重保留首个")
+    func sync_duplicateBundleId_deduplicates() {
+        let writer = MockItemWriter()
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(title: "App1", bundleId: "com.dup.app", path: "/Applications/App1.app"))
+        let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1,
+            app: TestDataFactory.makeAppInfo(title: "App2", bundleId: "com.dup.app", path: "/Applications/App1.app"))
+        let scanned = [
+            ScannedApp(name: "App1", bundleId: "com.dup.app", path: "/Applications/App1.app")
+        ]
+
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [app1, app2], lastPageId: nil, writer: writer)
+
+        // 重复 bundleId 去重后保留首个；app2 title 不同会触发 update（正常行为）
+        #expect(writer.insertedItems.isEmpty)
+        #expect(writer.deletedIds.isEmpty)
+    }
+
+    // MARK: - 分支覆盖
+
+    @Test("firstLaunchPaginate: insertItem 抛错时 continue（覆盖 L88 try? fallback）")
+    func firstLaunchPaginate_insertError_continues() {
+        let writer = MockItemWriter()
+        writer.insertError = TestError.generic
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanned = [
+            ScannedApp(name: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app")
+        ]
+
+        // 不会崩溃，写入失败时跳过该 page
+        scanner.firstLaunchPaginate(scannedApps: scanned, maxPerPage: 10, writer: writer)
+        #expect(writer.insertedItems.isEmpty)
+    }
+
+    @Test("incrementalSync: existingItems 含 bundleId 为 nil 的 app 时跳过（覆盖 L126 guard else）")
+    func incrementalSync_existingAppMissingBundleId_skipped() {
+        let writer = MockItemWriter()
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        // app.bundleId 为空字符串 ""，guard let bundleId = item.app?.bundleId 应成功（空字符串非 nil）
+        // 需要 app 本身为 nil 才能触发 nil 分支
+        let appNoBundle = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0, app: nil)
+        let scanned: [ScannedApp] = []
+        scanner.incrementalSync(scannedApps: scanned, existingItems: [appNoBundle], lastPageId: nil, writer: writer)
+        // app.bundleId 为 nil → 跳过，不会触发 delete
+        #expect(writer.deletedIds.isEmpty)
+    }
+
+    @Test("incrementalSync: delete loop 中 existing app 缺 bundleId 时跳过（覆盖 L173 guard else）")
+    func incrementalSync_deleteLoopAppMissingBundleId_skipped() {
+        let writer = MockItemWriter()
+        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let appNoBundle = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0, app: nil)
+        // scannedApps 为空 → 走 DELETE 分支 → L173 guard let bundleId else { continue }
+        scanner.incrementalSync(scannedApps: [], existingItems: [appNoBundle], lastPageId: nil, writer: writer)
+        #expect(writer.deletedIds.isEmpty)
+    }
+
+    @Test("scanApp: Info.plist 缺 CFBundleIdentifier 时跳过（覆盖 L191 guard else）")
+    func scan_plistMissingBundleId_skipped() {
+        let fs = MockFileSystemService()
+        let appURL = appURL("NoBundleId")
+        fs.directoryContentsMap[appDir] = [appURL]
+        fs.existingFiles = [appURL]
+        // plist 有 CFBundleName 但缺 CFBundleIdentifier
+        fs.bundleInfos[appURL] = ["CFBundleName": "NoBundleId"]
+
+        let scanner = AppScanner(fileSystemService: fs)
+        let result = scanner.scanDirectories([appDir])
+
+        // 没有 CFBundleIdentifier 的应用被跳过
+        #expect(result.isEmpty)
+    }
 }
