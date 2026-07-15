@@ -332,11 +332,7 @@ LaunchPad/
 | 文档 | 内容 |
 |------|------|
 | [`docs/原始app技术实现参考.md`](docs/原始app技术实现参考.md) | 对系统 Dock 二进制的逆向分析，12 个技术维度的真实行为还原 |
-| [`docs/implementation-plan.md`](docs/implementation-plan.md) | 发布就绪修复计划（Phase 1-4） |
-| [`docs/verification-report.md`](docs/verification-report.md) | 发布就绪修复执行验证报告 |
-| [`docs/release-readiness-review.md`](docs/release-readiness-review.md) | 正式发布工程化评审报告 |
 | [`docs/coverage-progress.md`](docs/coverage-progress.md) | 测试覆盖率提升全程记录，含方法论与陷阱复盘 |
-| [`docs/execution-progress.md`](docs/execution-progress.md) | 剩余任务执行进度 |
 
 ---
 
