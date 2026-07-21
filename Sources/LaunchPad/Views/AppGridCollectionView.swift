@@ -56,6 +56,16 @@ public class AppGridCollectionView: NSCollectionView {
         return nil
     }
 
+    /// Prevents AppKit from collapsing horizontally paged content to the clip width.
+    override public func setFrameSize(_ newSize: NSSize) {
+        var resolvedSize = newSize
+        let contentWidth = collectionViewLayout?.collectionViewContentSize.width ?? 0
+        if contentWidth.isFinite && contentWidth > 0 {
+            resolvedSize.width = max(resolvedSize.width, contentWidth)
+        }
+        super.setFrameSize(resolvedSize)
+    }
+
     private func setup() {
         // Flow layout
         let layout = AppGridFlowLayout()

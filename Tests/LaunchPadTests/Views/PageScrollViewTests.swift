@@ -251,6 +251,80 @@ struct PageScrollViewTests {
         scrollView.scrollToPage(0, pageWidth: 0)
     }
 
+    @Test("configurePaging 后 scrollToPage 同步夹紧并通知")
+    func configuredPagingClampsAndNotifies() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+
+        sut.scrollToPage(9, animated: false)
+
+        #expect(sut.contentView.bounds.origin.x == 600)
+        #expect(pages == [2])
+    }
+
+    @Test("无效 pageWidth 被清零且 pageCount 至少为一")
+    func invalidPagingConfigurationIsSanitized() {
+        let sut = PageScrollView()
+        sut.configurePaging(pageWidth: .infinity, pageCount: 0)
+        #expect(sut.pagingPageWidth == 0)
+        #expect(sut.pagingPageCount == 1)
+    }
+
+    @Test("resize 后同步滚到夹紧后的当前页")
+    func resizePagingPositionsSynchronously() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        sut.scrollToPage(2, animated: false)
+        sut.configurePaging(pageWidth: 240, pageCount: 2)
+        sut.scrollToPage(2, animated: false)
+        #expect(sut.contentView.bounds.origin.x == 240)
+    }
+
+    @Test("configured 三页的 ended 与 cancelled 都使用显式 pageCount")
+    func configuredEndedAndCancelledUseExplicitPageCount() {
+        for phase in [NSEvent.Phase.ended, .cancelled] {
+            let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+            sut.configurePaging(pageWidth: 300, pageCount: 3)
+            var pages: [Int] = []
+            sut.onPageChanged = { pages.append($0) }
+            let event = makeDummyScrollEvent()
+            _ = sut.processScrollPhase(.changed, deltaX: 200, event: event)
+            _ = sut.processScrollPhase(phase, deltaX: 0, event: event)
+
+            #expect(pages == [1])
+        }
+    }
+
+    @Test("兼容 scrollToPage 在未显式配置时按文档宽度推导页数")
+    func legacyScrollToPageInfersPageCount() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+
+        sut.scrollToPage(2)
+
+        #expect(sut.pagingPageWidth == 300)
+        #expect(sut.pagingPageCount == 3)
+        #expect(pages == [2])
+    }
+
+    @Test("显式单页配置不被兼容页数推导覆盖")
+    func explicitSinglePageDoesNotUseLegacyInference() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+        sut.configurePaging(pageWidth: 300, pageCount: 1)
+
+        sut.scrollToPage(2)
+
+        #expect(sut.pagingPageCount == 1)
+        #expect(pages == [0])
+    }
+
     // MARK: - velocityThreshold
 
     @Test("velocityThreshold is 300")

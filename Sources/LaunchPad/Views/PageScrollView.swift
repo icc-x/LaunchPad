@@ -15,6 +15,10 @@ class PageScrollView: NSScrollView {
 
     private var scrollAccumulator: CGFloat = 0
     private var isScrolling = false
+    var onPageChanged: ((Int) -> Void)?
+    private(set) var pagingPageWidth: CGFloat = 0
+    private(set) var pagingPageCount: Int = 1
+    private var hasExplicitPagingConfiguration = false
 
     // MARK: - Init
 
@@ -57,26 +61,23 @@ class PageScrollView: NSScrollView {
 
         // 滚动结束 → 计算目标页并动画跳转
         if phase.contains(.ended) || phase.contains(.cancelled) {
+            let accumulatedOffset = scrollAccumulator
+            scrollAccumulator = 0
             guard isScrolling else { return false }
             isScrolling = false
+            guard pagingPageWidth > 0 else { return false }
 
-            let pageWidth = bounds.width
-            guard pageWidth > 0 else { return false }
-
-            let currentOffset = contentView.bounds.origin.x
-            let currentPage = Int(round(currentOffset / pageWidth))
-            let totalPages = max(1, Int(documentView!.bounds.width / pageWidth))
-
+            let currentPage = Int(round(
+                contentView.bounds.origin.x / pagingPageWidth
+            ))
             let target = Self.targetPage(
-                for: scrollAccumulator,
+                for: accumulatedOffset,
                 velocity: deltaX * 10, // 近似速度
                 currentPage: currentPage,
-                totalPages: totalPages,
-                pageWidth: pageWidth
+                totalPages: pagingPageCount,
+                pageWidth: pagingPageWidth
             )
-
-            scrollToPage(target, pageWidth: pageWidth)
-            scrollAccumulator = 0
+            scrollToPage(target, animated: true)
             return false
         }
 
@@ -99,17 +100,52 @@ class PageScrollView: NSScrollView {
 
     // MARK: - 翻页动画
 
-    /// 平滑动画滚动到指定页面
-    func scrollToPage(_ page: Int, pageWidth: CGFloat? = nil) {
-        let pw = pageWidth ?? bounds.width
-        guard pw > 0 else { return }
-        let targetX = CGFloat(page) * pw
+    func configurePaging(pageWidth: CGFloat, pageCount: Int) {
+        hasExplicitPagingConfiguration = true
+        updatePagingConfiguration(pageWidth: pageWidth, pageCount: pageCount)
+    }
 
-        NSAnimationContext.runAnimationGroup { ctx in
-            ctx.duration = AnimationConstants.pageScroll.duration
-            ctx.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
-            contentView.animator().bounds.origin.x = targetX
+    private func updatePagingConfiguration(pageWidth: CGFloat, pageCount: Int) {
+        pagingPageWidth = pageWidth.isFinite ? max(0, pageWidth) : 0
+        pagingPageCount = max(1, pageCount)
+    }
+
+    @available(*, deprecated, message: "Configure paging, then call scrollToPage(_:animated:)")
+    func scrollToPage(_ page: Int, pageWidth: CGFloat? = nil) {
+        if !hasExplicitPagingConfiguration {
+            let resolvedPageWidth = pageWidth ?? bounds.width
+            let documentWidth = documentView?.bounds.width ?? 0
+            let inferredPageCount = resolvedPageWidth.isFinite && resolvedPageWidth > 0
+                ? max(1, Int(ceil(documentWidth / resolvedPageWidth)))
+                : 1
+            updatePagingConfiguration(
+                pageWidth: resolvedPageWidth,
+                pageCount: inferredPageCount
+            )
+        } else if let pageWidth {
+            updatePagingConfiguration(
+                pageWidth: pageWidth,
+                pageCount: pagingPageCount
+            )
         }
+        scrollToPage(page, animated: true)
+    }
+
+    func scrollToPage(_ page: Int, animated: Bool) {
+        guard pagingPageWidth > 0 else { return }
+        let clamped = min(max(page, 0), pagingPageCount - 1)
+        let target = NSPoint(x: CGFloat(clamped) * pagingPageWidth, y: 0)
+
+        if animated {
+            NSAnimationContext.runAnimationGroup { context in
+                context.duration = AnimationConstants.pageScroll.duration
+                context.timingFunction = CAMediaTimingFunction(name: .easeInEaseOut)
+                contentView.animator().bounds.origin = target
+            }
+        } else {
+            contentView.setBoundsOrigin(target)
+        }
+        onPageChanged?(clamped)
     }
 
     // MARK: - 纯函数（保持不变）

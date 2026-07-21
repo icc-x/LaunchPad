@@ -362,21 +362,231 @@ final class SearchBarTests: XCTestCase {
     }
 }
 
-/// Tests for AppGridFlowLayout (0% → basic instantiation)
-final class AppGridFlowLayoutTests: XCTestCase {
+@MainActor
+private final class GridSectionsDataSource: NSObject, NSCollectionViewDataSource {
+    var itemCounts: [Int]
+    init(itemCounts: [Int]) { self.itemCounts = itemCounts }
 
-    func testAppGridFlowLayout_init_doesNotCrash() {
-        let layout = AppGridFlowLayout()
-        XCTAssertNotNil(layout)
+    func numberOfSections(in collectionView: NSCollectionView) -> Int {
+        itemCounts.count
     }
 
-    func testApplyGridParameters_setsScrollDirection() {
-        let layout = AppGridFlowLayout()
-        let screenWidth: CGFloat = 1440
-        let params = GridLayoutCalculator.calculate(screenWidth: screenWidth)
-        layout.applyGridParameters(params)
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        numberOfItemsInSection section: Int
+    ) -> Int {
+        itemCounts[section]
+    }
 
-        XCTAssertEqual(layout.scrollDirection, .horizontal)
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        itemForRepresentedObjectAt indexPath: IndexPath
+    ) -> NSCollectionViewItem {
+        collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath)
+    }
+}
+
+@MainActor
+private func makeGridFixture(
+    itemCounts: [Int],
+    viewportSize: CGSize
+) -> (
+    window: NSWindow,
+    scrollView: NSScrollView,
+    collectionView: AppGridCollectionView,
+    layout: AppGridFlowLayout,
+    dataSource: GridSectionsDataSource,
+    metrics: GridMetrics
+) {
+    let metrics = GridLayoutCalculator.calculate(viewportSize: viewportSize)
+    let layout = AppGridFlowLayout()
+    layout.applyGridMetrics(metrics)
+    let collectionView = AppGridCollectionView(frame: NSRect(
+        origin: .zero,
+        size: NSSize(width: metrics.pageWidth * CGFloat(max(itemCounts.count, 1)),
+                     height: viewportSize.height)
+    ))
+    collectionView.collectionViewLayout = layout
+    collectionView.register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
+    let dataSource = GridSectionsDataSource(itemCounts: itemCounts)
+    collectionView.dataSource = dataSource
+    // This fixture owns its external data source; isolate unrelated production selection callbacks.
+    collectionView.delegate = nil
+    let scrollView = NSScrollView(frame: NSRect(origin: .zero, size: viewportSize))
+    scrollView.documentView = collectionView
+    let window = NSWindow(
+        contentRect: NSRect(origin: .zero, size: viewportSize),
+        styleMask: [.borderless], backing: .buffered, defer: false
+    )
+    window.contentView = scrollView
+    collectionView.reloadData()
+    layout.prepare()
+    return (window, scrollView, collectionView, layout, dataSource, metrics)
+}
+
+private func assertRowMajor(
+    attributes: [NSCollectionViewLayoutAttributes],
+    columns: Int,
+    expectedRows: Int,
+    file: StaticString = #filePath,
+    line: UInt = #line
+) {
+    let sorted = attributes.sorted { $0.indexPath!.item < $1.indexPath!.item }
+    let rowOrigins = Set(sorted.map { $0.frame.minY.rounded() })
+    XCTAssertEqual(rowOrigins.count, expectedRows, file: file, line: line)
+    for (index, attribute) in sorted.enumerated() {
+        let expectedRow = index / columns
+        let expectedColumn = index % columns
+        XCTAssertEqual(attribute.indexPath?.item, index, file: file, line: line)
+        if expectedColumn > 0 {
+            XCTAssertEqual(
+                attribute.frame.minY,
+                sorted[expectedRow * columns].frame.minY,
+                accuracy: 0.5, file: file, line: line
+            )
+        }
+    }
+}
+
+@MainActor
+final class AppGridFlowLayoutTests: XCTestCase {
+
+    func testRowMajorAttributesUseTwoThreeAndFiveRowsWithoutOverlap() {
+        for (height, itemCount, expectedRows) in [(248.0, 14, 2), (372.0, 21, 3), (620.0, 35, 5)] {
+            let fixture = makeGridFixture(
+                itemCounts: [itemCount],
+                viewportSize: CGSize(width: 1440, height: height)
+            )
+            let attributes = (0..<itemCount).compactMap {
+                fixture.layout.layoutAttributesForItem(at: IndexPath(item: $0, section: 0))
+            }
+            assertRowMajor(
+                attributes: attributes,
+                columns: fixture.metrics.columns,
+                expectedRows: expectedRows
+            )
+            for left in attributes.indices {
+                for right in attributes.indices where right > left {
+                    XCTAssertFalse(attributes[left].frame.intersects(attributes[right].frame))
+                }
+            }
+        }
+    }
+
+    func testTwoAndThreeSectionOriginsDifferByPageWidth() {
+        for count in [2, 3] {
+            let fixture = makeGridFixture(
+                itemCounts: Array(repeating: 1, count: count),
+                viewportSize: CGSize(width: 1440, height: 620)
+            )
+            let origins = (0..<count).compactMap {
+                fixture.layout.layoutAttributesForItem(
+                    at: IndexPath(item: 0, section: $0)
+                )?.frame.minX
+            }
+            XCTAssertEqual(origins.count, count)
+            for section in 1..<count {
+                XCTAssertEqual(
+                    origins[section] - origins[section - 1],
+                    fixture.metrics.pageWidth,
+                    accuracy: 0.5
+                )
+            }
+            XCTAssertEqual(
+                fixture.layout.collectionViewContentSize.width,
+                CGFloat(count) * fixture.metrics.pageWidth,
+                accuracy: 0.5
+            )
+        }
+    }
+
+    func testPartialLastPageStartsAtTopLeftSlot() {
+        let fixture = makeGridFixture(
+            itemCounts: [35, 3],
+            viewportSize: CGSize(width: 1440, height: 620)
+        )
+        let first = fixture.layout.layoutAttributesForItem(
+            at: IndexPath(item: 0, section: 1)
+        )!
+        XCTAssertEqual(
+            first.frame.origin,
+            NSPoint(
+                x: fixture.metrics.pageWidth + fixture.metrics.sectionInsets.left,
+                y: fixture.metrics.sectionInsets.top
+            )
+        )
+    }
+
+    func testSupplementaryRequestIsNotRepositionedAsAnItem() {
+        let fixture = makeGridFixture(
+            itemCounts: [1], viewportSize: CGSize(width: 1440, height: 620)
+        )
+        XCTAssertNil(fixture.layout.layoutAttributesForSupplementaryView(
+            ofKind: NSCollectionView.elementKindSectionHeader,
+            at: IndexPath(item: 0, section: 0)
+        ))
+    }
+
+    func testSnapUsesRealSectionCountAndConfiguredPageWidth() {
+        let fixture = makeGridFixture(
+            itemCounts: [1, 1, 1], viewportSize: CGSize(width: 300, height: 248)
+        )
+        fixture.scrollView.contentView.setBoundsOrigin(NSPoint(x: 300, y: 0))
+        let target = fixture.layout.targetContentOffset(
+            forProposedContentOffset: NSPoint(x: 610, y: 17),
+            withScrollingVelocity: .zero
+        )
+        XCTAssertEqual(target, NSPoint(x: 600, y: 0))
+    }
+
+    func testDocumentFrameTracksPagedContentWidthAndCanShrink() {
+        let fixture = makeGridFixture(
+            itemCounts: [1, 1, 1], viewportSize: CGSize(width: 300, height: 248)
+        )
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        XCTAssertEqual(fixture.collectionView.frame.width, 900, accuracy: 0.5)
+        XCTAssertEqual(
+            fixture.scrollView.contentView.documentRect.width, 900, accuracy: 0.5
+        )
+
+        fixture.dataSource.itemCounts = [1, 1]
+        fixture.collectionView.reloadData()
+        fixture.layout.invalidateLayout()
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+
+        XCTAssertEqual(fixture.collectionView.frame.width, 600, accuracy: 0.5)
+        XCTAssertEqual(
+            fixture.scrollView.contentView.documentRect.width, 600, accuracy: 0.5
+        )
+    }
+
+    func testCompatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
+        let viewportSize = CGSize(width: 300, height: 248)
+        let fixture = makeGridFixture(
+            itemCounts: [1, 1, 1], viewportSize: viewportSize
+        )
+        fixture.collectionView.setFrameSize(NSSize(width: 900, height: 620))
+        let parameters = GridLayoutCalculator.calculate(screenWidth: viewportSize.width)
+        let expectedMetrics = GridLayoutCalculator.calculate(viewportSize: viewportSize)
+        let expectedContentHeight = expectedMetrics.sectionInsets.top
+            + CGFloat(expectedMetrics.rows) * expectedMetrics.itemSize.height
+            + CGFloat(max(expectedMetrics.rows - 1, 0)) * expectedMetrics.verticalSpacing
+            + expectedMetrics.sectionInsets.bottom
+
+        for _ in 0..<2 {
+            fixture.layout.applyGridParameters(parameters)
+            fixture.layout.prepare()
+
+            XCTAssertEqual(
+                fixture.layout.collectionViewContentSize.width, 900, accuracy: 0.5
+            )
+            XCTAssertEqual(
+                fixture.layout.collectionViewContentSize.height,
+                expectedContentHeight,
+                accuracy: 0.5
+            )
+            fixture.window.contentView?.layoutSubtreeIfNeeded()
+        }
     }
 }
 
@@ -578,175 +788,4 @@ final class PageControlViewTests: XCTestCase {
     }
 }
 
-/// Tests for AppGridFlowLayout (0% → basic interaction)
-@MainActor
-final class AppGridFlowLayoutTests2: XCTestCase {
-
-    func testApplyGridParameters_setsItemSize() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        let expectedWidth = params.iconSize + params.spacing
-        let expectedHeight = params.iconSize + 40
-        XCTAssertEqual(layout.itemSize.width, expectedWidth)
-        XCTAssertEqual(layout.itemSize.height, expectedHeight)
-    }
-
-    func testApplyGridParameters_setsSpacing() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        XCTAssertEqual(layout.minimumInteritemSpacing, params.spacing)
-        XCTAssertEqual(layout.minimumLineSpacing, params.spacing)
-    }
-
-    func testApplyGridParameters_setsSectionInset() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        XCTAssertEqual(layout.sectionInset.top, params.topMargin)
-        XCTAssertEqual(layout.sectionInset.left, params.horizontalMargin)
-        XCTAssertEqual(layout.sectionInset.bottom, params.bottomMargin)
-        XCTAssertEqual(layout.sectionInset.right, params.horizontalMargin)
-    }
-
-    func testApplyGridParameters_setsScrollDirection() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        XCTAssertEqual(layout.scrollDirection, .horizontal)
-    }
-
-    func testApplyGridParameters_setsHeaderSize() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        XCTAssertEqual(layout.headerReferenceSize, .zero)
-    }
-
-    func testApplyGridParameters_differentScreenWidths() {
-        let layout = AppGridFlowLayout()
-
-        let small = GridLayoutCalculator.calculate(screenWidth: 1280)
-        layout.applyGridParameters(small)
-        XCTAssertEqual(layout.scrollDirection, .horizontal)
-
-        let large = GridLayoutCalculator.calculate(screenWidth: 2560)
-        layout.applyGridParameters(large)
-        XCTAssertEqual(layout.scrollDirection, .horizontal)
-    }
-
-    // MARK: - targetContentOffset
-
-    func testTargetContentOffset_withoutCollectionView_returnsProposed() {
-        let layout = AppGridFlowLayout()
-        let proposed = NSPoint(x: 100, y: 0)
-        let result = layout.targetContentOffset(forProposedContentOffset: proposed, withScrollingVelocity: .zero)
-        // Without collectionView, should fall through to super
-        XCTAssertNotNil(result)
-    }
-
-    func testTargetContentOffset_withCollectionView_snapsToPage() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        collectionView.collectionViewLayout = layout
-        // Need to set up document view for layout to work
-        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
-        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        scrollView.documentView = documentView
-        documentView.addSubview(collectionView)
-
-        let proposed = NSPoint(x: 500, y: 0)
-        let result = layout.targetContentOffset(forProposedContentOffset: proposed, withScrollingVelocity: .zero)
-        // Should snap to nearest page
-        XCTAssertNotNil(result)
-    }
-
-    // MARK: - layoutAttributesForElements
-
-    func testLayoutAttributesForElements_withoutCollectionView_returnsEmpty() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        XCTAssertNotNil(attrs)
-    }
-
-    func testLayoutAttributesForElements_withEmptyCollectionView_returnsEmpty() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        collectionView.collectionViewLayout = layout
-
-        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        XCTAssertNotNil(attrs)
-    }
-
-    func testLayoutAttributesForElements_withItems_centersVertically() {
-        let layout = AppGridFlowLayout()
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
-        layout.applyGridParameters(params)
-
-        let collectionView = NSCollectionView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        collectionView.collectionViewLayout = layout
-        collectionView.register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
-
-        let dataSource = GridTestDataSource(itemCount: 5)
-        collectionView.dataSource = dataSource
-
-        // Place in a window to trigger layout
-        let scrollView = NSScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
-        scrollView.documentView = documentView
-        documentView.addSubview(collectionView)
-
-        let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 1440, height: 900),
-                              styleMask: [], backing: .buffered, defer: false)
-        window.contentView = scrollView
-        window.makeKeyAndOrderFront(nil)
-
-        collectionView.reloadData()
-        collectionView.layoutSubtreeIfNeeded()
-
-        let attrs = layout.layoutAttributesForElements(in: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        XCTAssertNotNil(attrs)
-        // If layout produced attributes, verify vertical centering
-        if !attrs.isEmpty {
-            let collectionViewHeight = collectionView.bounds.height
-            for attr in attrs {
-                XCTAssertEqual(attr.frame.origin.y,
-                               (collectionViewHeight - attr.frame.height) / 2,
-                               accuracy: 1.0)
-            }
-        }
-    }
-}
-
-// MARK: - Test Data Source for AppGridFlowLayout
-
-private final class GridTestDataSource: NSObject, NSCollectionViewDataSource {
-    let itemCount: Int
-    init(itemCount: Int) { self.itemCount = itemCount }
-
-    func collectionView(_ collectionView: NSCollectionView,
-                        numberOfItemsInSection section: Int) -> Int {
-        itemCount
-    }
-
-    func collectionView(_ collectionView: NSCollectionView,
-                        itemForRepresentedObjectAt indexPath: IndexPath) -> NSCollectionViewItem {
-        collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath)
-    }
-}
 #endif
