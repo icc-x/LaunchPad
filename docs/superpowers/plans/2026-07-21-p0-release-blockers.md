@@ -533,7 +533,7 @@ git commit -m "feat: project stable layout into visual pages"
 **Interfaces:**
 - Consumes: Task 1 `GridMetrics`.
 - Produces: exact row-major item frames, one section per `pageWidth`, explicit paging count.
-- Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior.
+- Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior. Before Task 5 explicitly configures paging, the legacy scroll adapter derives page count from `documentView` width so page-control navigation does not regress; an explicit one-page configuration must never be overwritten by that fallback.
 
 - [ ] **Step 1: Replace both obsolete FlowLayout suites with real 2/3/5-row and multi-section RED tests**
 
@@ -776,6 +776,36 @@ func configuredEndedAndCancelledUseExplicitPageCount() {
         #expect(pages == [1])
     }
 }
+
+@Test("兼容 scrollToPage 在未显式配置时按文档宽度推导页数")
+@MainActor
+func legacyScrollToPageInfersPageCount() {
+    let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+    sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+    var pages: [Int] = []
+    sut.onPageChanged = { pages.append($0) }
+
+    sut.scrollToPage(2)
+
+    #expect(sut.pagingPageWidth == 300)
+    #expect(sut.pagingPageCount == 3)
+    #expect(pages == [2])
+}
+
+@Test("显式单页配置不被兼容页数推导覆盖")
+@MainActor
+func explicitSinglePageDoesNotUseLegacyInference() {
+    let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+    sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+    var pages: [Int] = []
+    sut.onPageChanged = { pages.append($0) }
+    sut.configurePaging(pageWidth: 300, pageCount: 1)
+
+    sut.scrollToPage(2)
+
+    #expect(sut.pagingPageCount == 1)
+    #expect(pages == [0])
+}
 ```
 
 - [ ] **Step 3: Run and confirm RED**
@@ -933,8 +963,14 @@ Add properties and replace `scrollToPage`:
 var onPageChanged: ((Int) -> Void)?
 private(set) var pagingPageWidth: CGFloat = 0
 private(set) var pagingPageCount: Int = 1
+private var hasExplicitPagingConfiguration = false
 
 func configurePaging(pageWidth: CGFloat, pageCount: Int) {
+    hasExplicitPagingConfiguration = true
+    updatePagingConfiguration(pageWidth: pageWidth, pageCount: pageCount)
+}
+
+private func updatePagingConfiguration(pageWidth: CGFloat, pageCount: Int) {
     pagingPageWidth = pageWidth.isFinite ? max(0, pageWidth) : 0
     pagingPageCount = max(1, pageCount)
 }
@@ -957,10 +993,21 @@ func scrollToPage(_ page: Int, animated: Bool) {
 
 @available(*, deprecated, message: "Configure paging, then call scrollToPage(_:animated:)")
 func scrollToPage(_ page: Int, pageWidth: CGFloat? = nil) {
-    if let pageWidth {
-        configurePaging(pageWidth: pageWidth, pageCount: pagingPageCount)
-    } else if pagingPageWidth == 0 {
-        configurePaging(pageWidth: bounds.width, pageCount: pagingPageCount)
+    if !hasExplicitPagingConfiguration {
+        let resolvedPageWidth = pageWidth ?? bounds.width
+        let documentWidth = documentView?.bounds.width ?? 0
+        let inferredPageCount = resolvedPageWidth.isFinite && resolvedPageWidth > 0
+            ? max(1, Int(ceil(documentWidth / resolvedPageWidth)))
+            : 1
+        updatePagingConfiguration(
+            pageWidth: resolvedPageWidth,
+            pageCount: inferredPageCount
+        )
+    } else if let pageWidth {
+        updatePagingConfiguration(
+            pageWidth: pageWidth,
+            pageCount: pagingPageCount
+        )
     }
     scrollToPage(page, animated: true)
 }
