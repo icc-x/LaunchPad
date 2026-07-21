@@ -534,7 +534,7 @@ git commit -m "feat: project stable layout into visual pages"
 **Interfaces:**
 - Consumes: Task 1 `GridMetrics`.
 - Produces: exact row-major item frames, one section per `pageWidth`, explicit paging count, and a collection document frame that cannot collapse below the layout content width but can shrink when the section count decreases.
-- Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior. Before Task 5 explicitly configures paging, the legacy scroll adapter derives page count from `documentView` width so page-control navigation does not regress; an explicit one-page configuration must never be overwritten by that fallback.
+- Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior. Layout compatibility always derives both axes from the enclosing clip viewport, never the expanded document bounds, and falls back to the legacy parameter dimensions only when the clip dimension is absent, non-finite or non-positive. Before Task 5 explicitly configures paging, the legacy scroll adapter derives page count from `documentView` width so page-control navigation does not regress; an explicit one-page configuration must never be overwritten by that fallback.
 
 - [ ] **Step 1: Replace both obsolete FlowLayout suites with real 2/3/5-row and multi-section RED tests**
 
@@ -745,6 +745,36 @@ func testDocumentFrameTracksPagedContentWidthAndCanShrink() {
         fixture.scrollView.contentView.documentRect.width, 600, accuracy: 0.5
     )
 }
+
+@MainActor
+func testCompatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
+    let viewportSize = CGSize(width: 300, height: 248)
+    let fixture = makeGridFixture(
+        itemCounts: [1, 1, 1], viewportSize: viewportSize
+    )
+    fixture.collectionView.setFrameSize(NSSize(width: 900, height: 620))
+    let parameters = GridLayoutCalculator.calculate(screenWidth: viewportSize.width)
+    let expectedMetrics = GridLayoutCalculator.calculate(viewportSize: viewportSize)
+    let expectedContentHeight = expectedMetrics.sectionInsets.top
+        + CGFloat(expectedMetrics.rows) * expectedMetrics.itemSize.height
+        + CGFloat(max(expectedMetrics.rows - 1, 0)) * expectedMetrics.verticalSpacing
+        + expectedMetrics.sectionInsets.bottom
+
+    for _ in 0..<2 {
+        fixture.layout.applyGridParameters(parameters)
+        fixture.layout.prepare()
+
+        XCTAssertEqual(
+            fixture.layout.collectionViewContentSize.width, 900, accuracy: 0.5
+        )
+        XCTAssertEqual(
+            fixture.layout.collectionViewContentSize.height,
+            expectedContentHeight,
+            accuracy: 0.5
+        )
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+    }
+}
 ```
 
 - [ ] **Step 2: Add PageScrollView RED tests**
@@ -919,11 +949,14 @@ public final class AppGridFlowLayout: NSCollectionViewLayout {
         let fallbackHeight = parameters.topMargin + parameters.bottomMargin
             + CGFloat(parameters.rows) * (parameters.iconSize + 40)
             + CGFloat(max(parameters.rows - 1, 0)) * parameters.spacing
+        let clipSize = collectionView.enclosingScrollView?.contentView.bounds.size
+        let clipWidth = clipSize?.width ?? 0
+        let clipHeight = clipSize?.height ?? 0
         let viewport = CGSize(
-            width: collectionView.bounds.width > 0
-                ? collectionView.bounds.width : fallbackWidth,
-            height: collectionView.bounds.height > 0
-                ? collectionView.bounds.height : fallbackHeight
+            width: clipWidth.isFinite && clipWidth > 0
+                ? clipWidth : fallbackWidth,
+            height: clipHeight.isFinite && clipHeight > 0
+                ? clipHeight : fallbackHeight
         )
         return GridLayoutCalculator.calculate(viewportSize: viewport)
     }
