@@ -527,12 +527,13 @@ git commit -m "feat: project stable layout into visual pages"
 **Files:**
 - Modify: `Sources/LaunchPad/Views/AppGridFlowLayout.swift:5-68`
 - Modify: `Sources/LaunchPad/Views/PageScrollView.swift:31-152`
+- Modify: `Sources/LaunchPad/Views/AppGridCollectionView.swift:47-83`
 - Modify: `Tests/LaunchPadTests/Views/ViewLayerTests.swift:366-752`
 - Modify: `Tests/LaunchPadTests/Views/PageScrollViewTests.swift:6-382`
 
 **Interfaces:**
 - Consumes: Task 1 `GridMetrics`.
-- Produces: exact row-major item frames, one section per `pageWidth`, explicit paging count.
+- Produces: exact row-major item frames, one section per `pageWidth`, explicit paging count, and a collection document frame that cannot collapse below the layout content width but can shrink when the section count decreases.
 - Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior. Before Task 5 explicitly configures paging, the legacy scroll adapter derives page count from `documentView` width so page-control navigation does not regress; an explicit one-page configuration must never be overwritten by that fallback.
 
 - [ ] **Step 1: Replace both obsolete FlowLayout suites with real 2/3/5-row and multi-section RED tests**
@@ -542,7 +543,7 @@ Delete `AppGridFlowLayoutTests` and `AppGridFlowLayoutTests2`, including asserti
 ```swift
 @MainActor
 private final class GridSectionsDataSource: NSObject, NSCollectionViewDataSource {
-    let itemCounts: [Int]
+    var itemCounts: [Int]
     init(itemCounts: [Int]) { self.itemCounts = itemCounts }
 
     func numberOfSections(in collectionView: NSCollectionView) -> Int {
@@ -571,7 +572,7 @@ private func makeGridFixture(
 ) -> (
     window: NSWindow,
     scrollView: NSScrollView,
-    collectionView: NSCollectionView,
+    collectionView: AppGridCollectionView,
     layout: AppGridFlowLayout,
     dataSource: GridSectionsDataSource,
     metrics: GridMetrics
@@ -579,7 +580,7 @@ private func makeGridFixture(
     let metrics = GridLayoutCalculator.calculate(viewportSize: viewportSize)
     let layout = AppGridFlowLayout()
     layout.applyGridMetrics(metrics)
-    let collectionView = NSCollectionView(frame: NSRect(
+    let collectionView = AppGridCollectionView(frame: NSRect(
         origin: .zero,
         size: NSSize(width: metrics.pageWidth * CGFloat(max(itemCounts.count, 1)),
                      height: viewportSize.height)
@@ -719,6 +720,28 @@ func testSnapUsesRealSectionCountAndConfiguredPageWidth() {
         withScrollingVelocity: .zero
     )
     XCTAssertEqual(target, NSPoint(x: 600, y: 0))
+}
+
+@MainActor
+func testDocumentFrameTracksPagedContentWidthAndCanShrink() {
+    let fixture = makeGridFixture(
+        itemCounts: [1, 1, 1], viewportSize: CGSize(width: 300, height: 248)
+    )
+    fixture.window.contentView?.layoutSubtreeIfNeeded()
+    XCTAssertEqual(fixture.collectionView.frame.width, 900, accuracy: 0.5)
+    XCTAssertEqual(
+        fixture.scrollView.contentView.documentRect.width, 900, accuracy: 0.5
+    )
+
+    fixture.dataSource.itemCounts = [1, 1]
+    fixture.collectionView.reloadData()
+    fixture.layout.invalidateLayout()
+    fixture.window.contentView?.layoutSubtreeIfNeeded()
+
+    XCTAssertEqual(fixture.collectionView.frame.width, 600, accuracy: 0.5)
+    XCTAssertEqual(
+        fixture.scrollView.contentView.documentRect.width, 600, accuracy: 0.5
+    )
 }
 ```
 
@@ -955,6 +978,20 @@ public final class AppGridFlowLayout: NSCollectionViewLayout {
 }
 ```
 
+In `AppGridCollectionView`, add the document sizing boundary before `setup()`:
+
+```swift
+/// Prevents AppKit from collapsing horizontally paged content to the clip width.
+override public func setFrameSize(_ newSize: NSSize) {
+    var resolvedSize = newSize
+    let contentWidth = collectionViewLayout?.collectionViewContentSize.width ?? 0
+    if contentWidth.isFinite && contentWidth > 0 {
+        resolvedSize.width = max(resolvedSize.width, contentWidth)
+    }
+    super.setFrameSize(resolvedSize)
+}
+```
+
 - [ ] **Step 5: Add explicit PageScrollView configuration**
 
 Add properties and replace `scrollToPage`:
@@ -1047,13 +1084,14 @@ swift test --disable-sandbox --no-parallel \
   --filter 'AppGridFlowLayoutTests|PageScrollViewTests'
 ```
 
-Expected: 2/3/5 rows are distinct, two sections are exactly two pages, and paging callbacks/clamps pass without showing a real window.
+Expected: 2/3/5 rows are distinct, two sections are exactly two pages, the document frame expands and shrinks with section count, and paging callbacks/clamps pass without showing a real window.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add Sources/LaunchPad/Views/AppGridFlowLayout.swift \
   Sources/LaunchPad/Views/PageScrollView.swift \
+  Sources/LaunchPad/Views/AppGridCollectionView.swift \
   Tests/LaunchPadTests/Views/ViewLayerTests.swift \
   Tests/LaunchPadTests/Views/PageScrollViewTests.swift
 git commit -m "fix: use explicit row-major paged geometry"
