@@ -589,6 +589,8 @@ private func makeGridFixture(
     collectionView.register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
     let dataSource = GridSectionsDataSource(itemCounts: itemCounts)
     collectionView.dataSource = dataSource
+    // This fixture owns its external data source; isolate unrelated production selection callbacks.
+    collectionView.delegate = nil
     let scrollView = NSScrollView(frame: NSRect(origin: .zero, size: viewportSize))
     scrollView.documentView = collectionView
     let window = NSWindow(
