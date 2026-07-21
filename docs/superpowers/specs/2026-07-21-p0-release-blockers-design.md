@@ -32,12 +32,13 @@
 
 - 禁止文件夹嵌套；文件夹可以同页重排、跨页移动和追加到页面空白处；
 - 应用拖到应用上时，悬停 0.8 秒只显示建文件夹预览，松手才提交；
+- 新文件夹内两个应用保持创建前的顶层全局相对顺序；
 - 应用拖到已有文件夹时追加到文件夹末尾；
 - 跨页目标已满时级联后移，末页溢出时自动创建新页；
 - 页面变空时自动删除并连续重排，但数据库始终至少保留一页；
 - 搜索状态禁用全部拖放；
 - 页面是当前 viewport 对稳定全局顺序的展示切片，不是用户可感知的固定容器；
-- 文件夹内应用可以重排和拖出；剩余一个子应用时自动解散文件夹；
+- 文件夹内应用可以重排和拖出；剩余一个子应用时自动解散文件夹；唯一子应用被拖出时删除空文件夹；
 - 删除文件夹前确认，子应用回到文件夹原全局位置，再删除文件夹；
 - 事务失败时项目回弹，显示非阻塞提示“无法更新布局，请重试”，并记录不暴露数据库细节的系统日志；
 - 不自动重试拖放写入，避免重复执行含歧义的用户操作。
@@ -46,9 +47,10 @@
 
 - 保持图标最小 64pt、最大 96pt；
 - 从 5 行开始适配高度，64pt 仍无法容纳时依次降为 4、3、2、1 行；
+- 纵向行间距固定 20pt，最小上、下 inset 各 10pt；
 - 列数继续按宽度选择 7、9、10 列；
 - 页面容量为当前 `columns * rows`，切换显示器时只重新投影展示，不写数据库；
-- 最后一页从固定网格的左上位置开始填充，切页时项目不发生垂直跳动；
+- 项目使用显式 row-major 固定槽位，从左到右、再从上到下；最后一页从左上位置开始填充，切页时项目不发生垂直跳动；
 - 不引入纵向滚动，不裁切最后一行。
 
 ### 2.4 性能
@@ -111,22 +113,21 @@
 
 ```swift
 public enum LayoutDropIntent: Sendable, Equatable {
-    case insert(itemID: Int64, beforeItemID: Int64)
-    case appendToPage(itemID: Int64, visualPageIndex: Int)
+    case moveTopLevel(itemID: Int64, placement: ItemPlacement)
     case addToFolder(itemID: Int64, folderID: Int64)
     case createFolder(itemID: Int64, targetItemID: Int64, title: String)
-    case reorderFolderItem(itemID: Int64, folderID: Int64, beforeItemID: Int64?)
-    case removeFromFolder(itemID: Int64, folderID: Int64, destination: TopLevelDestination)
+    case reorderFolderItem(itemID: Int64, folderID: Int64, placement: ItemPlacement)
+    case removeFromFolder(itemID: Int64, folderID: Int64, placement: ItemPlacement)
     case deleteFolder(folderID: Int64)
 }
 
-public enum TopLevelDestination: Sendable, Equatable {
+public enum ItemPlacement: Sendable, Equatable {
     case beforeItem(itemID: Int64)
-    case endOfVisualPage(pageIndex: Int)
+    case afterItem(itemID: Int64)
 }
 ```
 
-item after 落点转换为“下一个项目之前”；不存在下一个项目时转换为当前视觉页末尾。所有 ID 都由不可变 `DragSession` 提供，不从当前数组位置猜测。
+项目间落点使用目标项目的稳定 ID；页面或文件夹空白落点转换为当前视觉页最后一个可见项目之后。视觉页由全局顺序密集投影，因此存在拖拽源时不会出现无锚点的空页面。锚点已消失时事务拒绝并回弹。所有 ID 都由不可变 `DragSession` 提供，不从当前数组位置或可变页码猜测。
 
 ### 4.2 `LayoutMutating`
 
@@ -168,7 +169,8 @@ public protocol LayoutMutating: Sendable {
 6. 复用、创建或删除 page rows，并批量写入连续 parent/order；
 7. 检查每次 prepare、bind、step 及 affected-row 结果；
 8. 执行 COMMIT，只有 COMMIT 返回 `SQLITE_OK` 后才报告成功；
-9. 任意失败执行 ROLLBACK，并保留原始错误作为上层日志证据。
+9. 任意失败执行 ROLLBACK，并保留原始错误作为上层日志证据；
+10. ROLLBACK 自身失败时保留 primary error 和 rollback error，将当前 `StorageManager` 标记为不可用并关闭文件连接；后续读写统一拒绝。
 
 事务不变量：
 
@@ -177,8 +179,9 @@ public protocol LayoutMutating: Sendable {
 - 每个持久化页面不超过本次 mutation 使用的 `pageCapacity`；
 - 文件夹只能包含 app，不能包含 page/group，也不能形成环；
 - 文件夹 children ordering 从 0 连续；
-- 新文件夹占据 target app 原全局位置；
+- 新文件夹占据 target app 原全局位置，children 保持 source/target 创建前的全局相对顺序；
 - 安全删除或自动解散后，children 占据原文件夹位置并保持内部顺序；
+- 单子项文件夹的唯一 child 被拖出后删除空文件夹，child 使用用户指定的稳定顶层锚点；
 - 任何错误不得留下部分 parent/order/group 变更。
 
 不向 Controller 暴露 `withTransaction`。当前 `writeQueue.sync` 结构下通用事务闭包容易产生重入死锁，也会把领域不变量分散到 UI 层。
@@ -200,21 +203,21 @@ drag start 建立会话；drop、cancel、ESC、窗口隐藏和 drag session end
 
 ### 6.2 顶层分支
 
-- item before/after：映射为全局插入位置；
-- empty：映射为当前视觉页末尾；
+- item before/after：映射为稳定 item ID 前后；
+- empty：映射为当前视觉页最后一个可见 item 之后；
 - left/right edge：1.5 秒后分别翻上一页/下一页，边界不触发；
 - app on app：0.8 秒后 preview，drop 时 create folder；
 - app on group：drop 时 append child；
 - group on app/group：拒绝合并；
 - group before/after/empty：允许普通顶层移动；
-- invalid UUID、stale source、stale target、self drop：拒绝且零写入；
+- invalid UUID、stale source、stale target、stale empty anchor、self drop：拒绝且零写入；
 - search active：drag source 和 drop destination 都禁用。
 
 ### 6.3 文件夹分支
 
-- child before/after/empty：更新 folder child 全局顺序；
+- child before/after/empty：使用稳定 child ID 前后更新 folder child 全局顺序；
 - child 拖出 overlay：转换为顶层目标位置；
-- remaining count == 1：事务内自动解散；
+- remaining count == 1：事务内自动解散；drag 前只有一个 child 时，移出后删除空 folder；
 - delete folder：确认后 children 回到原 folder 全局位置；
 - folder 内不提供 group source 或 app-on-app 建子文件夹。
 
@@ -233,14 +236,14 @@ drag start 建立会话；drop、cancel、ESC、窗口隐藏和 drag session end
 - `horizontalSpacing`、`verticalSpacing`；
 - `sectionInsets`、`pageWidth`。
 
-列数保留现有三分支。高度算法从 5 行向下寻找第一个可容纳最小 64pt 图标、40pt label/padding、固定纵向间距和最小上下 inset 的行数；选定行数后在 64...96pt 内使用宽高共同约束的最大图标尺寸。即使 viewport 极端缩小，也至少返回 1 行并保证所有数值有限且非负。
+列数保留现有三分支。高度算法使用 40pt label/padding、20pt 纵向间距和上下各 10pt 最小 inset，从 5 行向下寻找第一个可容纳最小 64pt 图标的行数；5/4/3/2/1 行的最小 viewport 高度分别为 620/496/372/248/124pt。选定行数后在 64...96pt 内使用宽高共同约束的最大图标尺寸。即使 viewport 极端缩小，也至少返回 1 行并保证所有数值有限且非负。
 
 ### 7.2 Flow layout
 
 - item width 不再包含 inter-item spacing；
 - 每个 section 的几何宽度严格等于 clip viewport 宽度；
 - section 起点为 `pageIndex * pageWidth`；
-- item 使用固定网格槽，保留系统计算出的相对 x/y；
+- item 使用显式 row-major 固定网格槽：`row = itemIndex / columns`、`column = itemIndex % columns`；
 - 最后一页从左上填充，不把局部内容块重新垂直居中；
 - supplementary attributes 不参与 item 位移；
 - snap 使用真实 section count 和 page width。
@@ -306,7 +309,7 @@ Hotkey local monitor 把所有候选 keyDown 交给 AppDelegate callback，由 c
 - 自动解散和安全删除；
 - ordering 连续、无重复、无丢失。
 
-真实 `:memory:` SQLite 测试通过触发器或注入点在 BEGIN、prepare、bind、step、COMMIT 和 ROLLBACK 边界制造失败，并通过同一 storage 的新读取证明状态完全未变。需要证明关闭后重开仍持久化的集成测试使用 `/tmp` 独立数据库文件，避免错误假设不同 `:memory:` 连接共享数据。
+真实 `:memory:` SQLite 测试通过触发器或注入点在 BEGIN、prepare、bind、step 和 COMMIT 边界制造失败，并通过同一 storage 的新读取证明状态完全未变。ROLLBACK 真实失败时不再读取同一连接，而是断言 storage 被标记为不可用且后续访问被拒绝；文件数据库关闭后使用 `/tmp` 中的新实例重开，验证 SQLite 连接关闭后没有持久化部分事务。需要证明正常提交在关闭后重开仍持久化的集成测试同样使用 `/tmp` 独立数据库文件，避免错误假设不同 `:memory:` 连接共享数据。
 
 ### 9.3 UI 测试
 
