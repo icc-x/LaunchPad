@@ -99,4 +99,81 @@ struct GridLayoutCalculatorTests {
         let result = GridLayoutCalculator.calculate(screenWidth: 1440)
         #expect(result.spacing == 20)
     }
+
+    @Test("列边界 1440/1728 及 nextUp 精确")
+    func columnBreakpoints() {
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 620)).columns == 7)
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: CGFloat(1440).nextUp, height: 620)).columns == 9)
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1728, height: 620)).columns == 9)
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: CGFloat(1728).nextUp, height: 620)).columns == 10)
+    }
+
+    @Test("每个最小高度边界精确选择 5 到 1 行")
+    func rowBreakpoints() {
+        let cases: [(CGFloat, Int)] = [
+            (620, 5), (496, 4), (372, 3), (248, 2), (124, 1),
+        ]
+        for (height, expectedRows) in cases {
+            #expect(GridLayoutCalculator.calculate(
+                viewportSize: CGSize(width: 1440, height: height)).rows == expectedRows)
+            if expectedRows > 1 {
+                #expect(GridLayoutCalculator.calculate(
+                    viewportSize: CGSize(width: 1440, height: height.nextDown)).rows
+                    == expectedRows - 1)
+            }
+        }
+    }
+
+    @Test("900 768 600 整屏对应 viewport 得到 5 5 4 行")
+    func approvedScreenHeights() {
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 798)).rows == 5)
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1366, height: 666)).rows == 5)
+        #expect(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1280, height: 498)).rows == 4)
+    }
+
+    @Test("异常 viewport 返回有限非负 metrics")
+    func invalidViewportIsSanitized() {
+        let metrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: CGFloat.nan, height: CGFloat.infinity))
+        let values = [
+            metrics.iconSize, metrics.itemSize.width, metrics.itemSize.height,
+            metrics.horizontalSpacing, metrics.verticalSpacing,
+            metrics.sectionInsets.top, metrics.sectionInsets.left,
+            metrics.sectionInsets.bottom, metrics.sectionInsets.right,
+            metrics.pageWidth,
+        ]
+        #expect(metrics.rows == 1)
+        #expect(values.allSatisfy { $0.isFinite && $0 >= 0 })
+    }
+
+    @Test("item 尺寸不重复包含 spacing")
+    func itemSizeExcludesSpacing() {
+        let metrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 620))
+        #expect(metrics.itemSize.width == metrics.iconSize)
+        #expect(metrics.itemSize.height == metrics.iconSize + 40)
+        #expect(metrics.verticalSpacing == 20)
+        #expect(metrics.sectionInsets.top >= 10)
+        #expect(metrics.sectionInsets.bottom >= 10)
+    }
+
+    @Test("图标尺寸明确夹紧到 64 和 96")
+    func iconSizeClampsToExactBounds() {
+        let minimum = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1, height: 124)
+        )
+        let maximum = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 2560, height: 1200)
+        )
+
+        #expect(minimum.iconSize == 64)
+        #expect(maximum.iconSize == 96)
+    }
 }
