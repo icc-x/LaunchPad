@@ -161,7 +161,7 @@ public protocol LayoutMutating: Sendable {
 
 每个 `LayoutDropIntent` 都执行相同事务骨架：
 
-1. 在 storage write queue 内执行 `BEGIN IMMEDIATE` 并检查返回码；
+1. `StorageManager` 的读取、写入、事务和关闭统一进入单一串行 `databaseQueue`，并在该队列内执行 `BEGIN IMMEDIATE`、检查返回码；
 2. 从数据库读取当前页面、顶层项目、目标文件夹 children；
 3. 验证 source/target 存在、类型合法、source != target、搜索态未越过 Controller 边界；
 4. 在内存领域模型中应用一次 mutation；
@@ -170,7 +170,7 @@ public protocol LayoutMutating: Sendable {
 7. 检查每次 prepare、bind、step 及 affected-row 结果；
 8. 执行 COMMIT，只有 COMMIT 返回 `SQLITE_OK` 后才报告成功；
 9. 任意失败执行 ROLLBACK，并保留原始错误作为上层日志证据；
-10. ROLLBACK 自身失败时保留 primary error 和 rollback error，将当前 `StorageManager` 标记为不可用并关闭文件连接；后续读写统一拒绝。
+10. ROLLBACK 自身失败时保留 primary error 和 rollback error，将当前 `StorageManager` 标记为不可用并通过 `sqlite3_close_v2` 安全关闭连接；后续读写统一拒绝。
 
 事务不变量：
 
@@ -185,6 +185,8 @@ public protocol LayoutMutating: Sendable {
 - 任何错误不得留下部分 parent/order/group 变更。
 
 不向 Controller 暴露 `withTransaction`。当前 `writeQueue.sync` 结构下通用事务闭包容易产生重入死锁，也会把领域不变量分散到 UI 层。
+
+现有 `readQueue` 和 `writeQueue` 不再分别访问同一个 SQLite 指针。单队列不会改变公开 API；布局读取与事务性能通过墙钟回归测试验证。
 
 ## 6. 拖放状态与交互
 
