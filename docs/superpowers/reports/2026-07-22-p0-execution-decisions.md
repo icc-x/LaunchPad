@@ -799,3 +799,37 @@ the approved plan or task-specific test reports.
   event mappings, sensitive sentinel errors from both mutation and reload, exact
   attempted capacity, AppDelegate dual-reference identity/nil combinations, and
   COMMIT-or-throw ordering before reads.
+
+## Decision 037: Isolate database recovery before any further AppDelegate gate
+
+- Status: adopted and verified as an urgent prerequisite after Task 15.
+- Evidence: `AppDelegate.setupServices()` obtained the production path
+  `~/Library/Application Support/LaunchPad/launchpad.db` and directly removed it
+  on `.deleteAndRescan`. `AppDelegateTests.makeDelegate()` replaced only the
+  storage factory; the corruption-recovery test intentionally made its first
+  factory call fail, so every execution could reach the real removal before the
+  second factory returned an in-memory database. Two Task 16 baseline runs had
+  already included that test without a path/removal seam. At discovery time the
+  LaunchPad application-support directory was empty; repository evidence cannot
+  determine whether the database was absent beforehand or removed by a test.
+- Decision: interrupt Task 16 and prohibit `AppDelegateTests` and full-suite runs
+  until an isolated fix passes review. Inject `databasePathProvider` and
+  `databaseRemover` with production defaults preserving the original path and
+  deletion behavior. Every AppDelegate fixture installs a unique `/tmp` path and
+  a no-op/recording remover before launch or setup. The recovery matrix requires
+  the exact same safe path at the first factory, corruption handler, remover, and
+  second factory; non-delete performs no removal, and remover failure preserves
+  the existing best-effort second attempt.
+- Impact: production corruption recovery is unchanged, while tests cannot create,
+  open, or delete the user's database. The same patch replaces incidental
+  `/Applications` probes with missing UUID paths under `/tmp`, further reducing
+  host coupling. Future AppDelegate/full gates are authorized only after the
+  static isolation scan succeeds.
+- Verification: the safe RED was a compile failure for the two missing injection
+  points and executed no test. Static gates proved no direct removal inside
+  `setupServices`, both boundaries installed before fixture return, no test call
+  to `databasePath()`, and all ten test path literals restricted to `/tmp` or
+  `:memory:`. Controller-fresh `AppDelegateTests` passed `46/46`; commit
+  `db71bc7` contains exactly the two authorized Swift files. Independent formal
+  review reported spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0`.
