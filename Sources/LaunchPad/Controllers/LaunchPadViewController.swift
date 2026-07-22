@@ -237,7 +237,7 @@ public class LaunchPadViewController: NSViewController {
         guard size.width.isFinite, size.height.isFinite,
               size.width > 0, size.height > 0 else { return }
         let metrics = GridLayoutCalculator.calculate(viewportSize: size)
-        guard metrics != gridMetrics else { return }
+        guard metrics != gridMetrics || collectionView.gridMetrics != metrics else { return }
         gridMetrics = metrics
         collectionView.applyGridMetrics(metrics)
         reloadProjectedLayout(preserving: selectedItemID)

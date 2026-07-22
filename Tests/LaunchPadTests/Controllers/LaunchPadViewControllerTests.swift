@@ -513,6 +513,19 @@ struct LaunchPadViewControllerTests {
         return nil
     }
 
+    private func expectThreePagePresentation(
+        _ sut: LaunchPadViewController,
+        scrollView: PageScrollView,
+        currentPage: Int
+    ) {
+        #expect(sut.visualPages.map(\.count) == [28, 28, 4])
+        #expect(sut.currentVisualPage == currentPage)
+        #expect(sut.pagingPageCount == 3)
+        #expect(scrollView.pagingPageWidth == 1440)
+        #expect(!sut.pageControl.isHidden)
+        #expect(sut.pageControl.intrinsicContentSize.width == 40)
+    }
+
     // MARK: - 视图加载后的 executeAction 分支
 
     @Test("视图加载后 enterSearchMode 执行 searchBar.show 路径")
@@ -632,49 +645,82 @@ struct LaunchPadViewControllerTests {
     // MARK: - 分页导航
 
     @Test("视图加载后 rightArrow 翻到下一页且到达末页后不越界")
-    func nextPage_navigatesForward() {
+    func nextPage_navigatesForward() throws {
         let (sut, _, storage) = makeSUT()
-        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
-        storage.pages = [page1, page2]
-        storage.childrenByPage = [1: [], 2: []]
-        _ = sut.view
-        sut.loadData()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let scrollView = try #require(extractScrollView(from: sut))
+        let productionCallback = try #require(scrollView.onPageChanged)
+        var scrolledPages: [Int] = []
+        scrollView.onPageChanged = { page in
+            scrolledPages.append(page)
+            productionCallback(page)
+        }
 
-        // 第 0 页 → 第 1 页 → 已是末页，再翻不越界
-        _ = sut.handleKeyEvent(.rightArrow)
-        _ = sut.handleKeyEvent(.rightArrow)
+        #expect(sut.handleKeyEvent(.rightArrow) == .nextPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 1)
+        #expect(scrolledPages == [1])
+
+        #expect(sut.handleKeyEvent(.rightArrow) == .nextPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 2)
+        #expect(scrolledPages == [1, 2])
+
+        #expect(sut.handleKeyEvent(.rightArrow) == .nextPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 2)
+        #expect(scrolledPages == [1, 2, 2])
     }
 
     @Test("视图加载后 leftArrow 翻到上一页且不越界")
-    func previousPage_navigatesBackward() {
+    func previousPage_navigatesBackward() throws {
         let (sut, _, storage) = makeSUT()
-        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
-        storage.pages = [page1, page2]
-        storage.childrenByPage = [1: [], 2: []]
-        _ = sut.view
-        sut.loadData()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        _ = sut.handleKeyEvent(.rightArrow)
+        _ = sut.handleKeyEvent(.rightArrow)
+        let scrollView = try #require(extractScrollView(from: sut))
+        let productionCallback = try #require(scrollView.onPageChanged)
+        var scrolledPages: [Int] = []
+        scrollView.onPageChanged = { page in
+            scrolledPages.append(page)
+            productionCallback(page)
+        }
 
-        _ = sut.handleKeyEvent(.rightArrow) // 到第 1 页
-        _ = sut.handleKeyEvent(.leftArrow)  // 回第 0 页
-        _ = sut.handleKeyEvent(.leftArrow)  // 已在第 0 页，不越界
+        #expect(sut.handleKeyEvent(.leftArrow) == .previousPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 1)
+        #expect(scrolledPages == [1])
+
+        #expect(sut.handleKeyEvent(.leftArrow) == .previousPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 0)
+        #expect(scrolledPages == [1, 0])
+
+        #expect(sut.handleKeyEvent(.leftArrow) == .previousPage)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 0)
+        #expect(scrolledPages == [1, 0, 0])
     }
 
     @Test("dragController.onPageChange 回调触发翻页导航")
-    func handlePageChange_viaDragControllerCallback() {
+    func handlePageChange_viaDragControllerCallback() throws {
         let (sut, dragController, storage) = makeSUT()
-        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
-        storage.pages = [page1, page2]
-        storage.childrenByPage = [1: [], 2: []]
-        _ = sut.view
-        sut.loadData()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let scrollView = try #require(extractScrollView(from: sut))
+        let productionCallback = try #require(scrollView.onPageChanged)
+        var scrolledPages: [Int] = []
+        scrollView.onPageChanged = { page in
+            scrolledPages.append(page)
+            productionCallback(page)
+        }
 
-        // viewDidLoad 的 setupCallbacks 已绑定 onPageChange → handlePageChange
         dragController.onPageChange?(.forward)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 1)
         dragController.onPageChange?(.backward)
-        dragController.onPageChange?(.backward) // 越界保护
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 0)
+        dragController.onPageChange?(.backward)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 0)
+        #expect(scrolledPages == [1, 0, 0])
     }
 
     // MARK: - 文件夹创建
@@ -758,6 +804,45 @@ struct LaunchPadViewControllerTests {
         #expect(secondGrid !== firstGrid)
         #expect(secondGrid.delegate === secondCoordinator)
         #expect(secondGrid.delegate !== secondGrid)
+    }
+
+    @Test("同 viewport 重建 view 后为新 grid 恢复 metrics、snapshot 与稳定选择")
+    func loadViewRebuildRehydratesCurrentGridAtSameViewport() throws {
+        let (sut, _, storage) = makeSUT()
+        let expectedMetrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 496)
+        )
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        sut.navigateToPage(2)
+        _ = sut.selectItem(id: 60)
+        let firstGrid = try #require(extractCollectionView(from: sut))
+        let insertedBefore = storage.insertedItems
+        let updatedBefore = storage.updatedItems
+        let deletedBefore = storage.deletedIds
+        #expect(firstGrid.gridMetrics == expectedMetrics)
+        #expect(sut.currentVisualPage == 2)
+        #expect(sut.selectedItemID == 60)
+
+        sut.loadView()
+        let replacementGrid = try #require(extractCollectionView(from: sut))
+        #expect(replacementGrid !== firstGrid)
+        #expect(replacementGrid.gridMetrics == nil)
+
+        sut.viewDidLayout()
+
+        #expect(sut.gridMetrics == expectedMetrics)
+        #expect(replacementGrid.gridMetrics == expectedMetrics)
+        #expect(sut.gridSnapshot.sectionIdentifiers == [.page(0), .page(1), .page(2)])
+        #expect(sut.gridSnapshot.itemIdentifiers.map(\.id) == Array(1...60).map(Int64.init))
+        #expect(sut.currentVisualPage == 2)
+        #expect(sut.selectedItemID == 60)
+        #expect(sut.selectedItemIndexPath == IndexPath(item: 3, section: 2))
+        #expect(replacementGrid.selectionIndexPaths == [IndexPath(item: 3, section: 2)])
+        #expect(storage.insertedItems == insertedBefore)
+        #expect(storage.updatedItems == updatedBefore)
+        #expect(storage.deletedIds == deletedBefore)
     }
 
     @Test("释放 ViewController 后 coordinator 与 grid 一并释放")
@@ -1151,11 +1236,27 @@ struct LaunchPadViewControllerTests {
         sut.searchBar.onQueryChanged?("hello")
     }
 
-    @Test("pageControl.onDotSelected 触发翻页导航")
-    func pageControl_onDotSelected_navigates() {
-        let (sut, _, _) = makeSUT()
-        _ = sut.view
+    @Test("pageControl dot 在真实多页投影中同步目标页并拒绝越界")
+    func pageControl_onDotSelected_navigates() throws {
+        let (sut, _, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let scrollView = try #require(extractScrollView(from: sut))
+        let productionCallback = try #require(scrollView.onPageChanged)
+        var scrolledPages: [Int] = []
+        scrollView.onPageChanged = { page in
+            scrolledPages.append(page)
+            productionCallback(page)
+        }
+
         sut.pageControl.onDotSelected?(2)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 2)
+        #expect(scrolledPages == [2])
+
+        sut.pageControl.onDotSelected?(3)
+        expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 2)
+        #expect(scrolledPages == [2])
     }
 
     @Test("folderOverlay.onAppSelected 触发选中")
@@ -1650,6 +1751,51 @@ struct LaunchPadViewControllerTests {
         _ = sut.handleKeyEvent(.downArrow)
 
         #expect(sut.selectedItemID == nil)
+    }
+
+    @Test("view loaded 但 metrics 为 nil 时 Up、Down、Tab 均保持稳定与真实 grid 选择")
+    func loadedWithoutMetricsKeyboardMatrixPreservesSelection() throws {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        let collectionView = try #require(extractCollectionView(from: sut))
+        let selectedItem = TestDataFactory.makePageItem(
+            id: 501,
+            type: .app,
+            ordering: 0,
+            app: nil
+        )
+        let neighboringItem = TestDataFactory.makePageItem(
+            id: 502,
+            type: .app,
+            ordering: 1,
+            app: nil
+        )
+        collectionView.reload(
+            pages: [[selectedItem, neighboringItem]],
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+        sut.handleItemSelection(selectedItem)
+        let selectedIDBefore = sut.selectedItemID
+        let gridSelectionBefore = collectionView.selectionIndexPaths
+        #expect(sut.gridMetrics == nil)
+        #expect(collectionView.gridMetrics == nil)
+        #expect(selectedIDBefore == selectedItem.id)
+        #expect(gridSelectionBefore == [IndexPath(item: 0, section: 0)])
+
+        for key in [
+            KeyboardNavigator.Key.upArrow,
+            .downArrow,
+            .tab,
+        ] {
+            _ = sut.handleKeyEvent(key)
+            #expect(sut.selectedItemID == selectedIDBefore, "\(key) changed stable selection")
+            #expect(
+                collectionView.selectionIndexPaths == gridSelectionBefore,
+                "\(key) changed the real grid selection"
+            )
+        }
     }
 
     @Test("没有选择时 Up 保持 nil")
