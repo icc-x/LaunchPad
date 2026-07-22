@@ -5,7 +5,7 @@ import LaunchPadProtocols
 
 /// 主视图控制器 — 协调所有子视图和控制器
 /// 连接：KeyboardNavigator → SearchEngine → DiffableDataSource → NSCollectionView
-///       DragController → ItemWriting
+///       DragController → drag-session preview lifecycle
 ///       FolderController → FolderOverlayView
 @MainActor
 public class LaunchPadViewController: NSViewController {
@@ -283,10 +283,6 @@ public class LaunchPadViewController: NSViewController {
             self?.handlePageChange(direction)
         }
 
-        dragController.onCreateGroup = { [weak self] targetId in
-            self?.handleCreateGroup(targetId: targetId)
-        }
-
         // 文件夹重命名：连接 FolderCell.onRenamed → FolderController.renameFolder
         collectionView.onFolderRenamed = { [weak self] item, newTitle in
             self?.handleFolderRename(item: item, newTitle: newTitle)
@@ -322,7 +318,7 @@ public class LaunchPadViewController: NSViewController {
                 // 长按结束时已在抖动状态 → 保持抖动（编辑模式）
                 updateJiggleState()
             } else if dragController.state == .dragging {
-                dragController.handleDrop()
+                dragController.finishDrag()
                 loadData()
             } else {
                 dragController.handlePressEnded()
@@ -453,7 +449,7 @@ public class LaunchPadViewController: NSViewController {
         synchronizePage(to: index, animated: true)
     }
 
-    private func handlePageChange(_ direction: DragController.PageChangeDirection) {
+    private func handlePageChange(_ direction: DragPageDirection) {
         let newPage: Int
         switch direction {
         case .forward:
@@ -600,25 +596,6 @@ public class LaunchPadViewController: NSViewController {
         }
     }
 
-    func handleCreateGroup(targetId: Int64) {
-        // Find the target item and create a folder
-        guard let targetItem = findItem(byId: targetId) else { return }
-
-        let draggedItemIds = dragController.currentOrder
-        guard draggedItemIds.count >= 2 else { return }
-
-        // Find another item (not the target) to group with
-        if let otherId = draggedItemIds.first(where: { $0 != targetId }),
-           let otherItem = findItem(byId: otherId) {
-            do {
-                _ = try folderController.createFolder(from: otherItem, and: targetItem)
-                loadData()
-            } catch {
-                NSLog("[LaunchPadViewController] Failed to create folder: \(error)")
-            }
-        }
-    }
-
     func handleFolderRename(item: PageItem, newTitle: String) {
         do {
             try folderController.renameFolder(item: item, newTitle: newTitle)
@@ -626,15 +603,6 @@ public class LaunchPadViewController: NSViewController {
         } catch {
             NSLog("[LaunchPadViewController] Failed to rename folder: \(error)")
         }
-    }
-
-    private func findItem(byId id: Int64) -> PageItem? {
-        for (_, items) in itemsByPage {
-            if let item = items.first(where: { $0.id == id }) {
-                return item
-            }
-        }
-        return nil
     }
 
     // MARK: - Keyboard

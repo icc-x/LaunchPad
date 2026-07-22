@@ -1,741 +1,410 @@
-import Testing
-import Foundation
 import CoreGraphics
+import Foundation
+import LaunchPadProtocols
+import Testing
 @testable import LaunchPad
 
-/// Thread-safe helpers for @Sendable closure tests
-private final class SendableState: @unchecked Sendable {
-    var direction: DragController.PageChangeDirection?
-    var boolFlag: Bool = false
-    var targetId: Int64?
-    var count: Int = 0
-}
-
-// MARK: - State Machine Tests
-
 @MainActor
-@Suite("DragController state machine")
+@Suite("DragController immutable drag session")
 struct DragControllerTests {
-
-    // MARK: - DragState enum definition verification
-
-    @Test("DragState contains all necessary states")
-    func dragState_hasAllCases() {
-        let allStates: [DragController.DragState] = [.idle, .jiggling, .dragging]
-        #expect(allStates.count == 3)
+    private func makeSession(
+        itemID: Int64 = 11,
+        type: ItemType = .app,
+        sourceKind: DragSourceKind = .topLevel,
+        parentID: Int64 = 100,
+        visualIndex: Int = 3
+    ) -> DragSession {
+        DragSession(
+            itemID: itemID,
+            itemUUID: "00000000-0000-0000-0000-\(String(format: "%012lld", itemID))",
+            itemType: type,
+            sourceKind: sourceKind,
+            sourceParentID: parentID,
+            sourceVisualIndex: visualIndex,
+            hoverDestination: nil,
+            folderCreationPreviewTargetID: nil
+        )
     }
 
-    @Test("DraggingSubstate contains overEdge and overIcon")
-    func draggingSubstate_hasBothCases() {
-        let substates: [DragController.DraggingSubstate] = [.none, .overEdge, .overIcon(targetId: 0)]
-        #expect(substates.count == 3)
+    @Test("更新 hover 产生新会话值，不修改原值")
+    func hoverUpdateKeepsOriginalSessionImmutable() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        let original = makeSession()
+
+        sut.beginDrag(original)
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+
+        #expect(original.hoverDestination == nil)
+        #expect(sut.session?.hoverDestination == .item(itemID: 22, itemType: .app))
     }
 
-    // MARK: - State transitions: idle -> jiggling
+    @Test("会话保留来源稳定标识")
+    func sessionKeepsStableSourceIdentity() {
+        let session = makeSession(
+            itemID: 12,
+            type: .group,
+            sourceKind: .folderChild,
+            parentID: 88,
+            visualIndex: 4
+        )
 
-    @Test("idle state long press 0.5s with movement < 10px -> transitions to jiggling")
-    func idle_to_jiggling_onLongPress() {
-        let controller = DragController()
-        #expect(controller.state == .idle)
-
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
+        #expect(session.itemID == 12)
+        #expect(session.itemType == .group)
+        #expect(session.sourceKind == .folderChild)
+        #expect(session.sourceParentID == 88)
+        #expect(session.sourceVisualIndex == 4)
     }
 
-    // MARK: - State transitions: jiggling -> dragging
+    @Test("左右边缘超时分别请求上一页和下一页")
+    func edgeHoverUsesActualDirection() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.beginDrag(makeSession())
 
-    @Test("jiggling state drag start -> transitions to dragging")
-    func jiggling_to_dragging_onDragStart() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
+        sut.updateDragHover(.edge(.backward))
+        scheduler.advance(by: 1.5)
+        sut.updateDragHover(.edge(.forward))
+        scheduler.advance(by: 1.5)
 
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
-        #expect(controller.draggingSubstate == .none)
+        #expect(directions == [.backward, .forward])
+        #expect(sut.session?.hoverDestination == nil)
     }
 
-    // MARK: - State transitions: dragging -> idle (drop)
+    @Test("边缘未满 1.5 秒不翻页")
+    func edgeHoverBeforeThresholdDoesNotChangePage() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.beginDrag(makeSession())
 
-    @Test("dragging state drop -> executes drop and transitions back to idle")
-    func dragging_to_idle_onDrop() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
+        sut.updateDragHover(.edge(.forward))
+        scheduler.advance(by: 1.4)
 
-        controller.handleDrop()
-        #expect(controller.state == .idle)
-        #expect(controller.draggingSubstate == .none)
+        #expect(directions.isEmpty)
+        #expect(sut.session?.hoverDestination == .edge(.forward))
     }
 
-    // MARK: - State transitions: dragging + ESC -> idle
+    @Test("相同 hover 早返回且不重启定时器")
+    func sameHoverReturnsWithoutRestartingTimer() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.edge(.forward))
+        let cancelCount = scheduler.cancelCallCount
 
-    @Test("dragging state ESC -> cancels drag and transitions back to idle")
-    func dragging_to_idle_onCancel() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
+        sut.updateDragHover(.edge(.forward))
 
-        controller.handleCancel()
-        #expect(controller.state == .idle)
+        #expect(scheduler.cancelCallCount == cancelCount)
+        #expect(scheduler.scheduledActions.count == 1)
     }
 
-    // MARK: - State transitions: jiggling + ESC -> idle
+    @Test("过期边缘回调不能翻页")
+    func staleEdgeActionCannotChangePage() throws {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.edge(.forward))
+        let staleAction = try #require(scheduler.scheduledActions.first?.action)
 
-    @Test("jiggling state ESC -> transitions back to idle")
-    func jiggling_to_idle_onEscape() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
+        sut.updateDragHover(.empty)
+        staleAction()
 
-        controller.handleCancel()
-        #expect(controller.state == .idle)
+        #expect(directions.isEmpty)
+        #expect(sut.session?.hoverDestination == .empty)
     }
 
-    // MARK: - Drag substate transitions
+    @Test("过期边缘回调不能命中新会话的相同目标")
+    func staleEdgeActionCannotMatchReplacementSessionDestination() throws {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.beginDrag(makeSession(itemID: 11))
+        sut.updateDragHover(.edge(.forward))
+        let staleAction = try #require(scheduler.scheduledActions.first?.action)
+        let replacement = makeSession(itemID: 33).updating(
+            hoverDestination: .edge(.forward),
+            folderCreationPreviewTargetID: nil
+        )
 
-    @Test("Dragging over screen edge -> substate becomes overEdge")
-    func dragging_overEdge_substate() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
+        sut.beginDrag(replacement)
+        staleAction()
 
-        controller.updateDragHover(location: .screenEdge)
-        #expect(controller.draggingSubstate == .overEdge)
+        #expect(directions.isEmpty)
+        #expect(sut.session == replacement)
     }
 
-    @Test("Dragging over icon -> substate becomes overIcon")
-    func dragging_overIcon_substate() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
+    @Test("翻页回调重入开始新拖拽时不覆写新会话")
+    func pageChangeReentryDoesNotOverwriteReplacementSession() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        let replacement = makeSession(itemID: 33).updating(
+            hoverDestination: .item(itemID: 44, itemType: .group),
+            folderCreationPreviewTargetID: nil
+        )
+        sut.onPageChange = { _ in sut.beginDrag(replacement) }
+        sut.beginDrag(makeSession())
 
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        #expect(controller.draggingSubstate == .overIcon(targetId: 42))
+        sut.updateDragHover(.edge(.forward))
+        scheduler.advance(by: 1.5)
+
+        #expect(sut.state == .dragging)
+        #expect(sut.session == replacement)
     }
 
-    @Test("Dragging leaves edge/icon -> substate resets to none")
-    func dragging_substate_reset_onLeave() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
+    @Test("app-on-app 超时只显示预览，切换和移开会清除")
+    func appOnAppTimeoutOnlyShowsPreview() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var previews: [Int64?] = []
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession(itemID: 11, type: .app))
 
-        controller.updateDragHover(location: .screenEdge)
-        #expect(controller.draggingSubstate == .overEdge)
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
+        #expect(sut.session?.folderCreationPreviewTargetID == 22)
+        #expect(previews.last == 22)
 
-        controller.updateDragHover(location: .empty)
-        #expect(controller.draggingSubstate == .none)
+        sut.updateDragHover(.item(itemID: 33, itemType: .app))
+        #expect(previews.last! == nil)
+        scheduler.advance(by: 0.8)
+        #expect(previews.last == 33)
+
+        sut.updateDragHover(.empty)
+        #expect(sut.session?.folderCreationPreviewTargetID == nil)
+        #expect(previews.last! == nil)
     }
 
-    // MARK: - Boundary conditions
+    @Test("app-on-app 未满 0.8 秒不显示预览")
+    func appOnAppBeforeThresholdDoesNotPreview() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.beginDrag(makeSession())
 
-    @Test("Long press 0.49s interrupted -> stays idle (time boundary)")
-    func longPress_interrupted_beforeThreshold_staysIdle() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        #expect(controller.state == .idle)
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.7)
 
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        mockScheduler.advance(by: 0.49)
-        controller.handlePressEnded()
-
-        #expect(controller.state == .idle)
+        #expect(sut.session?.folderCreationPreviewTargetID == nil)
     }
 
-    @Test("Drag cancel restores original order")
-    func drag_cancel_restoresOriginalOrder() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
+    @Test("过期预览回调不能命中新会话的相同目标")
+    func stalePreviewActionCannotMatchReplacementSessionDestination() throws {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var previews: [Int64?] = []
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession(itemID: 11))
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        let staleAction = try #require(scheduler.scheduledActions.first?.action)
+        let replacement = makeSession(itemID: 33).updating(
+            hoverDestination: .item(itemID: 22, itemType: .app),
+            folderCreationPreviewTargetID: nil
+        )
 
-        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
-        controller.beginEditing(originalOrder: originalOrder)
+        sut.beginDrag(replacement)
+        staleAction()
 
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        controller.simulateReorder(from: 0, to: 3)
-        #expect(controller.currentOrder != originalOrder)
-
-        controller.handleCancel()
-        #expect(controller.currentOrder == originalOrder)
+        #expect(previews.isEmpty)
+        #expect(sut.session == replacement)
     }
 
-    @Test("idle state cancel is no-op")
-    func idle_cancel_noop() {
-        let controller = DragController()
-        #expect(controller.state == .idle)
+    @Test("拖到自身不创建文件夹预览")
+    func selfTargetNeverPreviews() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var previews: [Int64?] = []
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession(itemID: 11))
 
-        controller.handleCancel()
-        #expect(controller.state == .idle)
+        sut.updateDragHover(.item(itemID: 11, itemType: .app))
+        scheduler.advance(by: 0.8)
+
+        #expect(previews.isEmpty)
+        #expect(sut.session?.folderCreationPreviewTargetID == nil)
     }
 
-    @Test("idle state handleDrop is no-op")
-    func idle_drop_noop() {
-        let controller = DragController()
-        controller.handleDrop()
-        #expect(controller.state == .idle)
+    @Test(arguments: [ItemType.group, ItemType.page])
+    func nonAppTargetsNeverPreview(_ targetType: ItemType) {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var preview: Int64?
+        sut.onFolderCreationPreviewChanged = { preview = $0 }
+        sut.beginDrag(makeSession(type: .app))
+
+        sut.updateDragHover(.item(itemID: 22, itemType: targetType))
+        scheduler.advance(by: 0.8)
+
+        #expect(preview == nil)
+        #expect(sut.session?.folderCreationPreviewTargetID == nil)
     }
 
-    @Test("already in dragging state -> handleDragStart guard returns early")
-    func dragging_dragStart_guardElse() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
+    @Test(arguments: [ItemType.group, ItemType.page])
+    func nonAppSourcesNeverPreview(_ sourceType: ItemType) {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var preview: Int64?
+        sut.onFolderCreationPreviewChanged = { preview = $0 }
+        sut.beginDrag(makeSession(type: sourceType))
 
-        // handleDragStart is no-op when already dragging (guard else)
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
+
+        #expect(preview == nil)
+        #expect(sut.session?.folderCreationPreviewTargetID == nil)
     }
 
-    @Test("non-dragging state updateDragHover -> guard returns early")
-    func idle_updateDragHover_guardElse() {
-        let controller = DragController()
-        controller.updateDragHover(location: .screenEdge)
-        #expect(controller.state == .idle)
-        #expect(controller.draggingSubstate == .none)
+    @Test("无会话时 hover 安全无副作用")
+    func hoverWithoutSessionIsNoOp() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.handleDragStart()
+        #expect(sut.state == .dragging)
+        #expect(sut.session == nil)
+
+        sut.updateDragHover(.edge(.forward))
+
+        #expect(sut.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("jiggling state updateDragHover -> guard returns early")
-    func jiggling_updateDragHover_guardElse() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
+    @Test("idle 和 jiggling 状态 hover 安全无副作用")
+    func hoverOutsideDraggingIsNoOp() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.updateDragHover(.edge(.forward))
+        #expect(scheduler.scheduledActions.isEmpty)
 
-        controller.updateDragHover(location: .screenEdge)
-        #expect(controller.state == .jiggling)
-        #expect(controller.draggingSubstate == .none)
+        sut.handleLongPress(movementDistance: 0)
+        sut.updateDragHover(.edge(.forward))
+
+        #expect(sut.state == .jiggling)
+        #expect(sut.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("jiggling state handleDrop -> guard returns early")
-    func jiggling_drop_guardElse() {
-        let controller = DragController()
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
+    @Test(arguments: [true, false])
+    func finishAndCancelClearTimerPreviewAndSession(useFinish: Bool) {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var previews: [Int64?] = []
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
 
-        controller.handleDrop()
-        #expect(controller.state == .jiggling)
+        if useFinish { sut.finishDrag() } else { sut.cancelDrag() }
+        scheduler.advance(by: 2.0)
+
+        #expect(sut.state == .idle)
+        #expect(sut.session == nil)
+        #expect(previews.last! == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("same hover location updateDragHover -> returns early, no timer restart")
-    func dragging_sameHoverLocation_returnsEarly() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        var pageChangeCount = 0
-        controller.onPageChange = { _ in pageChangeCount += 1 }
+    @Test("重复开始会清理旧预览和旧定时器")
+    func repeatedBeginClearsPreviousPreviewAndTimer() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var previews: [Int64?] = []
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession(itemID: 11))
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
 
-        // First hover triggers timer restart
-        controller.updateDragHover(location: .screenEdge)
-        // Same location again triggers early return
-        controller.updateDragHover(location: .screenEdge)
-        // After first timer fires
-        mockScheduler.advance(by: 1.5)
-        #expect(pageChangeCount == 1)
+        sut.beginDrag(makeSession(itemID: 33))
+
+        #expect(previews.last! == nil)
+        #expect(sut.session?.itemID == 33)
+        #expect(sut.session?.hoverDestination == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("simulateReorder out of bounds -> guard returns early, no change")
-    func simulateReorder_outOfBounds_guardElse() {
-        let controller = DragController()
-        controller.beginEditing(originalOrder: [1, 2, 3])
-
-        controller.simulateReorder(from: -1, to: 2)
-        #expect(controller.currentOrder == [1, 2, 3])
-
-        controller.simulateReorder(from: 0, to: 5)
-        #expect(controller.currentOrder == [1, 2, 3])
-
-        controller.simulateReorder(from: 0, to: 0)
-        #expect(controller.currentOrder == [1, 2, 3])
-    }
-}
-
-// MARK: - Long Press Detection Tests
-
-@MainActor
-@Suite("DragController long press detection")
-struct DragControllerLongPressTests {
-
-    @Test("Hold 0.5s with movement < 10px -> enters jiggling")
-    func longPress_0_5s_lowMovement_entersJiggling() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        controller.handleDragMoved(to: CGPoint(x: 205, y: 205))
-        mockScheduler.advance(by: 0.5)
-
-        #expect(controller.state == .jiggling)
-    }
-
-    @Test("Hold 0.5s with movement > 10px -> enters dragging")
-    func longPress_0_5s_highMovement_entersDragging() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        controller.handleDragMoved(to: CGPoint(x: 220, y: 220))
-        mockScheduler.advance(by: 0.5)
-
-        #expect(controller.state == .dragging)
-    }
-
-    @Test("Hold < 0.5s release -> stays idle")
-    func press_shorterThanThreshold_staysIdle() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        mockScheduler.advance(by: 0.3)
-        controller.handlePressEnded()
-
-        #expect(controller.state == .idle)
-    }
-
-    @Test("Hold 0.5s but release before timer -> timer cancelled, stays idle")
-    func press_releasedBeforeTimer_staysIdle() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        mockScheduler.advance(by: 0.4)
-        controller.handlePressEnded()
-
-        mockScheduler.advance(by: 0.5)
-        #expect(controller.state == .idle)
-    }
-
-    @Test("Movement distance exactly 10px -> still enters jiggling (boundary)")
-    func longPress_exactlyAtThreshold_entersJiggling() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        controller.handleDragMoved(to: CGPoint(x: 210, y: 200))
-        mockScheduler.advance(by: 0.5)
-
-        #expect(controller.state == .jiggling)
-    }
-
-    @Test("Movement distance 10.01px -> enters dragging (boundary+1)")
-    func longPress_justAboveThreshold_entersDragging() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        controller.handleDragMoved(to: CGPoint(x: 210.01, y: 200))
-        mockScheduler.advance(by: 0.5)
-
-        #expect(controller.state == .dragging)
-    }
-
-    @Test("长按定时器超阈值（currentPoint 注入）-> 进入 dragging（定时器路径）")
-    func longPressTimer_highMovement_entersDragging() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        controller.currentPoint = CGPoint(x: 250, y: 100) // distance 150 > 10
-        mockScheduler.advance(by: 0.5)
-        #expect(controller.state == .dragging)
-    }
-
-    @Test("Already jiggling state, long press callback does not re-trigger")
-    func alreadyJiggling_longPressCallback_noop() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
-
-        controller.handlePressBegan(at: CGPoint(x: 200, y: 200))
-        mockScheduler.advance(by: 0.5)
-
-        #expect(controller.state == .jiggling)
-    }
-}
-
-// MARK: - Hover Timer Tests
-
-@MainActor
-@Suite("DragController hover timers")
-struct DragControllerHoverTimerTests {
-
-    private func makeDraggingController(
-        scheduler: MockScheduler,
-        itemWriter: MockItemWriter = MockItemWriter()
-    ) -> DragController {
-        let controller = DragController(itemWriter: itemWriter, scheduler: scheduler)
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        return controller
-    }
-
-    // MARK: - Edge Hover
-
-    @Test("Dragging hover screen edge 1.5s -> triggers pageChange event")
-    func edgeHover_1_5s_triggersPageChange() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onPageChange = { direction in
-            state.direction = direction
+    @Test("清除预览回调重入 finish 时不复活旧会话")
+    func previewClearReentryDoesNotResurrectSession() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var didReenter = false
+        sut.onFolderCreationPreviewChanged = { targetID in
+            guard targetID == nil, !didReenter else { return }
+            didReenter = true
+            sut.finishDrag()
         }
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
 
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.5)
+        sut.updateDragHover(.item(itemID: 33, itemType: .app))
 
-        #expect(state.direction != nil)
+        #expect(didReenter)
+        #expect(sut.state == .idle)
+        #expect(sut.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("Dragging hover screen edge 1.4s -> no pageChange triggered")
-    func edgeHover_1_4s_noPageChange() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onPageChange = { _ in
-            state.boolFlag = true
-        }
-
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.4)
-
-        #expect(state.boolFlag == false)
-    }
-
-    @Test("Edge hover then leave -> timer reset, no pageChange")
-    func edgeHover_leave_resetsTimer() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onPageChange = { _ in
-            state.boolFlag = true
-        }
-
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.0)
-        controller.updateDragHover(location: .empty)
-        mockScheduler.advance(by: 1.0)
-
-        #expect(state.boolFlag == false)
-    }
-
-    @Test("Edge hover -> leave -> re-hover -> restarts 1.5s timer")
-    func edgeHover_leave_rehover_restartsTimer() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onPageChange = { _ in
-            state.count += 1
-        }
-
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.0)
-        controller.updateDragHover(location: .empty)
-        mockScheduler.advance(by: 0.5)
-
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.0)
-        #expect(state.count == 0)
-
-        mockScheduler.advance(by: 0.5)
-        #expect(state.count == 1)
-    }
-
-    // MARK: - Icon Hover
-
-    @Test("Dragging hover icon 0.8s -> triggers createGroup event")
-    func iconHover_0_8s_triggersCreateGroup() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onCreateGroup = { targetId in
-            state.targetId = targetId
-        }
-
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        mockScheduler.advance(by: 0.8)
-
-        #expect(state.targetId == 42)
-    }
-
-    @Test("Dragging hover icon 0.7s -> no createGroup triggered")
-    func iconHover_0_7s_noCreateGroup() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onCreateGroup = { _ in
-            state.boolFlag = true
-        }
-
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        mockScheduler.advance(by: 0.7)
-
-        #expect(state.boolFlag == false)
-    }
-
-    @Test("Icon hover then leave -> timer reset")
-    func iconHover_leave_resetsTimer() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onCreateGroup = { _ in
-            state.boolFlag = true
-        }
-
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        mockScheduler.advance(by: 0.5)
-        controller.updateDragHover(location: .empty)
-        mockScheduler.advance(by: 0.5)
-
-        #expect(state.boolFlag == false)
-    }
-
-    @Test("Switch from one icon to another -> timer resets")
-    func iconHover_switchTarget_resetsTimer() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onCreateGroup = { targetId in
-            state.targetId = targetId
-        }
-
-        controller.updateDragHover(location: .overIcon(targetId: 10))
-        mockScheduler.advance(by: 0.6)
-        controller.updateDragHover(location: .overIcon(targetId: 20))
-        mockScheduler.advance(by: 0.6)
-
-        #expect(state.targetId == nil)
-
-        mockScheduler.advance(by: 0.2)
-        #expect(state.targetId == 20)
-    }
-
-    // MARK: - Non-dragging state does not trigger
-
-    @Test("idle state does not trigger hover timer")
-    func idle_hover_noTimer() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        let state = SendableState()
-
-        controller.onPageChange = { _ in state.boolFlag = true }
-        controller.onCreateGroup = { _ in state.boolFlag = true }
-
-        controller.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 2.0)
-
-        #expect(state.boolFlag == false)
-    }
-}
-
-// MARK: - Drop + Reorder Tests
-
-@MainActor
-@Suite("DragController Drop + Reorder")
-struct DragControllerDropTests {
-
-    private func makeDraggingController(
-        scheduler: MockScheduler,
-        itemWriter: MockItemWriter = MockItemWriter()
-    ) -> DragController {
-        let controller = DragController(itemWriter: itemWriter, scheduler: scheduler)
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        return controller
-    }
-
-    @Test("drop -> commits reorder via ItemWriting")
-    func drop_commitsReorderViaItemWriter() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
-
-        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
-        controller.beginEditing(originalOrder: originalOrder, parentId: 100)
-
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-
-        controller.simulateReorder(from: 0, to: 3)
-        #expect(controller.currentOrder == [2, 3, 4, 1, 5])
-
-        controller.handleDrop()
-
-        #expect(mockWriter.reorderedParentIds.count == 1)
-        #expect(mockWriter.reorderedParentIds[0].parentId == 100)
-        #expect(mockWriter.reorderedParentIds[0].orderedIds == [2, 3, 4, 1, 5])
-    }
-
-    @Test("drop 时 reorderItems 抛错 -> 回滚到原始顺序")
-    func drop_reorderThrows_rollsBack() {
-        let mockWriter = MockItemWriter()
-        mockWriter.reorderError = TestError.generic
-        let controller = DragController(itemWriter: mockWriter)
-        let original: [Int64] = [1, 2, 3, 4, 5]
-        controller.beginEditing(originalOrder: original, parentId: 100)
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        controller.simulateReorder(from: 0, to: 3)
-        #expect(controller.currentOrder != original)
-        controller.handleDrop() // commitReorder -> reorderItems 抛错 -> rollbackReorder
-        #expect(controller.currentOrder == original)
-    }
-
-    @Test("drop returns to idle state")
-    func drop_returnsToIdle() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
-        controller.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
-
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        controller.handleDrop()
-
-        #expect(controller.state == .idle)
-    }
-
-    @Test("cross-page drag -> records cross-page move info")
-    func crossPageDrop_recordsMove() throws {
-        let mockWriter = MockItemWriter()
-        let mockScheduler = MockScheduler()
-        let sut = DragController(itemWriter: mockWriter, scheduler: mockScheduler)
-
-        sut.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
-        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+    @Test("gesture-only legacy hover 只投影兼容子状态")
+    func gestureOnlyLegacyHoverOnlyUpdatesCompatibilitySubstate() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        var previews: [Int64?] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
         sut.handleDragStart()
 
+        sut.updateDragHover(location: .overIcon(targetId: 22))
+        #expect(sut.draggingSubstate == .overIcon(targetId: 22))
         sut.updateDragHover(location: .screenEdge)
-        mockScheduler.advance(by: 1.5)
-        sut.handleDrop()
+        #expect(sut.draggingSubstate == .none)
+        sut.updateDragHover(location: .empty)
+        #expect(sut.draggingSubstate == .none)
+        scheduler.advance(by: 2.0)
 
-        #expect(sut.pendingCrossPageMove != nil)
+        sut.updateDragHover(location: .overIcon(targetId: 33))
+        #expect(sut.draggingSubstate == .overIcon(targetId: 33))
+        sut.beginDrag(makeSession())
+        #expect(sut.draggingSubstate == .none)
+        sut.finishDrag()
+
+        #expect(sut.state == .idle)
+        #expect(sut.session == nil)
+        #expect(sut.draggingSubstate == .none)
+        #expect(directions.isEmpty)
+        #expect(previews.isEmpty)
+        #expect(scheduler.scheduledActions.isEmpty)
     }
 
-    @Test("cancel -> restores original order, no ItemWriting call")
-    func cancel_restoresOriginalOrder_noWrite() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
+    @Test("handleCancel 是幂等无写入兼容入口")
+    func handleCancelIsIdempotentCompatibilityAlias() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.edge(.forward))
 
-        let originalOrder: [Int64] = [1, 2, 3, 4, 5]
-        controller.beginEditing(originalOrder: originalOrder, parentId: 100)
+        sut.handleCancel()
+        let cancelCount = scheduler.cancelCallCount
+        sut.handleCancel()
 
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        controller.simulateReorder(from: 0, to: 4)
-        controller.handleCancel()
-
-        #expect(controller.currentOrder == originalOrder)
-        #expect(mockWriter.reorderedParentIds.isEmpty)
+        #expect(sut.state == .idle)
+        #expect(sut.session == nil)
+        #expect(scheduler.cancelCallCount == cancelCount)
     }
 
-    @Test("drop without reorder -> no ItemWriting call")
-    func drop_withoutReorder_noWrite() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
-        controller.beginEditing(originalOrder: [1, 2, 3], parentId: 1)
+    @Test("jiggling cancel 和 gesture-only dragging finish 均回到 idle")
+    func nonSessionLifecycleCleanupIsSafe() {
+        let sut = DragController(scheduler: MockScheduler())
+        sut.handleLongPress(movementDistance: 0)
+        sut.handleCancel()
+        #expect(sut.state == .idle)
 
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-        controller.handleDrop()
-
-        #expect(mockWriter.reorderedParentIds.isEmpty)
-    }
-
-    @Test("multiple reorder operations -> drop commits final order")
-    func multipleReorder_drop_commitsFinalOrder() {
-        let mockWriter = MockItemWriter()
-        let controller = DragController(itemWriter: mockWriter)
-        controller.beginEditing(originalOrder: [1, 2, 3, 4, 5], parentId: 100)
-
-        controller.handleLongPress(movementDistance: 5)
-        controller.handleDragStart()
-
-        controller.simulateReorder(from: 0, to: 4)
-        controller.simulateReorder(from: 0, to: 3)
-
-        controller.handleDrop()
-
-        #expect(mockWriter.reorderedParentIds.count == 1)
-        #expect(mockWriter.reorderedParentIds[0].parentId == 100)
-    }
-
-    // MARK: - 边界分支覆盖
-
-    @Test("handleLongPress: state != .idle 时 guard else 早返回（覆盖 L74 guard else）")
-    func handleLongPress_notIdle_guardElse() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        // 先进入 jiggling 状态
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
-        // 再次 handleLongPress → state != .idle 走 guard else
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling) // 状态不变
-    }
-
-    @Test("handleLongPress: movementDistance > threshold 时 guard else 早返回（覆盖 L75 guard else）")
-    func handleLongPress_movementExceedsThreshold_guardElse() {
-        let controller = DragController()
-        #expect(controller.state == .idle)
-        // movementDistance > 10 → 不进入 jiggling
-        controller.handleLongPress(movementDistance: 20)
-        #expect(controller.state == .idle)
-    }
-
-    @Test("handleDragMoved: state != .idle 时 guard else 早返回（覆盖 L141 guard else）")
-    func handleDragMoved_notIdle_guardElse() {
-        let mockScheduler = MockScheduler()
-        let controller = DragController(scheduler: mockScheduler)
-        // 先进入 jiggling
-        controller.handlePressBegan(at: .zero)
-        controller.handleLongPress(movementDistance: 5)
-        #expect(controller.state == .jiggling)
-        // handleDragMoved: state != .idle 走 guard else
-        controller.handleDragMoved(to: CGPoint(x: 1, y: 1))
-        #expect(controller.state == .jiggling)
-    }
-
-    @Test("scheduleEdgeHoverTimer: 触发时 draggingSubstate != .overEdge 走 guard else（覆盖 L196）")
-    func scheduleEdgeHoverTimer_substateChanged_guardElse() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        var pageChangeCount = 0
-        controller.onPageChange = { _ in pageChangeCount += 1 }
-
-        // 先设置 overEdge，触发 timer 注册
-        controller.updateDragHover(location: .screenEdge)
-        // 在 timer 触发前改变 substate
-        controller.updateDragHover(location: .empty)
-        // 推进 scheduler 触发原 timer
-        mockScheduler.advance(by: 1.5)
-        // draggingSubstate 已变为 .empty，不是 .overEdge → guard else
-        #expect(pageChangeCount == 0)
-    }
-
-    @Test("scheduleIconHoverTimer: 触发时 draggingSubstate 不是 overIcon 走 if-else 分支（覆盖 L208）")
-    func scheduleIconHoverTimer_substateChanged_ifElse() {
-        let mockScheduler = MockScheduler()
-        let controller = makeDraggingController(scheduler: mockScheduler)
-        var createGroupCalled = false
-        controller.onCreateGroup = { _ in createGroupCalled = true }
-
-        // 先设置 overIcon(42)，触发 timer
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        // 在 timer 触发前改变为 overEdge
-        controller.updateDragHover(location: .screenEdge)
-        // 推进 scheduler 触发原 timer
-        mockScheduler.advance(by: 0.8)
-        // draggingSubstate 已变为 .overEdge，不匹配 .overIcon → 不触发 onCreateGroup
-        #expect(createGroupCalled == false)
+        sut.handleDragStart()
+        sut.finishDrag()
+        #expect(sut.state == .idle)
+        #expect(sut.session == nil)
     }
 }

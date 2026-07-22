@@ -93,7 +93,7 @@ struct AppDelegateTests {
         let storage = try StorageManager(dbPath: ":memory:")
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
         let searchEngine = SearchEngine()
-        let dragController = DragController(itemWriter: storage)
+        let dragController = DragController()
         let folderController = FolderController(itemWriter: storage)
         return LaunchPadViewController(
             storage: storage,

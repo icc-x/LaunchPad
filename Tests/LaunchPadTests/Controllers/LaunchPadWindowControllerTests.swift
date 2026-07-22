@@ -35,7 +35,7 @@ struct LaunchPadWindowControllerTests {
     private func makeSUT() -> SUT {
         let storage = MockDataStore()
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
-        let dragController = DragController(itemWriter: storage, scheduler: MockScheduler())
+        let dragController = DragController(scheduler: MockScheduler())
         let folderController = FolderController(itemWriter: storage)
         let viewController = LaunchPadViewController(
             storage: storage,

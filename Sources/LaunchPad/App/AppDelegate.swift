@@ -157,7 +157,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupControllers() {
         // Drag controller
-        let dragController = DragController(itemWriter: storage)
+        let dragController = DragController()
 
         // Folder controller
         let folderController = FolderController(itemWriter: storage)

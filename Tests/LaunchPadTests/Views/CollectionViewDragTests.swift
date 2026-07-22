@@ -1,114 +1,108 @@
-import Foundation
+import CoreGraphics
 import Testing
-import LaunchPadProtocols
 @testable import LaunchPad
 
 @MainActor
-@Suite("NSCollectionView 拖拽 Delegate")
+@Suite("NSCollectionView 拖拽手势状态")
 struct CollectionViewDragTests {
-
-    @Test("DragController idle → handlePressBegan → jiggling after 0.5s")
-    func dragStateMachine_idleToJiggling() {
+    @Test("长按不足 0.5 秒保持 idle，release 取消 pending")
+    func releaseBeforeLongPressThresholdStaysIdle() {
         let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
+        let sut = DragController(scheduler: scheduler)
 
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        #expect(controller.state == .idle) // 还没到 0.5s
-
-        scheduler.advance(by: 0.5)
-        #expect(controller.state == .jiggling)
-    }
-
-    @Test("DragController jiggling → handleDragStart → dragging")
-    func dragStateMachine_jigglingToDragging() {
-        let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        scheduler.advance(by: 0.5)
-        #expect(controller.state == .jiggling)
-
-        controller.handleDragStart()
-        #expect(controller.state == .dragging)
-    }
-
-    @Test("DragController dragging → handleDrop → idle + commit")
-    func dragStateMachine_dropCommitsReorder() {
-        let writer = MockItemWriter()
-        let controller = DragController(itemWriter: writer)
-
-        controller.beginEditing(originalOrder: [1, 2, 3])
-        controller.handleDragStart()
-        controller.simulateReorder(from: 0, to: 2)
-        controller.handleDrop()
-
-        #expect(controller.state == .idle)
-        #expect(writer.reorderedParentIds.count == 1)
-    }
-
-    @Test("DragController dragging → handleCancel → idle + rollback")
-    func dragStateMachine_cancelRollsback() {
-        let controller = DragController()
-
-        controller.beginEditing(originalOrder: [1, 2, 3])
-        controller.handleDragStart()
-        controller.simulateReorder(from: 0, to: 2)
-        #expect(controller.currentOrder == [2, 3, 1])
-
-        controller.handleCancel()
-        #expect(controller.state == .idle)
-        #expect(controller.currentOrder == [1, 2, 3]) // 回滚
-    }
-
-    @Test("DragController hover overEdge 1.5s triggers pageChange")
-    func dragStateMachine_edgeHoverTriggersPageChange() {
-        let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
-        var pageChangeCount = 0
-        controller.onPageChange = { _ in pageChangeCount += 1 }
-
-        controller.handleDragStart()
-        controller.updateDragHover(location: .screenEdge)
-        scheduler.advance(by: 1.5)
-
-        #expect(pageChangeCount == 1)
-    }
-
-    @Test("DragController hover overIcon 0.8s triggers createGroup")
-    func dragStateMachine_iconHoverTriggersCreateGroup() {
-        let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
-        var createGroupTargetId: Int64?
-        controller.onCreateGroup = { id in createGroupTargetId = id }
-
-        controller.handleDragStart()
-        controller.updateDragHover(location: .overIcon(targetId: 42))
-        scheduler.advance(by: 0.8)
-
-        #expect(createGroupTargetId == 42)
-    }
-
-    @Test("DragController movement > 10px during long press skips jiggling → dragging")
-    func dragStateMachine_movementSkipsJiggling() {
-        let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        controller.handleDragMoved(to: CGPoint(x: 120, y: 100)) // 20px > 10px threshold
-
-        #expect(controller.state == .dragging)
-    }
-
-    @Test("DragController handlePressBegan at 0.49s → still idle (boundary)")
-    func dragStateMachine_boundaryBeforeLongPress() {
-        let scheduler = MockScheduler()
-        let controller = DragController(scheduler: scheduler)
-
-        controller.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
         scheduler.advance(by: 0.49)
-        #expect(controller.state == .idle)
+        #expect(sut.state == .idle)
+        sut.handlePressEnded()
+        scheduler.advance(by: 1.0)
 
-        scheduler.advance(by: 0.01)
-        #expect(controller.state == .jiggling)
+        #expect(sut.state == .idle)
+        #expect(scheduler.scheduledActions.isEmpty)
+    }
+
+    @Test("长按 0.5 秒且移动小于阈值进入 jiggling")
+    func longPressWithinMovementThresholdEntersJiggling() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.handleDragMoved(to: CGPoint(x: 105, y: 105))
+        scheduler.advance(by: 0.5)
+
+        #expect(sut.state == .jiggling)
+    }
+
+    @Test("移动恰好 10 点仍进入 jiggling")
+    func movementAtThresholdEntersJiggling() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.handleDragMoved(to: CGPoint(x: 110, y: 100))
+        scheduler.advance(by: 0.5)
+
+        #expect(sut.state == .jiggling)
+    }
+
+    @Test("移动超过 10 点立即进入 gesture-only dragging")
+    func movementAboveThresholdEntersDraggingWithoutSession() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.handleDragMoved(to: CGPoint(x: 110.01, y: 100))
+
+        #expect(sut.state == .dragging)
+        #expect(sut.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
+    }
+
+    @Test("长按定时器按当前点选择 dragging 分支")
+    func timerUsesCurrentMovementForDraggingBranch() {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        sut.handlePressBegan(at: CGPoint(x: 100, y: 100))
+        sut.currentPoint = CGPoint(x: 120, y: 100)
+
+        scheduler.advance(by: 0.5)
+
+        #expect(sut.state == .dragging)
+        #expect(sut.session == nil)
+    }
+
+    @Test("非 idle 状态的移动不改变现有状态")
+    func movementOutsideIdleDoesNotReenterStateMachine() {
+        let sut = DragController(scheduler: MockScheduler())
+        sut.handleLongPress(movementDistance: 0)
+
+        sut.handleDragMoved(to: CGPoint(x: 100, y: 100))
+
+        #expect(sut.state == .jiggling)
+    }
+
+    @Test("long press 拒绝非 idle 和超阈值重复进入")
+    func longPressRejectsRepeatedAndExcessMovementEntry() {
+        let sut = DragController(scheduler: MockScheduler())
+        sut.handleLongPress(movementDistance: 11)
+        #expect(sut.state == .idle)
+
+        sut.handleLongPress(movementDistance: 10)
+        sut.handleLongPress(movementDistance: 0)
+
+        #expect(sut.state == .jiggling)
+    }
+
+    @Test("drag start 只接受 idle 或 jiggling，重复进入保持 dragging")
+    func dragStartAcceptsExpectedStatesOnly() {
+        let idleSUT = DragController(scheduler: MockScheduler())
+        idleSUT.handleDragStart()
+        #expect(idleSUT.state == .dragging)
+
+        let jigglingSUT = DragController(scheduler: MockScheduler())
+        jigglingSUT.handleLongPress(movementDistance: 0)
+        jigglingSUT.handleDragStart()
+        jigglingSUT.handleDragStart()
+
+        #expect(jigglingSUT.state == .dragging)
     }
 }

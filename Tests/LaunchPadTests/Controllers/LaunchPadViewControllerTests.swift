@@ -111,7 +111,7 @@ struct LaunchPadViewControllerTests {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
-        let dragController = DragController(itemWriter: storage, scheduler: dragScheduler)
+        let dragController = DragController(scheduler: dragScheduler)
         let folderController = FolderController(itemWriter: storage)
         let sut = LaunchPadViewController(
             storage: storage,
@@ -129,7 +129,7 @@ struct LaunchPadViewControllerTests {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
-        let dragController = DragController(itemWriter: storage)
+        let dragController = DragController()
         let folderController = FolderController(itemWriter: storage)
         let sut = LaunchPadViewController(
             storage: storage,
@@ -139,6 +139,17 @@ struct LaunchPadViewControllerTests {
             searchScheduler: searchScheduler
         )
         return (sut, dragController, storage)
+    }
+
+    private func makeDragSession(itemID: Int64 = 11) -> DragSession {
+        DragSession(
+            itemID: itemID,
+            itemUUID: "00000000-0000-0000-0000-\(String(format: "%012lld", itemID))",
+            itemType: .app,
+            sourceKind: .topLevel,
+            sourceParentID: 100,
+            sourceVisualIndex: 0
+        )
     }
 
     // MARK: - ESC 关闭窗口
@@ -160,7 +171,6 @@ struct LaunchPadViewControllerTests {
     func edit_esc_exitsEditMode() {
         let scheduler = MockScheduler()
         let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
@@ -357,7 +367,6 @@ struct LaunchPadViewControllerTests {
         let scheduler = MockScheduler()
         let (_, dragController, _) = makeSUT(dragScheduler: scheduler)
 
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
         scheduler.advance(by: 0.5)
 
@@ -467,7 +476,6 @@ struct LaunchPadViewControllerTests {
         let scheduler = MockScheduler()
         let (_, dragController, _) = makeSUT(dragScheduler: scheduler)
 
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
@@ -479,30 +487,9 @@ struct LaunchPadViewControllerTests {
     @Test("dragController onPageChange callback is settable")
     func dragController_onPageChange_settable() {
         let (_, dragController, _) = makeSUT()
-        var direction: DragController.PageChangeDirection?
+        var direction: DragPageDirection?
         dragController.onPageChange = { dir in direction = dir }
         #expect(dragController.onPageChange != nil)
-    }
-
-    @Test("dragController onCreateGroup callback is settable")
-    func dragController_onCreateGroup_settable() {
-        let (_, dragController, _) = makeSUT()
-        var targetId: Int64?
-        dragController.onCreateGroup = { id in targetId = id }
-        #expect(dragController.onCreateGroup != nil)
-    }
-
-    // MARK: - FolderController integration
-
-    @Test("handleCreateGroup with non-existent targetId does not crash")
-    func handleCreateGroup_nonExistentTarget_noCrash() {
-        let (sut, dragController, storage) = makeSUT()
-        dragController.beginEditing(originalOrder: [1, 2])
-        // handleCreateGroup is private, but we can test via the callback
-        var createGroupCalled = false
-        dragController.onCreateGroup = { _ in createGroupCalled = true }
-        dragController.onCreateGroup?(999)
-        #expect(createGroupCalled)
     }
 
     // MARK: - 反射辅助
@@ -732,30 +719,6 @@ struct LaunchPadViewControllerTests {
         dragController.onPageChange?(.backward)
         expectThreePagePresentation(sut, scrollView: scrollView, currentPage: 0)
         #expect(scrolledPages == [1, 0, 0])
-    }
-
-    // MARK: - 文件夹创建
-
-    @Test("handleCreateGroup 合并两个应用创建文件夹")
-    func handleCreateGroup_createsFolderFromTwoApps() {
-        let (sut, dragController, storage) = makeSUT()
-        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
-                                                app: TestDataFactory.makeAppInfo(id: 10, title: "App1"))
-        let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1, parentId: 1,
-                                                app: TestDataFactory.makeAppInfo(id: 20, title: "App2"))
-        storage.pages = [page]
-        storage.childrenByPage = [1: [app1, app2]]
-        _ = sut.view
-        sut.loadData()
-
-        dragController.beginEditing(originalOrder: [10, 20])
-        // viewDidLoad 的 setupCallbacks 已绑定真实 handleCreateGroup
-        dragController.onCreateGroup?(20)
-
-        #expect(storage.insertedItems.count == 1)
-        #expect(storage.insertedItems.first?.type == .group)
-        #expect(storage.updatedItems.count == 2) // 两个 app 移入文件夹
     }
 
     // MARK: - handleItemSelection（通过 coordinator activation 输出）
@@ -1312,7 +1275,6 @@ struct LaunchPadViewControllerTests {
     func handleLongPress_ended_jiggling() {
         let scheduler = MockScheduler()
         let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
@@ -1320,15 +1282,29 @@ struct LaunchPadViewControllerTests {
         #expect(sut.keyboardNavigator.mode == .edit)
     }
 
-    @Test("handleLongPress .ended 在 dragging 触发 handleDrop 并重置为 idle")
+    @Test("handleLongPress .ended 在 dragging 只清理会话并重置为 idle")
     func handleLongPress_ended_dragging() {
         let (sut, dragController, _) = makeSUT()
         _ = sut.view // .dragging 分支会触发 loadData，需视图已加载
-        dragController.beginEditing(originalOrder: [1, 2, 3])
-        dragController.handleDragStart() // 进入 .dragging
+        dragController.beginDrag(makeDragSession())
         #expect(dragController.state == .dragging)
         sut.handleLongPress(MockPressGesture(state: .ended))
         #expect(dragController.state == .idle)
+        #expect(dragController.session == nil)
+    }
+
+    @Test("handleLongPress .cancelled/.failed 在 dragging 只清理会话")
+    func handleLongPress_cancelledAndFailed_dragging() {
+        for gestureState in [NSGestureRecognizer.State.cancelled, .failed] {
+            let (sut, dragController, _) = makeSUT()
+            _ = sut.view
+            dragController.beginDrag(makeDragSession())
+
+            sut.handleLongPress(MockPressGesture(state: gestureState))
+
+            #expect(dragController.state == .idle)
+            #expect(dragController.session == nil)
+        }
     }
 
     @Test("handleLongPress 其他状态走 default 分支")
@@ -1506,22 +1482,6 @@ struct LaunchPadViewControllerTests {
         sut.openFolder(folder)
     }
 
-    @Test("handleCreateGroup 创建失败时记录错误不崩溃")
-    func handleCreateGroup_throws_logs() {
-        let (sut, dragController, storage) = makeSUT()
-        storage.shouldThrowOnInsert = true
-        let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
-                                                app: TestDataFactory.makeAppInfo(id: 10, title: "A1"))
-        let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1, parentId: 1,
-                                                app: TestDataFactory.makeAppInfo(id: 20, title: "A2"))
-        storage.pages = [TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)]
-        storage.childrenByPage = [1: [app1, app2]]
-        _ = sut.view // 需视图已加载，使 loadData 内 pageControl 等非 nil
-        sut.loadData() // 填充 itemsByPage，使 findItem 命中
-        dragController.beginEditing(originalOrder: [10, 20])
-        sut.handleCreateGroup(targetId: 20) // findItem(20) 命中 → draggedItems≥2 → createFolder 抛错
-    }
-
     @Test("handleFolderRename 重命名失败时记录错误不崩溃")
     func handleFolderRename_throws_logs() {
         let (sut, _, storage) = makeSUT()
@@ -1581,37 +1541,6 @@ struct LaunchPadViewControllerTests {
         #expect(true)
     }
 
-    // MARK: - findItem 遍历多页不匹配路径
-
-    @Test("handleCreateGroup 数据已加载但目标不存在时 findItem 遍历所有页")
-    func handleCreateGroup_loadedData_nonExistentTarget() {
-        let (sut, dragController, storage) = makeSUT()
-        let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
-        let apps1 = TestDataFactory.makeAppItems(count: 2, titlePrefix: "P1")
-        let apps2 = TestDataFactory.makeAppItems(count: 2, titlePrefix: "P2")
-        storage.pages = [page1, page2]
-        storage.childrenByPage = [1: apps1, 2: apps2]
-        _ = sut.view
-        sut.loadData()
-
-        dragController.beginEditing(originalOrder: [1, 2, 3, 4])
-        // 目标 ID 999 不存在 -> findItem 遍历所有页（覆盖 if let 失败路径）
-        dragController.onCreateGroup?(999)
-        #expect(true)
-    }
-
-    @Test("handleCreateGroup 目标不存在时 findItem 返回 nil")
-    func handleCreateGroup_nonExistentTarget_viaCallback() {
-        let (sut, dragController, storage) = makeSUT()
-        _ = sut.view // 绑定 onCreateGroup 回调到 VC.handleCreateGroup
-        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        storage.pages = [page]
-        storage.childrenByPage = [1: []]
-        // 不覆盖回调 → 触发 VC.handleCreateGroup(999) → findItem(999) 未命中 → 返回 nil
-        dragController.onCreateGroup?(999)
-    }
-
     // MARK: - executeAction .launchFirstMatch
 
     @Test("enter 在搜索模式触发 launchFirstMatch 并选中首个结果")
@@ -1637,7 +1566,6 @@ struct LaunchPadViewControllerTests {
         sut.jiggleCellProvider = { _ in cell }
 
         // jiggling 态 → startJiggling + keyboardNavigator 进入 edit
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: .zero)
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
@@ -1711,7 +1639,6 @@ struct LaunchPadViewControllerTests {
         // jiggleCellProvider 始终返回 nil → ?? 假分支 → 走 collectionView.item(at:) 但也是 nil → continue
         sut.jiggleCellProvider = { _ in nil }
 
-        dragController.beginEditing(originalOrder: [1, 2, 3])
         dragController.handlePressBegan(at: .zero)
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
@@ -1729,28 +1656,10 @@ struct LaunchPadViewControllerTests {
         // collectionView.item(at:) 在空 collectionView 上也返回 nil
         sut.visibleJiggleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
         // jiggleCellProvider 保持 nil
-        dragController.beginEditing(originalOrder: [1])
         dragController.handlePressBegan(at: .zero)
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
         sut.updateJiggleState()
-        #expect(true)
-    }
-
-    @Test("handleCreateGroup: currentOrder 少于 2 个时直接返回（覆盖 L502 guard else）")
-    func handleCreateGroup_tooFewItems_returnsEarly() {
-        let (sut, dragController, storage) = makeSUT()
-        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
-                                                app: TestDataFactory.makeAppInfo(id: 10, title: "A"))
-        storage.pages = [page]
-        storage.childrenByPage = [1: [app]]
-        _ = sut.view
-        sut.loadData()
-        // dragController.currentOrder 只有 1 个，触发 guard draggedItemIds.count >= 2 else 分支
-        dragController.beginEditing(originalOrder: [10])
-        // 直接调用 handleCreateGroup（不走 callback）
-        sut.handleCreateGroup(targetId: 10)
         #expect(true)
     }
 
