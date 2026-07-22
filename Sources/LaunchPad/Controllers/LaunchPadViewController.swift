@@ -663,9 +663,12 @@ public class LaunchPadViewController: NSViewController {
         case .exitEditMode:
             dragController.handleCancel()
             updateJiggleState()
-        case .enterSearchMode:
+        case .enterSearchMode(let initialQuery):
             guard isViewLoaded else { return }
             searchBar.show()
+            searchBar.stringValue = initialQuery
+            searchBar.window?.makeFirstResponder(searchBar)
+            searchDebouncer.search(query: initialQuery)
         case .appendToQuery(let char):
             guard isViewLoaded else { return }
             searchBar.show()

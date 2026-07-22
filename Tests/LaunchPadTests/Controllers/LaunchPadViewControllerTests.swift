@@ -366,18 +366,29 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - Multiple character inputs
 
-    @Test("多个字符输入都返回 enterSearchMode（idle 模式下）")
-    func multipleCharacters_allReturnEnterSearchMode() {
-        let (sut, _, _) = makeSUT()
+    @Test("连续字符建立完整查询并仅保留一个防抖任务")
+    func charactersBuildCompleteQuery() {
+        let scheduler = MockScheduler()
+        let (sut, _, _) = makeSUTWithSearchScheduler(searchScheduler: scheduler)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+            styleMask: [.borderless], backing: .buffered, defer: false
+        )
+        window.contentView = sut.view
 
-        for char in ["a", "b", "c"] {
-            let action = sut.handleCharacterInput(char)
-            if case .enterSearchMode = action {
-                // expected — mode stays idle because view is not loaded
-            } else {
-                Issue.record("Expected enterSearchMode for '\(char)', got \(action)")
-            }
-        }
+        let actions = "safari".map { sut.handleCharacterInput(String($0)) }
+
+        #expect(actions.first == .enterSearchMode("s"))
+        #expect(Array(actions.dropFirst()) == [
+            .appendToQuery("a"), .appendToQuery("f"), .appendToQuery("a"),
+            .appendToQuery("r"), .appendToQuery("i"),
+        ])
+        #expect(sut.searchBar.stringValue == "safari")
+        #expect(sut.keyboardNavigator.mode == .search(query: "safari"))
+        let fieldEditor = sut.searchBar.currentEditor()
+        #expect(fieldEditor != nil)
+        #expect(window.firstResponder === fieldEditor)
+        #expect(scheduler.scheduledActions.count == 1)
     }
 
     // MARK: - loadData
