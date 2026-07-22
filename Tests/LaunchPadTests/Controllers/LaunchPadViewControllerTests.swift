@@ -19,6 +19,8 @@ struct LaunchPadViewControllerTests {
         var insertedItems: [PageItem] = []
         var updatedItems: [PageItem] = []
         private(set) var fetchAllItemsCallCount = 0
+        var fetchError: Error?
+        var eventRecorder: ((String) -> Void)?
 
         // 注入：让特定写操作抛出异常，以覆盖各 catch 分支
         var shouldThrowOnFetch = false
@@ -28,6 +30,8 @@ struct LaunchPadViewControllerTests {
 
         func fetchAllItems(parentId: Int64?) throws -> [PageItem] {
             fetchAllItemsCallCount += 1
+            eventRecorder?(parentId.map { "read-page:\($0)" } ?? "read-root")
+            if let fetchError { throw fetchError }
             if shouldThrowOnFetch { throw NSError(domain: "MockDataStore", code: 1) }
             if let parentId {
                 return childrenByPage[parentId] ?? []
@@ -107,7 +111,10 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - Helpers
 
-    private func makeSUT(dragScheduler: Scheduler = DispatchQueueScheduler()) -> (LaunchPadViewController, DragController, MockDataStore) {
+    private func makeSUT(
+        dragScheduler: Scheduler = DispatchQueueScheduler(),
+        layoutMutator: LayoutMutating = MockLayoutMutator()
+    ) -> (LaunchPadViewController, DragController, MockDataStore) {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
@@ -115,6 +122,7 @@ struct LaunchPadViewControllerTests {
         let folderController = FolderController(itemWriter: storage)
         let sut = LaunchPadViewController(
             storage: storage,
+            layoutMutator: layoutMutator,
             iconCache: iconCache,
             dragController: dragController,
             folderController: folderController
@@ -124,7 +132,8 @@ struct LaunchPadViewControllerTests {
 
     /// 注入 searchScheduler 的 SUT 工厂，用于测试搜索防抖逻辑
     private func makeSUTWithSearchScheduler(
-        searchScheduler: Scheduler
+        searchScheduler: Scheduler,
+        layoutMutator: LayoutMutating = MockLayoutMutator()
     ) -> (LaunchPadViewController, DragController, MockDataStore) {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
@@ -133,12 +142,17 @@ struct LaunchPadViewControllerTests {
         let folderController = FolderController(itemWriter: storage)
         let sut = LaunchPadViewController(
             storage: storage,
+            layoutMutator: layoutMutator,
             iconCache: iconCache,
             dragController: dragController,
             folderController: folderController,
             searchScheduler: searchScheduler
         )
         return (sut, dragController, storage)
+    }
+
+    private struct SensitiveError: Error, CustomStringConvertible {
+        let description: String
     }
 
     private func makeDragSession(itemID: Int64 = 11) -> DragSession {
@@ -152,6 +166,579 @@ struct LaunchPadViewControllerTests {
         )
     }
 
+    @Test("全部 grid source 与 destination 映射稳定 intent 或明确拒绝")
+    func gridSourceAndDestinationMappingIsExhaustive() {
+        let (sut, _, _) = makeSUT()
+        let app = makeDragSession(itemID: 2)
+        let group = DragSession(
+            itemID: 7,
+            itemUUID: "10000000-0000-0000-0000-000000000007",
+            itemType: .group,
+            sourceKind: .topLevel,
+            sourceParentID: 100,
+            sourceVisualIndex: 4
+        )
+        let folderChild = DragSession(
+            itemID: 2,
+            itemUUID: app.itemUUID,
+            itemType: .app,
+            sourceKind: .folderChild,
+            sourceParentID: 50,
+            sourceVisualIndex: 0
+        )
+
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .placement(.beforeItem(itemID: 1))
+        ) == .moveTopLevel(itemID: 2, placement: .beforeItem(itemID: 1)))
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .placement(.afterItem(itemID: 40))
+        ) == .moveTopLevel(itemID: 2, placement: .afterItem(itemID: 40)))
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .onItem(itemID: 3, itemType: .app)
+        ) == .createFolder(itemID: 2, targetItemID: 3, title: "New Folder"))
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .onItem(itemID: 8, itemType: .group)
+        ) == .addToFolder(itemID: 2, folderID: 8))
+        #expect(sut.makeGridIntent(
+            session: group,
+            destination: .placement(.afterItem(itemID: 9))
+        ) == .moveTopLevel(itemID: 7, placement: .afterItem(itemID: 9)))
+        #expect(sut.makeGridIntent(
+            session: group,
+            destination: .onItem(itemID: 3, itemType: .app)
+        ) == nil)
+        #expect(sut.makeGridIntent(
+            session: group,
+            destination: .onItem(itemID: 8, itemType: .group)
+        ) == nil)
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .placement(.beforeItem(itemID: 2))
+        ) == nil)
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .onItem(itemID: 2, itemType: .app)
+        ) == nil)
+        #expect(sut.makeGridIntent(
+            session: app,
+            destination: .onItem(itemID: 9, itemType: .page)
+        ) == nil)
+        #expect(sut.makeGridIntent(
+            session: folderChild,
+            destination: .placement(.beforeItem(itemID: 1))
+        ) == nil)
+    }
+
+    @Test("drop 成功只写一次并在返回后精确读取权威一页布局")
+    func dropSuccessAppliesOnceBeforeExactAuthoritativeReads() {
+        let mutator = MockLayoutMutator()
+        let (sut, dragController, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        dragController.beginDrag(makeDragSession(itemID: 2))
+        var trace: [String] = []
+        mutator.eventRecorder = { trace.append($0) }
+        storage.eventRecorder = { trace.append($0) }
+        let readsBefore = storage.fetchAllItemsCallCount
+
+        let result = sut.applyDropIntent(.moveTopLevel(
+            itemID: 2,
+            placement: .beforeItem(itemID: 1)
+        ))
+
+        #expect(result)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.appliedIntents.count == 1)
+        #expect(mutator.attemptedPageCapacities == [28])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(trace == ["apply-start", "apply-return", "read-root", "read-page:1"])
+        #expect(dragController.session != nil)
+    }
+
+    @Test("drop 失败只尝试一次，throw 后精确读取并输出固定脱敏反馈")
+    func dropFailureDoesNotRetryAndReloadsAfterThrow() {
+        let sentinel = "apply-secret-folder-title"
+        let mutator = MockLayoutMutator()
+        mutator.applyError = SensitiveError(description: sentinel)
+        let (sut, dragController, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        dragController.beginDrag(makeDragSession(itemID: 2))
+        var trace: [String] = []
+        var events: [LayoutDropFailureEvent] = []
+        mutator.eventRecorder = { trace.append($0) }
+        storage.eventRecorder = { trace.append($0) }
+        sut.layoutDropFailureLogger = { events.append($0) }
+        let readsBefore = storage.fetchAllItemsCallCount
+
+        let result = sut.applyDropIntent(.createFolder(
+            itemID: 2,
+            targetItemID: 3,
+            title: sentinel
+        ))
+
+        #expect(!result)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.appliedIntents.isEmpty)
+        #expect(mutator.attemptedPageCapacities == [28])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(trace == ["apply-start", "apply-throw", "read-root", "read-page:1"])
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
+        #expect(events == [LayoutDropFailureEvent(
+            kind: "create_folder",
+            sourceID: 2,
+            relatedIDs: [3],
+            category: "mutation_failed"
+        )])
+        #expect(!String(describing: events).contains(sentinel))
+        #expect(!(sut.transientMessageView.message ?? "").contains(sentinel))
+        #expect(dragController.session != nil)
+    }
+
+    @Test("nil metrics 不尝试写；resize 后失败仍记录当前动态容量")
+    func dropUsesOnlyCurrentDynamicCapacity() {
+        let mutator = MockLayoutMutator()
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        #expect(mutator.applyAttemptCount == 0)
+
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        #expect(sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        mutator.applyError = LayoutDomainError.missingAnchor(999)
+        sut.viewportSizeProvider = { CGSize(width: 1729, height: 496) }
+        sut.viewDidLayout()
+        var failureTrace: [String] = []
+        mutator.eventRecorder = { failureTrace.append($0) }
+        storage.eventRecorder = { failureTrace.append($0) }
+        let readsBeforeFailure = storage.fetchAllItemsCallCount
+        #expect(!sut.applyDropIntent(.moveTopLevel(
+            itemID: 2,
+            placement: .beforeItem(itemID: 999)
+        )))
+
+        #expect(mutator.applyAttemptCount == 2)
+        #expect(mutator.attemptedPageCapacities == [28, 40])
+        #expect(mutator.appliedPageCapacities == [28])
+        #expect(storage.fetchAllItemsCallCount - readsBeforeFailure == 2)
+        #expect(failureTrace == [
+            "apply-start", "apply-throw", "read-root", "read-page:1",
+        ])
+    }
+
+    @Test("六种 layout intent 映射完整且不记录 folder title")
+    func layoutDropFailureEventMappingIsExhaustive() {
+        let title = "sensitive-folder-title"
+        let intents: [LayoutDropIntent] = [
+            .moveTopLevel(itemID: 1, placement: .beforeItem(itemID: 2)),
+            .addToFolder(itemID: 3, folderID: 4),
+            .createFolder(itemID: 5, targetItemID: 6, title: title),
+            .reorderFolderItem(
+                itemID: 7,
+                folderID: 8,
+                placement: .afterItem(itemID: 9)
+            ),
+            .removeFromFolder(
+                itemID: 10,
+                folderID: 11,
+                placement: .beforeItem(itemID: 12)
+            ),
+            .deleteFolder(folderID: 13),
+        ]
+        let events = intents.map(LayoutDropFailureEvent.init(intent:))
+
+        #expect(events == [
+            LayoutDropFailureEvent(
+                kind: "move_top_level", sourceID: 1,
+                relatedIDs: [2], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "add_to_folder", sourceID: 3,
+                relatedIDs: [4], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "create_folder", sourceID: 5,
+                relatedIDs: [6], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "reorder_folder_item", sourceID: 7,
+                relatedIDs: [8, 9], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "remove_from_folder", sourceID: 10,
+                relatedIDs: [11, 12], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "delete_folder", sourceID: 13,
+                relatedIDs: [], category: "mutation_failed"
+            ),
+        ])
+        #expect(!String(describing: events).contains(title))
+    }
+
+    @Test("mutation 与失败 reload 的 sentinel 均不进入任何可观察输出")
+    func failedAuthoritativeReloadUsesSanitizedBoundary() {
+        let applySentinel = "apply-sensitive-error"
+        let reloadSentinel = "reload-sensitive-error"
+        let titleSentinel = "folder-sensitive-title"
+        let mutator = MockLayoutMutator()
+        mutator.applyError = SensitiveError(description: applySentinel)
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        storage.fetchError = SensitiveError(description: reloadSentinel)
+        var events: [LayoutDropFailureEvent] = []
+        var readFailureCategories: [String] = []
+        sut.layoutDropFailureLogger = { events.append($0) }
+        sut.authoritativeLayoutReadFailureLogger = {
+            readFailureCategories.append($0)
+        }
+        sut.transientMessageView.postAnnouncement = { _, _ in }
+
+        #expect(!sut.applyDropIntent(.createFolder(
+            itemID: 2,
+            targetItemID: 3,
+            title: titleSentinel
+        )))
+
+        let observable = String(describing: events)
+            + readFailureCategories.joined()
+            + (sut.transientMessageView.message ?? "")
+        #expect(readFailureCategories == ["authoritative_read_failed"])
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
+        #expect(!observable.contains(applySentinel))
+        #expect(!observable.contains(reloadSentinel))
+        #expect(!observable.contains(titleSentinel))
+    }
+
+    @Test("连续失败提示接入约束完整且旧 auto-hide 不清除新提示")
+    func repeatedDropFailureKeepsLatestTransientMessage() throws {
+        let mutator = MockLayoutMutator()
+        mutator.applyError = TestError.generic
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        var scheduled: [DispatchWorkItem] = []
+        sut.transientMessageView.scheduleHide = { _, item in scheduled.append(item) }
+        sut.transientMessageView.postAnnouncement = { _, _ in }
+
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 8)))
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        #expect(scheduled.count == 2)
+        scheduled[0].perform()
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
+        scheduled[1].perform()
+        #expect(sut.transientMessageView.message == nil)
+
+        let constraints = sut.view.constraints
+        #expect(constraints.contains { constraint in
+            constraint.firstItem === sut.transientMessageView
+                && constraint.firstAttribute == .centerX
+                && constraint.secondItem === sut.view
+        })
+        #expect(constraints.contains { constraint in
+            constraint.firstItem === sut.transientMessageView
+                && constraint.firstAttribute == .bottom
+                && constraint.secondItem === sut.pageControl
+                && constraint.secondAttribute == .top
+                && constraint.constant == -12
+        })
+        #expect(sut.transientMessageView.constraints.contains { constraint in
+            constraint.firstItem === sut.transientMessageView
+                && constraint.firstAttribute == .width
+                && constraint.relation == .lessThanOrEqual
+                && constraint.constant == 360
+        })
+    }
+
+    @Test("搜索 mode 与 current query 完整派生三层拖放门禁")
+    func searchTransitionsSynchronizeAllDragBoundaries() throws {
+        let scheduler = MockScheduler()
+        let mutator = MockLayoutMutator()
+        let (sut, dragController, storage) = makeSUTWithSearchScheduler(
+            searchScheduler: scheduler,
+            layoutMutator: mutator
+        )
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        #expect(coordinator.isDragEnabled)
+        #expect(sut.folderOverlay.isDragEnabled)
+
+        dragController.beginDrag(makeDragSession(itemID: 2))
+        #expect(sut.handleCharacterInput("s") == .enterSearchMode("s"))
+        #expect(!coordinator.isDragEnabled)
+        #expect(!sut.folderOverlay.isDragEnabled)
+        #expect(dragController.session == nil)
+        #expect(scheduler.scheduledActions.count == 1)
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 8)))
+        #expect(mutator.applyAttemptCount == 0)
+
+        #expect(sut.handleCharacterInput("a") == .appendToQuery("a"))
+        #expect(!coordinator.isDragEnabled)
+        #expect(!sut.folderOverlay.isDragEnabled)
+        #expect(sut.handleKeyEvent(.delete) == .deleteLastCharacter)
+        #expect(sut.keyboardNavigator.mode == .search(query: "s"))
+        #expect(!coordinator.isDragEnabled)
+        #expect(sut.handleKeyEvent(.delete) == .deleteLastCharacter)
+        #expect(sut.keyboardNavigator.mode == .search(query: ""))
+        #expect(sut.currentSearchQuery.isEmpty)
+        #expect(!coordinator.isDragEnabled)
+        #expect(!sut.folderOverlay.isDragEnabled)
+
+        #expect(sut.handleKeyEvent(.escape) == .clearSearch)
+        #expect(sut.keyboardNavigator.mode == .idle)
+        #expect(coordinator.isDragEnabled)
+        #expect(sut.folderOverlay.isDragEnabled)
+
+        sut.keyboardNavigator.mode = .search(query: "")
+        sut.handleSearch(query: "")
+        #expect(!coordinator.isDragEnabled)
+        #expect(!sut.folderOverlay.isDragEnabled)
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        #expect(mutator.applyAttemptCount == 0)
+
+        var staleCompletion: (([PageItem]) -> Void)?
+        sut.keyboardNavigator.mode = .idle
+        sut.searchRunner = { _, query, completion in
+            if query == "queued" { staleCompletion = completion }
+        }
+        sut.handleSearch(query: "queued")
+        #expect(!coordinator.isDragEnabled)
+        #expect(!sut.folderOverlay.isDragEnabled)
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 10)))
+        #expect(mutator.applyAttemptCount == 0)
+
+        sut.handleSearch(query: "")
+        #expect(coordinator.isDragEnabled)
+        #expect(sut.folderOverlay.isDragEnabled)
+        staleCompletion?([])
+        #expect(coordinator.isDragEnabled)
+        #expect(sut.folderOverlay.isDragEnabled)
+        #expect(sut.currentSearchQuery.isEmpty)
+    }
+
+    @Test("native accept 只写一次并保留会话预览直到 ended")
+    func nativeAcceptWritesOnceAndEndedOwnsCleanup() throws {
+        let scheduler = MockScheduler()
+        let mutator = MockLayoutMutator()
+        let (sut, dragController, storage) = makeSUT(
+            dragScheduler: scheduler,
+            layoutMutator: mutator
+        )
+        let apps = [
+            TestDataFactory.makePageItem(
+                id: 1,
+                uuid: "00000000-0000-0000-0000-000000000001",
+                type: .app,
+                ordering: 0,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 1, title: "A1")
+            ),
+            TestDataFactory.makePageItem(
+                id: 2,
+                uuid: "00000000-0000-0000-0000-000000000002",
+                type: .app,
+                ordering: 1,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 2, title: "A2")
+            ),
+        ]
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        let grid = try #require(extractCollectionView(from: sut))
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        let targetPath = try #require(grid.diffableDataSource.indexPath(for: apps[1]))
+        grid.collectionViewLayout?.prepare()
+        let targetFrame = try #require(grid.layoutFrame(at: targetPath))
+        let previewCell = AppIconCell()
+        _ = previewCell.view
+        grid.visibleCellProvider = { path in path == targetPath ? previewCell : nil }
+        grid.indexPathResolver = { _ in targetPath }
+        let session = DragSession(
+            itemID: apps[0].id,
+            itemUUID: apps[0].uuid,
+            itemType: .app,
+            sourceKind: .topLevel,
+            sourceParentID: 1,
+            sourceVisualIndex: 0
+        )
+        dragController.beginDrag(session)
+        dragController.updateDragHover(
+            .item(itemID: apps[1].id, itemType: .app)
+        )
+        scheduler.advance(by: 0.8)
+        #expect(previewCell.isFolderCreationPreviewVisible)
+        coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
+        var trace: [String] = []
+        mutator.eventRecorder = { trace.append($0) }
+        storage.eventRecorder = { trace.append($0) }
+        let readsBefore = storage.fetchAllItemsCallCount
+        let cancelCountBefore = scheduler.cancelCallCount
+        let snapshotBefore = grid.diffableDataSource.snapshot()
+        let info = MockDraggingInfo(
+            location: grid.convert(
+                NSPoint(x: targetFrame.midX, y: targetFrame.midY),
+                to: nil
+            )
+        )
+
+        let accepted = coordinator.collectionView(
+            grid,
+            acceptDrop: info,
+            indexPath: targetPath,
+            dropOperation: .on
+        )
+
+        #expect(accepted)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.attemptedIntents == [
+            .createFolder(itemID: 1, targetItemID: 2, title: "New Folder"),
+        ])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(trace == ["apply-start", "apply-return", "read-root", "read-page:1"])
+        #expect(dragController.session != nil)
+        #expect(previewCell.isFolderCreationPreviewVisible)
+        #expect(scheduler.cancelCallCount == cancelCountBefore)
+        #expect(grid.diffableDataSource.snapshot().sectionIdentifiers == snapshotBefore.sectionIdentifiers)
+        #expect(grid.diffableDataSource.snapshot().itemIdentifiers == snapshotBefore.itemIdentifiers)
+
+        coordinator.collectionView(
+            grid,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: .move
+        )
+
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(dragController.session == nil)
+        #expect(!previewCell.isFolderCreationPreviewVisible)
+        #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
+    }
+
+    @Test("native accept 已提交但权威 reload 失败仍成功，ended 不重复写入")
+    func nativeAcceptCommitSurvivesAuthoritativeReloadFailure() throws {
+        let reloadSentinel = "reload-sensitive-error-after-commit"
+        let scheduler = MockScheduler()
+        let mutator = MockLayoutMutator()
+        let (sut, dragController, storage) = makeSUT(
+            dragScheduler: scheduler,
+            layoutMutator: mutator
+        )
+        let apps = [
+            TestDataFactory.makePageItem(
+                id: 1,
+                uuid: "00000000-0000-0000-0000-000000000001",
+                type: .app,
+                ordering: 0,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 1, title: "A1")
+            ),
+            TestDataFactory.makePageItem(
+                id: 2,
+                uuid: "00000000-0000-0000-0000-000000000002",
+                type: .app,
+                ordering: 1,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 2, title: "A2")
+            ),
+        ]
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        let grid = try #require(extractCollectionView(from: sut))
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        let targetPath = try #require(grid.diffableDataSource.indexPath(for: apps[1]))
+        grid.collectionViewLayout?.prepare()
+        let targetFrame = try #require(grid.layoutFrame(at: targetPath))
+        grid.indexPathResolver = { _ in targetPath }
+        let session = DragSession(
+            itemID: apps[0].id,
+            itemUUID: apps[0].uuid,
+            itemType: .app,
+            sourceKind: .topLevel,
+            sourceParentID: 1,
+            sourceVisualIndex: 0
+        )
+        let expectedIntent = LayoutDropIntent.createFolder(
+            itemID: 1,
+            targetItemID: 2,
+            title: "New Folder"
+        )
+        dragController.beginDrag(session)
+        coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
+        storage.fetchError = SensitiveError(description: reloadSentinel)
+        var trace: [String] = []
+        var dropFailureEvents: [LayoutDropFailureEvent] = []
+        var readFailureCategories: [String] = []
+        var announcements: [String] = []
+        mutator.eventRecorder = { trace.append($0) }
+        storage.eventRecorder = { trace.append($0) }
+        sut.layoutDropFailureLogger = { dropFailureEvents.append($0) }
+        sut.authoritativeLayoutReadFailureLogger = {
+            readFailureCategories.append($0)
+        }
+        sut.transientMessageView.postAnnouncement = { message, _ in
+            announcements.append(message)
+        }
+        let readsBefore = storage.fetchAllItemsCallCount
+        let cancelCountBefore = scheduler.cancelCallCount
+        let snapshotBefore = grid.diffableDataSource.snapshot()
+        let info = MockDraggingInfo(
+            location: grid.convert(
+                NSPoint(x: targetFrame.midX, y: targetFrame.midY),
+                to: nil
+            )
+        )
+
+        let accepted = coordinator.collectionView(
+            grid,
+            acceptDrop: info,
+            indexPath: targetPath,
+            dropOperation: .on
+        )
+
+        #expect(accepted)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.attemptedIntents == [expectedIntent])
+        #expect(mutator.appliedIntents == [expectedIntent])
+        #expect(mutator.attemptedPageCapacities == [28])
+        #expect(mutator.appliedPageCapacities == [28])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
+        #expect(trace == ["apply-start", "apply-return", "read-root"])
+        #expect(readFailureCategories == ["authoritative_read_failed"])
+        #expect(dropFailureEvents.isEmpty)
+        #expect(sut.transientMessageView.message == nil)
+        #expect(announcements.isEmpty)
+        #expect(dragController.session != nil)
+        #expect(grid.diffableDataSource.snapshot().sectionIdentifiers == snapshotBefore.sectionIdentifiers)
+        #expect(grid.diffableDataSource.snapshot().itemIdentifiers == snapshotBefore.itemIdentifiers)
+        let observable = String(describing: dropFailureEvents)
+            + readFailureCategories.joined()
+            + (sut.transientMessageView.message ?? "")
+            + announcements.joined()
+            + trace.joined()
+        #expect(!observable.contains(reloadSentinel))
+
+        coordinator.collectionView(
+            grid,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: .move
+        )
+
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.appliedIntents == [expectedIntent])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
+        #expect(trace == ["apply-start", "apply-return", "read-root"])
+        #expect(dragController.session == nil)
+        #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
+    }
+
     // MARK: - ESC 关闭窗口
 
     @Test("idle 状态 ESC 触发 onClose 回调")
@@ -163,6 +750,32 @@ struct LaunchPadViewControllerTests {
         _ = sut.handleKeyEvent(.escape)
 
         #expect(closeCalled == true)
+    }
+
+    @Test("关闭窗口显式取消 native drag，后续 ended 不重复 cleanup")
+    func closeWindowCancelsNativeDragIdempotently() throws {
+        let scheduler = MockScheduler()
+        let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
+        loadViewWithData(sut, storage: storage)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        let grid = try #require(extractCollectionView(from: sut))
+        dragController.beginDrag(makeDragSession())
+        let cancelCountBefore = scheduler.cancelCallCount
+        var closeCount = 0
+        sut.onClose = { closeCount += 1 }
+
+        #expect(sut.handleKeyEvent(.escape) == .closeWindow)
+        #expect(closeCount == 1)
+        #expect(dragController.session == nil)
+        #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
+
+        coordinator.collectionView(
+            grid,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: []
+        )
+        #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
     }
 
     // MARK: - ESC 退出编辑模式
@@ -1290,28 +1903,55 @@ struct LaunchPadViewControllerTests {
         #expect(sut.keyboardNavigator.mode == .edit)
     }
 
-    @Test("handleLongPress .ended 在 dragging 只清理会话并重置为 idle")
-    func handleLongPress_ended_dragging() {
-        let (sut, dragController, _) = makeSUT()
-        _ = sut.view // .dragging 分支会触发 loadData，需视图已加载
+    @Test("native session 的 gesture terminal 不读取也不抢 ended cleanup")
+    func handleLongPressNativeSessionWaitsForNativeEnded() throws {
+        let scheduler = MockScheduler()
+        let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
+        loadViewWithData(sut, storage: storage)
+        layout(sut)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
         dragController.beginDrag(makeDragSession())
-        #expect(dragController.state == .dragging)
+        let readsBefore = storage.fetchAllItemsCallCount
+        let cancelCountBefore = scheduler.cancelCallCount
+
         sut.handleLongPress(MockPressGesture(state: .ended))
+
+        #expect(dragController.state == .dragging)
+        #expect(dragController.session != nil)
+        #expect(storage.fetchAllItemsCallCount == readsBefore)
+        #expect(scheduler.cancelCallCount == cancelCountBefore)
+        coordinator.collectionView(
+            try #require(extractCollectionView(from: sut)),
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: .move
+        )
         #expect(dragController.state == .idle)
         #expect(dragController.session == nil)
+        #expect(storage.fetchAllItemsCallCount == readsBefore)
+        #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
     }
 
-    @Test("handleLongPress .cancelled/.failed 在 dragging 只清理会话")
-    func handleLongPress_cancelledAndFailed_dragging() {
-        for gestureState in [NSGestureRecognizer.State.cancelled, .failed] {
-            let (sut, dragController, _) = makeSUT()
-            _ = sut.view
-            dragController.beginDrag(makeDragSession())
+    @Test("gesture-only dragging 的 ended/cancelled/failed 各自只清理并读取一次")
+    func handleLongPressGestureOnlyTerminalMatrix() {
+        for gestureState in [
+            NSGestureRecognizer.State.ended,
+            .cancelled,
+            .failed,
+        ] {
+            let scheduler = MockScheduler()
+            let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
+            loadViewWithData(sut, storage: storage)
+            dragController.handleDragStart()
+            let readsBefore = storage.fetchAllItemsCallCount
+            let cancelCountBefore = scheduler.cancelCallCount
 
             sut.handleLongPress(MockPressGesture(state: gestureState))
 
             #expect(dragController.state == .idle)
             #expect(dragController.session == nil)
+            #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+            #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
         }
     }
 

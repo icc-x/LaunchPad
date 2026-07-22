@@ -39,6 +39,7 @@ struct LaunchPadWindowControllerTests {
         let folderController = FolderController(itemWriter: storage)
         let viewController = LaunchPadViewController(
             storage: storage,
+            layoutMutator: MockLayoutMutator(),
             iconCache: iconCache,
             dragController: dragController,
             folderController: folderController

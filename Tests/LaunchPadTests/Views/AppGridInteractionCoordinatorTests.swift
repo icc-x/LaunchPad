@@ -659,6 +659,86 @@ struct AppGridInteractionCoordinatorTests {
         try verifyNativeDropScenario(.callbackTrue, hoverState: .visiblePreview)
     }
 
+    @Test("禁用拖放同步拒绝 source、validate、accept 且不改 snapshot")
+    func disabledDragRejectsAllNativeBoundariesWithoutSnapshotMutation() throws {
+        let sut = try makeNativeDropSUT()
+        let snapshotBefore = sut.grid.diffableDataSource.snapshot()
+        sut.coordinator.isDragEnabled = false
+        #expect(sut.coordinator.collectionView(
+            sut.grid,
+            pasteboardWriterForItemAt: sut.sourcePath
+        ) == nil)
+
+        sut.dragController.beginDrag(session(for: sut.source))
+        var proposed = NSIndexPath(forItem: sut.targetPath.item, inSection: 0)
+        var operation: NSCollectionView.DropOperation = .before
+        let info = MockDraggingInfo(
+            location: sut.grid.convert(
+                NSPoint(x: sut.targetFrame.midX, y: sut.targetFrame.midY),
+                to: nil
+            )
+        )
+        let validation = withUnsafeMutablePointer(to: &operation) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                sut.coordinator.collectionView(
+                    sut.grid,
+                    validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(proposedPointer),
+                    dropOperation: operationPointer
+                )
+            }
+        }
+        var callbackCount = 0
+        sut.coordinator.onDropRequested = { _, _ in
+            callbackCount += 1
+            return true
+        }
+        let accepted = sut.coordinator.collectionView(
+            sut.grid,
+            acceptDrop: info,
+            indexPath: sut.targetPath,
+            dropOperation: .on
+        )
+
+        #expect(validation.isEmpty)
+        #expect(!accepted)
+        #expect(callbackCount == 0)
+        #expect(sut.grid.diffableDataSource.snapshot().sectionIdentifiers == snapshotBefore.sectionIdentifiers)
+        #expect(sut.grid.diffableDataSource.snapshot().itemIdentifiers == snapshotBefore.itemIdentifiers)
+
+        sut.coordinator.isDragEnabled = true
+        #expect(sut.coordinator.collectionView(
+            sut.grid,
+            pasteboardWriterForItemAt: sut.sourcePath
+        ) != nil)
+    }
+
+    @Test("显式取消后重复禁用和 native ended 不重复 cleanup")
+    func explicitCancellationMakesLaterNativeEndedIdempotent() throws {
+        let sut = try makeNativeDropSUT()
+        sut.dragController.beginDrag(session(for: sut.source))
+        sut.dragController.updateDragHover(
+            .item(itemID: sut.target.id, itemType: sut.target.type)
+        )
+        let cancelCountBefore = sut.scheduler.cancelCallCount
+
+        sut.coordinator.isDragEnabled = false
+        #expect(sut.dragController.session == nil)
+        #expect(sut.scheduler.cancelCallCount == cancelCountBefore + 1)
+        sut.coordinator.isDragEnabled = false
+        sut.coordinator.collectionView(
+            sut.grid,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: []
+        )
+
+        #expect(sut.scheduler.cancelCallCount == cancelCountBefore + 1)
+        #expect(sut.dragController.state == .idle)
+        #expect(sut.dragController.session == nil)
+        #expect(sut.scheduler.scheduledActions.isEmpty)
+    }
+
     @Test func lifecycle_attachDetachAndReattachOwnPreviewBinding() {
         let sut = makeSUT()
         let source = makeApp(id: 1)

@@ -12,6 +12,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Services
 
     var storage: (any DataStoring)!
+    var layoutMutator: (any LayoutMutating)!
     var iconCache: IconCache!
     var appScanner: AppScanner!
     var searchEngine: SearchEngine!
@@ -117,7 +118,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         activationPolicySetter(.accessory)
 
         setupServices()
-        guard storage != nil else {
+        guard storage != nil, layoutMutator != nil else {
             NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
             return
         }
@@ -130,17 +131,26 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Service Setup
 
+    private func installStorage(_ manager: StorageManager) {
+        storage = manager
+        layoutMutator = manager
+    }
+
     func setupServices() {
         // Database
+        storage = nil
+        layoutMutator = nil
         let dbPath = databasePathProvider()
         do {
-            storage = try storageFactory(dbPath)
+            installStorage(try storageFactory(dbPath))
         } catch {
             // If DB is corrupted, delete and retry
             let strategy = corruptionHandler(dbPath)
             if case .deleteAndRescan = strategy {
                 try? databaseRemover(dbPath)
-                storage = try? storageFactory(dbPath)
+                if let recovered = try? storageFactory(dbPath) {
+                    installStorage(recovered)
+                }
             }
         }
         // 数据库仍不可用则放弃启动，交由 applicationDidFinishLaunching 记录并退出
@@ -162,6 +172,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupControllers() {
+        guard let storage, let layoutMutator else { return }
+
         // Drag controller
         let dragController = DragController()
 
@@ -171,6 +183,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // View controller
         let vc = LaunchPadViewController(
             storage: storage,
+            layoutMutator: layoutMutator,
             iconCache: iconCache,
             searchEngine: searchEngine,
             dragController: dragController,

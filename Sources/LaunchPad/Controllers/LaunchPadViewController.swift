@@ -3,6 +3,55 @@ import Foundation
 import AppKit
 import LaunchPadProtocols
 
+struct LayoutDropFailureEvent: Sendable, Equatable {
+    let kind: String
+    let sourceID: Int64
+    let relatedIDs: [Int64]
+    let category: String
+
+    init(
+        kind: String,
+        sourceID: Int64,
+        relatedIDs: [Int64],
+        category: String
+    ) {
+        self.kind = kind
+        self.sourceID = sourceID
+        self.relatedIDs = relatedIDs
+        self.category = category
+    }
+
+    init(intent: LayoutDropIntent) {
+        category = "mutation_failed"
+        switch intent {
+        case .moveTopLevel(let itemID, let placement):
+            kind = "move_top_level"
+            sourceID = itemID
+            relatedIDs = [placement.anchorItemID]
+        case .addToFolder(let itemID, let folderID):
+            kind = "add_to_folder"
+            sourceID = itemID
+            relatedIDs = [folderID]
+        case .createFolder(let itemID, let targetItemID, _):
+            kind = "create_folder"
+            sourceID = itemID
+            relatedIDs = [targetItemID]
+        case .reorderFolderItem(let itemID, let folderID, let placement):
+            kind = "reorder_folder_item"
+            sourceID = itemID
+            relatedIDs = [folderID, placement.anchorItemID]
+        case .removeFromFolder(let itemID, let folderID, let placement):
+            kind = "remove_from_folder"
+            sourceID = itemID
+            relatedIDs = [folderID, placement.anchorItemID]
+        case .deleteFolder(let folderID):
+            kind = "delete_folder"
+            sourceID = folderID
+            relatedIDs = []
+        }
+    }
+}
+
 /// 主视图控制器 — 协调所有子视图和控制器
 /// 连接：KeyboardNavigator → SearchEngine → DiffableDataSource → NSCollectionView
 ///       DragController → drag-session preview lifecycle
@@ -18,11 +67,13 @@ public class LaunchPadViewController: NSViewController {
     var pageControl: PageControlView!
     private var emptyStateView: EmptyStateView!
     var folderOverlay: FolderOverlayView!
+    private(set) var transientMessageView: TransientMessageView!
     let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
 
     private let storage: DataStoring
+    private let layoutMutator: LayoutMutating
     private let iconCache: IconCache
     private let searchEngine: SearchEngine
     let keyboardNavigator: KeyboardNavigator
@@ -58,6 +109,21 @@ public class LaunchPadViewController: NSViewController {
 
     var viewportSizeProvider: (() -> CGSize)?
     var projectedLayoutDidReload: (() -> Void)?
+    var layoutDropFailureLogger: (LayoutDropFailureEvent) -> Void = { event in
+        NSLog(
+            "[LaunchPadViewController] layout_drop_failed kind=%@ source=%lld related=%@ category=%@",
+            event.kind,
+            event.sourceID,
+            event.relatedIDs.map(String.init).joined(separator: ","),
+            event.category
+        )
+    }
+    var authoritativeLayoutReadFailureLogger: (String) -> Void = { category in
+        NSLog(
+            "[LaunchPadViewController] layout_reload_failed category=%@",
+            category
+        )
+    }
 
     // MARK: - State
 
@@ -113,6 +179,7 @@ public class LaunchPadViewController: NSViewController {
 
     public init(
         storage: DataStoring,
+        layoutMutator: LayoutMutating,
         iconCache: IconCache,
         searchEngine: SearchEngine = SearchEngine(),
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
@@ -121,6 +188,7 @@ public class LaunchPadViewController: NSViewController {
         searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
         self.storage = storage
+        self.layoutMutator = layoutMutator
         self.iconCache = iconCache
         self.searchEngine = searchEngine
         self.keyboardNavigator = keyboardNavigator
@@ -169,6 +237,11 @@ public class LaunchPadViewController: NSViewController {
         pageControl.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageControl)
 
+        // Layout mutation feedback
+        transientMessageView = TransientMessageView(frame: .zero)
+        transientMessageView.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(transientMessageView)
+
         // Empty state
         emptyStateView = EmptyStateView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
@@ -207,6 +280,13 @@ public class LaunchPadViewController: NSViewController {
             pageControl.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
             pageControl.heightAnchor.constraint(equalToConstant: 10),
 
+            transientMessageView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            transientMessageView.bottomAnchor.constraint(
+                equalTo: pageControl.topAnchor,
+                constant: -12
+            ),
+            transientMessageView.widthAnchor.constraint(lessThanOrEqualToConstant: 360),
+
             // 搜索结果计数（与页码点同一位置）
             resultCountLabel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             resultCountLabel.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -18),
@@ -222,6 +302,7 @@ public class LaunchPadViewController: NSViewController {
             folderOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
+        synchronizeDragAvailability()
     }
 
     override public func viewDidLoad() {
@@ -260,6 +341,15 @@ public class LaunchPadViewController: NSViewController {
         }
         gridInteractionCoordinator?.onItemActivated = { [weak self] item in
             self?.handleItemSelection(item)
+        }
+
+        gridInteractionCoordinator?.onDropRequested = { [weak self] session, destination in
+            guard let self,
+                  let intent = self.makeGridIntent(
+                      session: session,
+                      destination: destination
+                  ) else { return false }
+            return self.applyDropIntent(intent)
         }
 
         scrollView.onPageChanged = { [weak self] page in
@@ -306,6 +396,50 @@ public class LaunchPadViewController: NSViewController {
         collectionView.addGestureRecognizer(longPress)
     }
 
+    func makeGridIntent(
+        session: DragSession,
+        destination: GridDropDestination
+    ) -> LayoutDropIntent? {
+        guard session.sourceKind == .topLevel else { return nil }
+
+        switch destination {
+        case .placement(let placement):
+            guard placement.anchorItemID != session.itemID else { return nil }
+            return .moveTopLevel(itemID: session.itemID, placement: placement)
+        case .onItem(let targetID, .app):
+            guard session.itemType == .app, targetID != session.itemID else {
+                return nil
+            }
+            return .createFolder(
+                itemID: session.itemID,
+                targetItemID: targetID,
+                title: "New Folder"
+            )
+        case .onItem(let targetID, .group):
+            guard session.itemType == .app, targetID != session.itemID else {
+                return nil
+            }
+            return .addToFolder(itemID: session.itemID, folderID: targetID)
+        case .onItem:
+            return nil
+        }
+    }
+
+    private var isSearchActive: Bool {
+        if case .search = keyboardNavigator.mode { return true }
+        return !currentSearchQuery.isEmpty
+    }
+
+    private func synchronizeDragAvailability() {
+        let enabled = !isSearchActive
+        if gridInteractionCoordinator?.isDragEnabled != enabled {
+            gridInteractionCoordinator?.isDragEnabled = enabled
+        }
+        if folderOverlay?.isDragEnabled != enabled {
+            folderOverlay?.isDragEnabled = enabled
+        }
+    }
+
     @objc func handleLongPress(_ gesture: NSPressGestureRecognizer) {
         let location = gesture.location(in: collectionView)
 
@@ -319,8 +453,11 @@ public class LaunchPadViewController: NSViewController {
                 // 长按结束时已在抖动状态 → 保持抖动（编辑模式）
                 updateJiggleState()
             } else if dragController.state == .dragging {
-                dragController.finishDrag()
-                loadData()
+                // Native drag 由 AppKit 的 draggingSession ended 回调统一清理。
+                if dragController.session == nil {
+                    dragController.finishDrag()
+                    loadData()
+                }
             } else {
                 dragController.handlePressEnded()
             }
@@ -344,13 +481,41 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Data Loading
 
     public func loadData() {
+        _ = reloadAuthoritativeLayout(logRawError: true)
+    }
+
+    @discardableResult
+    private func reloadAuthoritativeLayout(logRawError: Bool) -> Bool {
         do {
             let layout = try LayoutPersistence.loadLayout(reader: storage)
             allPages = layout.pages
             itemsByPage = layout.itemsByPage
             reloadProjectedLayout(preserving: selectedItemID)
+            return true
         } catch {
-            NSLog("[LaunchPadViewController] Failed to load data: \(error)")
+            if logRawError {
+                NSLog("[LaunchPadViewController] Failed to load data: \(error)")
+            } else {
+                authoritativeLayoutReadFailureLogger("authoritative_read_failed")
+            }
+            return false
+        }
+    }
+
+    @discardableResult
+    func applyDropIntent(_ intent: LayoutDropIntent) -> Bool {
+        guard !isSearchActive,
+              let capacity = gridMetrics?.itemsPerPage else { return false }
+
+        do {
+            try layoutMutator.apply(intent, pageCapacity: capacity)
+            _ = reloadAuthoritativeLayout(logRawError: false)
+            return true
+        } catch {
+            _ = reloadAuthoritativeLayout(logRawError: false)
+            transientMessageView.show(message: "无法更新布局，请重试")
+            layoutDropFailureLogger(LayoutDropFailureEvent(intent: intent))
+            return false
         }
     }
 
@@ -358,6 +523,7 @@ public class LaunchPadViewController: NSViewController {
 
     func handleSearch(query: String) {
         currentSearchQuery = query
+        synchronizeDragAvailability()
 
         if query.isEmpty {
             emptyStateView.hide()
@@ -420,6 +586,9 @@ public class LaunchPadViewController: NSViewController {
             animatingDifferences: false,
             reconfigureItems: true,
             animateEntrance: false
+        )
+        collectionView.setFolderCreationPreview(
+            targetItemID: dragController.session?.folderCreationPreviewTargetID
         )
         let clampedPage = min(max(previousPage, 0), max(visualPages.count - 1, 0))
         pageControlViewModel.configure(totalPages: visualPages.count)
@@ -625,6 +794,7 @@ public class LaunchPadViewController: NSViewController {
     private func executeAction(_ action: KeyboardNavigator.Action) {
         switch action {
         case .closeWindow:
+            dragController.handleCancel()
             onClose?()
         case .clearSearch:
             guard isViewLoaded else { return }
@@ -635,17 +805,20 @@ public class LaunchPadViewController: NSViewController {
             dragController.handleCancel()
             updateJiggleState()
         case .enterSearchMode(let initialQuery):
+            synchronizeDragAvailability()
             guard isViewLoaded else { return }
             searchBar.show()
             searchBar.stringValue = initialQuery
             searchBar.window?.makeFirstResponder(searchBar)
             searchDebouncer.search(query: initialQuery)
         case .appendToQuery(let char):
+            synchronizeDragAvailability()
             guard isViewLoaded else { return }
             searchBar.show()
             searchBar.stringValue += String(char)
             searchDebouncer.search(query: searchBar.stringValue)
         case .deleteLastCharacter:
+            synchronizeDragAvailability()
             guard isViewLoaded else { return }
             if !searchBar.stringValue.isEmpty {
                 searchBar.stringValue.removeLast()

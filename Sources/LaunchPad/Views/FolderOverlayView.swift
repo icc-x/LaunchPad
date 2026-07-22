@@ -19,6 +19,9 @@ public class FolderOverlayView: NSView {
     /// 关闭文件夹的回调
     public var onClosed: (() -> Void)?
 
+    /// 文件夹浮层内的拖放交互当前是否可用。
+    public var isDragEnabled = true
+
     private let titleLabel = NSTextField(labelWithString: "")
     private let backgroundView = NSVisualEffectView()
     private var collectionView: NSCollectionView!

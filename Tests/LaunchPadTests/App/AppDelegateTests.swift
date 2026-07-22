@@ -100,6 +100,7 @@ struct AppDelegateTests {
         let folderController = FolderController(itemWriter: storage)
         return LaunchPadViewController(
             storage: storage,
+            layoutMutator: storage,
             iconCache: iconCache,
             searchEngine: searchEngine,
             dragController: dragController,
@@ -169,6 +170,10 @@ struct AppDelegateTests {
         )
     }
 
+    private func referencesSameObject(_ lhs: Any, _ rhs: Any) -> Bool {
+        (lhs as AnyObject) === (rhs as AnyObject)
+    }
+
     // MARK: - applicationDidFinishLaunching
 
     @Test("多实例：激活已有实例并退出，不初始化服务")
@@ -224,6 +229,8 @@ struct AppDelegateTests {
         sut.setupServices()
 
         #expect(sut.storage != nil)
+        #expect(sut.layoutMutator != nil)
+        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
         #expect(sut.iconCache != nil)
         #expect(sut.appScanner != nil)
         #expect(sut.searchEngine != nil)
@@ -273,6 +280,8 @@ struct AppDelegateTests {
         #expect(handlerPaths == [safePath])
         #expect(removedPaths == [safePath])
         #expect(sut.storage != nil)
+        #expect(sut.layoutMutator != nil)
+        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
     }
 
     @Test("setupServices：损坏且非重建策略时放弃启动")
@@ -298,6 +307,7 @@ struct AppDelegateTests {
         #expect(handlerPaths == [safePath])
         #expect(removedPaths.isEmpty)
         #expect(sut.storage == nil)
+        #expect(sut.layoutMutator == nil)
     }
 
     @Test("setupServices：删除失败仍使用同一路径重试")
@@ -327,6 +337,47 @@ struct AppDelegateTests {
         #expect(handlerPaths == [safePath])
         #expect(removedPaths == [safePath])
         #expect(sut.storage != nil)
+        #expect(sut.layoutMutator != nil)
+        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
+    }
+
+    @Test("setupServices：删除重建再次失败时两个协议引用均为空")
+    func setupServices_recoveryFailureClearsBothReferences() {
+        let sut = makeDelegate()
+        sut.storageFactory = { _ in throw NSError(domain: "db", code: 5) }
+        sut.corruptionHandler = { _ in .deleteAndRescan }
+
+        sut.setupServices()
+
+        #expect(sut.storage == nil)
+        #expect(sut.layoutMutator == nil)
+    }
+
+    @Test("setupServices：重复初始化不会混用新旧协议引用")
+    func setupServices_repeatedSetupReplacesBothReferencesTogether() throws {
+        let sut = makeDelegate()
+        var managers: [StorageManager] = []
+        sut.storageFactory = { _ in
+            let manager = try StorageManager(dbPath: ":memory:")
+            managers.append(manager)
+            return manager
+        }
+
+        sut.setupServices()
+        let firstStorage = try #require(sut.storage)
+        sut.setupServices()
+        let secondStorage = try #require(sut.storage)
+
+        #expect(managers.count == 2)
+        #expect(!referencesSameObject(firstStorage, secondStorage))
+        #expect(referencesSameObject(secondStorage, sut.layoutMutator as Any))
+
+        sut.storageFactory = { _ in throw NSError(domain: "db", code: 6) }
+        sut.corruptionHandler = { _ in .healthy }
+        sut.setupServices()
+
+        #expect(sut.storage == nil)
+        #expect(sut.layoutMutator == nil)
     }
 
     // MARK: - setupControllers
@@ -341,6 +392,28 @@ struct AppDelegateTests {
         #expect(sut.viewController != nil)
         #expect(sut.lifecycle != nil)
         #expect(sut.windowController != nil)
+    }
+
+    @Test("setupControllers 只允许 storage 与 layoutMutator 同时存在")
+    func setupControllersRequiresBothTypedDependencies() {
+        for (hasStorage, hasMutator) in [
+            (false, false),
+            (true, false),
+            (false, true),
+            (true, true),
+        ] {
+            let sut = makeDelegate()
+            sut.setupServices()
+            if !hasStorage { sut.storage = nil }
+            if !hasMutator { sut.layoutMutator = nil }
+
+            sut.setupControllers()
+
+            let shouldBuild = hasStorage && hasMutator
+            #expect((sut.viewController != nil) == shouldBuild)
+            #expect((sut.lifecycle != nil) == shouldBuild)
+            #expect((sut.windowController != nil) == shouldBuild)
+        }
     }
 
     @Test("onClose 回调触发窗口 escape")

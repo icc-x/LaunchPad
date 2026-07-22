@@ -35,7 +35,8 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
 
     var isDragEnabled = true {
         didSet {
-            if !isDragEnabled { dragController.cancelDrag() }
+            guard oldValue != isDragEnabled, !isDragEnabled else { return }
+            dragController.handleCancel()
         }
     }
     var onSelectionChanged: ((PageItem) -> Void)?
@@ -249,6 +250,7 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
         endedAt screenPoint: NSPoint,
         dragOperation operation: NSDragOperation
     ) {
+        guard dragController.session != nil else { return }
         dragController.finishDrag()
     }
 

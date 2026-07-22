@@ -63,14 +63,26 @@ final class MockItemWriter: ItemWriting, @unchecked Sendable {
 // MARK: - MockLayoutMutator
 
 final class MockLayoutMutator: LayoutMutating, @unchecked Sendable {
+    private(set) var applyAttemptCount = 0
+    private(set) var attemptedIntents: [LayoutDropIntent] = []
+    private(set) var attemptedPageCapacities: [Int] = []
     private(set) var appliedIntents: [LayoutDropIntent] = []
     private(set) var appliedPageCapacities: [Int] = []
     var applyError: Error?
+    var eventRecorder: ((String) -> Void)?
 
     func apply(_ intent: LayoutDropIntent, pageCapacity: Int) throws {
-        if let applyError { throw applyError }
+        applyAttemptCount += 1
+        attemptedIntents.append(intent)
+        attemptedPageCapacities.append(pageCapacity)
+        eventRecorder?("apply-start")
+        if let applyError {
+            eventRecorder?("apply-throw")
+            throw applyError
+        }
         appliedIntents.append(intent)
         appliedPageCapacities.append(pageCapacity)
+        eventRecorder?("apply-return")
     }
 }
 
