@@ -717,10 +717,15 @@ struct HotkeyManagerTests {
     @Test("local monitor manager 释放后放行原对象")
     func localMonitorHandlerAfterManagerDeallocationReturnsOriginal() {
         var manager: HotkeyManager? = makeIsolatedManager()
+        weak var weakManager: HotkeyManager?
+        weakManager = manager
+        manager?.onKeyDown = { _ in nil }
         let handler = manager?.localMonitorHandler
-        manager = nil
         let event = makeNSKeyEvent(type: .keyDown, keyCode: 53)
 
+        #expect(handler?(event) == nil)
+        manager = nil
+        #expect(weakManager == nil)
         #expect(handler?(event) === event)
     }
 
@@ -739,13 +744,18 @@ struct HotkeyManagerTests {
         #expect(keyCodes.values == [58])
     }
 
-    @Test("handleLocalMonitorEvent other key forwards to onKeyDown")
-    func handleLocalMonitorEvent_otherKey_forwards() {
+    @Test("local monitor 转发普通按键并保留 nil")
+    func localMonitorForwardsRegularKeyAndNil() {
         let manager = makeIsolatedManager()
-        let counter = SendableCounter()
-        manager.onKeyDown = { event in counter.flag = true; return event }
-        _ = manager.handleLocalMonitorEvent(makeNSKeyEvent(type: .keyDown, keyCode: 0))
-        #expect(counter.flag == true)
+        let keyCodes = KeyCodeRecorder()
+        manager.onKeyDown = { event in
+            keyCodes.append(event.keyCode)
+            return nil
+        }
+        let event = makeNSKeyEvent(type: .keyDown, keyCode: 0)
+
+        #expect(manager.localMonitorHandler?(event) == nil)
+        #expect(keyCodes.values == [0])
     }
 
     @Test("localMonitorHandler 直接调用转发到 handleLocalMonitorEvent")
