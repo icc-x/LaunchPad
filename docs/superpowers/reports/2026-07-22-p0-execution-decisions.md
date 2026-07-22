@@ -579,3 +579,77 @@ the approved plan or task-specific test reports.
   `StorageManagerTests.swift`; the focused run must dynamically cover the eighth
   queue entry, exact zero-write counters for all unsupported intents, complete
   before/after snapshots, and each added fault branch.
+
+## Decision 029: Verify the complete persisted layout before every layout COMMIT
+
+- Status: adopted and verified in Task 13
+- Evidence: checked statement return codes prove that SQLite accepted each call,
+  but they do not prove that the final parent/order graph matches the domain
+  result. A fault can return `SQLITE_DONE` without performing the intended write,
+  and a locally valid page plan can still be persisted in the wrong order.
+- Decision: the top-level layout entry reads one complete snapshot, validates its
+  topology, applies the stable-ID intent in pure domain state, persists the dense
+  page plan, then re-reads and compares page IDs/order, page children/order,
+  flattened top-level order, folder children, created titles, and the full ID set
+  before COMMIT. Keep all of this inside one immediate transaction and the one
+  `databaseQueue`; unsupported intents are rejected before snapshot or layout SQL.
+- Impact: successful SQLite status codes cannot hide a partial or misordered
+  layout, and the future folder implementation inherits one verified transaction
+  boundary instead of adding a second writer.
+- Verification: a silent `SQLITE_DONE` no-op produced
+  `persistedStateMismatch` and a full rollback; corrupt topology and five
+  unsupported intents preserved complete snapshots; the controller ran `86/86`
+  related tests and formal review reported `0/0/0` findings.
+
+## Decision 030: Correct and broaden Task 14's destructive folder matrix
+
+- Status: adopted from Task 14 preflight under autonomous execution authority
+- Evidence: the generated brief duplicates the final child in its safe-delete
+  expected order, contradicting the pure domain result and unique-ID invariants.
+  It also omits Decision 011's folder-delete and repagination fault families, and
+  its rollback-failure case fails before any real layout write occurs.
+- Decision: use the exact safe-delete sequence `[before, child0, child1, child2,
+  after]`. Add checked prepare/bind/step/changes cases for folder deletion,
+  overflow page insertion, and obsolete-page deletion, with exact errors and full
+  snapshot rollback. Make rollback failure occur after at least one successful
+  layout write, then prove the first connection is unavailable and a fresh `/tmp`
+  reopen equals the original snapshot. Also cover metadata creation exactly once,
+  zero-child delete, reorder before/after, and retained/dissolved folder anchor
+  combinations. Use the shared watchdog for every command.
+- Impact: Task 14 exercises every destructive write family without violating the
+  correct domain order or silently expanding into later UI-writer removal.
+- Verification: the Task 14 task review must reconcile every branch against the
+  domain state, show exact fault-to-error mappings, prove no partial state after
+  rollback/reopen, and retain the original three-file whitelist.
+
+## Decision 031: Enforce storage serialization as a Dispatch barrier invariant
+
+- Status: adopted and verified in Task 12R
+- Evidence: the first concurrency test could deadlock itself while waiting for
+  all workers to reach a start gate. Its replacement used a 250ms absence check
+  to infer that a second database call had not entered, but a caller can be
+  descheduled after announcing it started and before submitting `sync`; this
+  made the concurrent-queue mutation capable of a false GREEN. The local 5s and
+  250ms deadlines also contradicted the repository watchdog's role as the only
+  deadlock bound. A platform probe demonstrated that
+  `dispatchPrecondition(.onQueueAsBarrier(queue))` returns on a serial queue and
+  deterministically traps in a normal synchronous block on a concurrent queue.
+- Decision: centralize every `databaseQueue.sync` entry, including deinit close,
+  in `onDatabaseQueue` and assert `.onQueueAsBarrier(databaseQueue)` inside the
+  critical section. Remove the timing probe and every test-local deadline or
+  timeout; enqueue 24 public writes and 24 public reads on a concurrent worker
+  queue, release all gate tokens, and use an unbounded `DispatchGroup.wait()` so
+  `scripts/run-with-timeout.sh 120 --` remains the sole deadlock supervisor.
+  Expand the Task 12R cumulative whitelist to `StorageManager.swift` plus
+  `StorageManagerTests.swift`; do not retain the earlier test-only whitelist once
+  the black-box limitation is proven.
+- Impact: serialization is now a production structural invariant rather than a
+  timing inference or queue-label observation. Accidentally changing the storage
+  queue to `.concurrent` fails at the first database critical section before
+  SQLite operations overlap, while normal read/write completion and persisted
+  values remain dynamically verified.
+- Verification: the temporary `.concurrent` mutation triggered
+  `_dispatch_assert_queue_barrier_fail` with shell exit 133; restored production
+  passed the controller's fresh `87/87` tests across 8 suites. The cumulative
+  diff contained only the two authorized files, and formal review reported spec
+  compliant, Task quality Approved, and Critical/Important/Minor `0/0/0`.
