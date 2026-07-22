@@ -415,6 +415,31 @@ struct LayoutDomainStateTests {
         }
     }
 
+    @Test("解散二项 folder 支持 owning anchor 的 before/after")
+    func removeFromTwoItemFolderDissolvesWithOwningFolderAnchor() throws {
+        let cases: [(ItemPlacement, [Int64])] = [
+            (.beforeItem(itemID: 7), [1, 71, 70, 2]),
+            (.afterItem(itemID: 7), [1, 70, 71, 2]),
+        ]
+
+        for (placement, expectedIDs) in cases {
+            var sut = state(
+                top: [node(1), node(7, .group), node(2)],
+                folders: [7: [node(70), node(71)]]
+            )
+            let effects = try sut.apply(
+                .removeFromFolder(
+                    itemID: 71,
+                    folderID: 7,
+                    placement: placement
+                )
+            )
+            #expect(sut.topLevelItems.map(\.id) == expectedIDs)
+            #expect(sut.childrenByFolderID[7] == nil)
+            #expect(effects.folderIDsToDelete == [7])
+        }
+    }
+
     @Test("移出 folder 拒绝 stale 与错误类型且不变更")
     func removeFromFolderRejectsInvalidInputs() {
         let original = state(
@@ -558,6 +583,72 @@ struct LayoutDomainStateTests {
                     ],
                     obsoletePageIDs: [101]
                 )
+        )
+    }
+
+    @Test("page plan 覆盖页数相等与无 existing page 边界")
+    func pagePlanCoversExactAndNoExistingPageBoundaries() throws {
+        let exact = state(
+            pages: [100, 101],
+            top: [node(1), node(2), node(3), node(4)]
+        )
+        #expect(
+            try exact.makePageRebuildPlan(pageCapacity: 2)
+                == PageRebuildPlan(
+                    pages: [
+                        .init(
+                            existingPageID: 100,
+                            ordering: 0,
+                            itemIDs: [1, 2]
+                        ),
+                        .init(
+                            existingPageID: 101,
+                            ordering: 1,
+                            itemIDs: [3, 4]
+                        ),
+                    ],
+                    obsoletePageIDs: []
+                )
+        )
+
+        let nonemptyWithoutExistingPages = state(
+            pages: [],
+            top: [node(1), node(2), node(3)]
+        )
+        #expect(
+            try nonemptyWithoutExistingPages.makePageRebuildPlan(
+                pageCapacity: 2
+            ) == PageRebuildPlan(
+                pages: [
+                    .init(
+                        existingPageID: nil,
+                        ordering: 0,
+                        itemIDs: [1, 2]
+                    ),
+                    .init(
+                        existingPageID: nil,
+                        ordering: 1,
+                        itemIDs: [3]
+                    ),
+                ],
+                obsoletePageIDs: []
+            )
+        )
+
+        let emptyWithoutExistingPages = state(pages: [], top: [])
+        #expect(
+            try emptyWithoutExistingPages.makePageRebuildPlan(
+                pageCapacity: 35
+            ) == PageRebuildPlan(
+                pages: [
+                    .init(
+                        existingPageID: nil,
+                        ordering: 0,
+                        itemIDs: []
+                    )
+                ],
+                obsoletePageIDs: []
+            )
         )
     }
 
