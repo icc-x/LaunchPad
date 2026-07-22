@@ -209,6 +209,10 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
                         database: database
                     )
                 }
+                try deleteObsoletePages(
+                    plan.obsoletePageIDs,
+                    database: database
+                )
 
                 let createdFolderTitles: [Int64: String]
                 if let createdFolderID,
@@ -700,13 +704,17 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
                 )
             }
         }
-        for obsoletePageID in plan.obsoletePageIDs {
-            try deleteLayoutItem(
-                itemID: obsoletePageID,
-                database: database
-            )
-        }
         return resolved
+    }
+
+    /// Deletes obsolete pages only after all explicit folder deletes complete.
+    private func deleteObsoletePages(
+        _ pageIDs: [Int64],
+        database: OpaquePointer
+    ) throws {
+        for pageID in pageIDs {
+            try deleteLayoutItem(itemID: pageID, database: database)
+        }
     }
 
     private func verifyPersistedLayout(

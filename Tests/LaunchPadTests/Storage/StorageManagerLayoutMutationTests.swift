@@ -597,6 +597,14 @@ extension StorageManagerLayoutMutationTests {
         let children: [Int64]
     }
 
+    struct MultiPageEmptyFolderIDs {
+        let firstPage: Int64
+        let secondPage: Int64
+        let before: Int64
+        let after: Int64
+        let folder: Int64
+    }
+
     enum FolderPlacementScenario: CaseIterable, Sendable {
         case owningBefore
         case owningAfter
@@ -808,6 +816,61 @@ extension StorageManagerLayoutMutationTests {
                 folder: folder,
                 after: after,
                 children: children
+            ),
+            script
+        )
+    }
+
+    private func makeMultiPageEmptyFolderLayout(
+        script: SQLiteFaultScript = SQLiteFaultScript()
+    ) throws -> (StorageManager, MultiPageEmptyFolderIDs, SQLiteFaultScript) {
+        let storage = try StorageManager(
+            dbPath: ":memory:",
+            schemaSetup: { Schema.setupSchema(db: $0) },
+            faultInjector: script.result(for:)
+        )
+        let firstPage = try storage.insertItem(
+            TestDataFactory.makePageItem(
+                uuid: "empty-folder-page-1",
+                type: .page,
+                ordering: 0
+            )
+        )
+        let secondPage = try storage.insertItem(
+            TestDataFactory.makePageItem(
+                uuid: "empty-folder-page-2",
+                type: .page,
+                ordering: 1
+            )
+        )
+        func app(_ suffix: String, ordering: Int) throws -> Int64 {
+            try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "empty-folder-app-\(suffix)",
+                type: .app,
+                ordering: ordering,
+                parentId: firstPage,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.empty-folder.\(suffix)"
+                )
+            ))
+        }
+        let before = try app("before", ordering: 0)
+        let after = try app("after", ordering: 1)
+        let folder = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "empty-folder",
+            type: .group,
+            ordering: 0,
+            parentId: secondPage,
+            group: TestDataFactory.makeGroupInfo(title: "Empty")
+        ))
+        return (
+            storage,
+            MultiPageEmptyFolderIDs(
+                firstPage: firstPage,
+                secondPage: secondPage,
+                before: before,
+                after: after,
+                folder: folder
             ),
             script
         )
@@ -1117,6 +1180,43 @@ extension StorageManagerLayoutMutationTests {
         #expect(snapshot.flattenedTopLevelIDs == [ids.before, ids.after])
         #expect(snapshot.allItems.contains { $0.id == ids.folder } == false)
         expectDenseCompleteSnapshot(snapshot, nonPageIDs: [ids.before, ids.after])
+    }
+
+    @Test("多页末页 empty folder 删除后安全缩为一页")
+    func deleteEmptyFolderAcrossPagesDeletesFolderBeforeObsoletePage() throws {
+        let (sut, ids, _) = try makeMultiPageEmptyFolderLayout()
+
+        try sut.apply(.deleteFolder(folderID: ids.folder), pageCapacity: 2)
+
+        let snapshot = try sut.persistedLayoutSnapshot()
+        #expect(snapshot.pages.map(\.id) == [ids.firstPage])
+        #expect(snapshot.flattenedTopLevelIDs == [ids.before, ids.after])
+        #expect(snapshot.allItems.map(\.id) == [
+            ids.firstPage, ids.before, ids.after,
+        ])
+        #expect(snapshot.allItems.contains { $0.id == ids.secondPage } == false)
+        #expect(snapshot.allItems.contains { $0.id == ids.folder } == false)
+        expectDenseCompleteSnapshot(snapshot, nonPageIDs: [ids.before, ids.after])
+    }
+
+    @Test(
+        "empty folder 先删成功后 obsolete page delete fault 完整回滚",
+        arguments: DeleteStatementFault.allCases
+    )
+    func emptyFolderDeleteThenObsoletePageFaultRollsBack(
+        _ fault: DeleteStatementFault
+    ) throws {
+        let (sut, ids, script) = try makeMultiPageEmptyFolderLayout()
+        let before = try sut.persistedLayoutSnapshot()
+        script.fail(fault.point, onOccurrence: 2, code: fault.code)
+
+        #expect(throws: fault.expectedError) {
+            try sut.apply(.deleteFolder(folderID: ids.folder), pageCapacity: 2)
+        }
+
+        #expect(script.invocationCount(for: fault.point) == 2)
+        #expect(script.invocationCount(for: .changes(.deleteLayoutItem)) >= 1)
+        #expect(try sut.persistedLayoutSnapshot() == before)
     }
 
     @Test("safe delete 按原位展开 children 且 overflow 创建新页")
