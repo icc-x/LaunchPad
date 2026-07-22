@@ -7,6 +7,39 @@ import LaunchPadProtocols
 @MainActor
 struct ProtocolTests {
 
+    @Test("layout mutator 记录稳定 intent 与容量")
+    func layoutMutatorRecordsIntentAndCapacity() throws {
+        let sut = MockLayoutMutator()
+        let intent = LayoutDropIntent.moveTopLevel(
+            itemID: 8,
+            placement: .beforeItem(itemID: 3)
+        )
+        try sut.apply(intent, pageCapacity: 35)
+        #expect(sut.appliedIntents == [intent])
+        #expect(sut.appliedPageCapacities == [35])
+    }
+
+    @Test("item placement 暴露稳定 anchor ID")
+    func placementAnchorID() {
+        #expect(ItemPlacement.beforeItem(itemID: 4).anchorItemID == 4)
+        #expect(ItemPlacement.afterItem(itemID: 9).anchorItemID == 9)
+    }
+
+    @Test("layout mutator 错误不记录未提交 intent")
+    func layoutMutatorFailureDoesNotRecordIntent() {
+        let sut = MockLayoutMutator()
+        sut.applyError = TestError.generic
+
+        #expect(throws: TestError.self) {
+            try sut.apply(
+                .deleteFolder(folderID: 7),
+                pageCapacity: 35
+            )
+        }
+        #expect(sut.appliedIntents.isEmpty)
+        #expect(sut.appliedPageCapacities.isEmpty)
+    }
+
     @Test("MockItemReader 遵循 ItemReading")
     func mockItemReader_conformsToItemReading() {
         let reader = MockItemReader()

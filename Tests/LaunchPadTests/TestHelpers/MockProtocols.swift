@@ -60,6 +60,20 @@ final class MockItemWriter: ItemWriting, @unchecked Sendable {
     }
 }
 
+// MARK: - MockLayoutMutator
+
+final class MockLayoutMutator: LayoutMutating, @unchecked Sendable {
+    private(set) var appliedIntents: [LayoutDropIntent] = []
+    private(set) var appliedPageCapacities: [Int] = []
+    var applyError: Error?
+
+    func apply(_ intent: LayoutDropIntent, pageCapacity: Int) throws {
+        if let applyError { throw applyError }
+        appliedIntents.append(intent)
+        appliedPageCapacities.append(pageCapacity)
+    }
+}
+
 // MARK: - MockImageStoring
 
 final class MockImageStore: ImageStoring, @unchecked Sendable {

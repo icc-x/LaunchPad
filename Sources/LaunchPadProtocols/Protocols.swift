@@ -20,6 +20,12 @@ public protocol ItemWriting: Sendable {
     func reorderItems(parentId: Int64, orderedIds: [Int64]) throws
 }
 
+/// Applies one stable layout mutation with the current page capacity.
+public protocol LayoutMutating: Sendable {
+    /// Applies the requested mutation using the supplied page capacity.
+    func apply(_ intent: LayoutDropIntent, pageCapacity: Int) throws
+}
+
 // MARK: - 图标存储协议
 
 /// IconCache 专用 — 磁盘层读写
