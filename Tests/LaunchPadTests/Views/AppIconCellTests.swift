@@ -18,7 +18,8 @@ struct AppIconCellTests {
 
     @Test func init_loadsView() {
         let cell = makeSUT()
-        #expect(cell.view != nil)
+        #expect(cell.view.subviews.count == 2)
+        #expect(cell.view.accessibilityRole() == .button)
     }
 
     @Test func identifier_isCorrect() {
@@ -301,6 +302,22 @@ struct AppIconCellTests {
     @Test func deleteButtonClicked_withoutCallback_doesNotCrash() {
         let cell = makeSUT()
         cell.perform(NSSelectorFromString("deleteButtonClicked"))
+    }
+
+    @Test("AppIconCell 重新配置 96pt 时同步两个尺寸约束")
+    func appIconCellReconfiguresBothConstraints() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
+        cell.configure(
+            item: TestDataFactory.makePageItem(id: 1),
+            icon: NSImage(size: NSSize(width: 64, height: 64)),
+            iconSize: 96
+        )
+        #expect(cell.configuredIconSize == 96)
+        #expect(
+            cell.configuredIconConstraintSize
+                == CGSize(width: 96, height: 96)
+        )
     }
 }
 #endif

@@ -2,7 +2,7 @@
 
 | Old discovery ID | New discovery ID | Assertion equivalence/strengthening | Actor | Fixture | Cleanup |
 |---|---|---|---|---|---|
-| `LaunchPadTests.AppIconCellTests/testInit_loadsView` | `LaunchPadTests.AppIconCellTests/init_loadsView()` | `XCTAssertNotNil` -> `#expect` | MainActor suite | Fresh cell/local center | None |
+| `LaunchPadTests.AppIconCellTests/testInit_loadsView` | `LaunchPadTests.AppIconCellTests/init_loadsView()` | Strengthened to exact root hierarchy and accessibility role | MainActor suite | Fresh cell/local center | None |
 | `LaunchPadTests.AppIconCellTests/testIdentifier_isCorrect` | `LaunchPadTests.AppIconCellTests/identifier_isCorrect()` | Exact equality | MainActor suite | Fresh cell/local center | None |
 | `LaunchPadTests.AppIconCellTests/testConfigure_appItem_setsTitle` | `LaunchPadTests.AppIconCellTests/configure_appItem_setsTitle()` | Exact accessibility label | MainActor suite | Fresh cell/local center | `defer prepareForReuse` |
 | `LaunchPadTests.AppIconCellTests/testConfigure_groupItem_setsTitle` | `LaunchPadTests.AppIconCellTests/configure_groupItem_setsTitle()` | Exact accessibility label | MainActor suite | Fresh cell/local center | `defer prepareForReuse` |
@@ -28,7 +28,7 @@
 | `LaunchPadTests.AppIconCellTests/testAccessibilityRole_isButton` | `LaunchPadTests.AppIconCellTests/accessibilityRole_isButton()` | Exact role equality | MainActor suite | Fresh cell/local center | None |
 | `LaunchPadTests.AppIconCellTests/testDeleteButtonClicked_triggersOnDelete` | `LaunchPadTests.AppIconCellTests/deleteButtonClicked_triggersOnDelete()` | Exact callback state | MainActor suite | Fresh cell/local center | None |
 | `LaunchPadTests.AppIconCellTests/testDeleteButtonClicked_withoutCallback_doesNotCrash` | `LaunchPadTests.AppIconCellTests/deleteButtonClicked_withoutCallback_doesNotCrash()` | Preserved nil-callback path | MainActor suite | Fresh cell/local center | None |
-| `LaunchPadTests.FolderCellTests/testInit_loadsView` | `LaunchPadTests.FolderCellTests/init_loadsView()` | `XCTAssertNotNil` -> `#expect` | MainActor suite | Fresh cell | None |
+| `LaunchPadTests.FolderCellTests/testInit_loadsView` | `LaunchPadTests.FolderCellTests/init_loadsView()` | Strengthened to exact root hierarchy and accessibility role | MainActor suite | Fresh cell | None |
 | `LaunchPadTests.FolderCellTests/testIdentifier_isCorrect` | `LaunchPadTests.FolderCellTests/identifier_isCorrect()` | Exact equality | MainActor suite | Fresh cell | None |
 | `LaunchPadTests.FolderCellTests/testConfigure_setsTitle` | `LaunchPadTests.FolderCellTests/configure_setsTitle()` | Exact accessibility label | MainActor suite | Fresh group cell | None |
 | `LaunchPadTests.FolderCellTests/testConfigure_withChildIcons_populatesThumbnails` | `LaunchPadTests.FolderCellTests/configure_withChildIcons_populatesThumbnails()` | Preserved four-icon path | MainActor suite | Fresh group cell/images | None |
@@ -47,7 +47,7 @@
 | `LaunchPadTests.FolderCellTests/testControlTextDidEndEditing_emptyTitle_doesNotCallOnRenamed` | `LaunchPadTests.FolderCellTests/controlTextDidEndEditing_emptyTitle_doesNotCallOnRenamed()` | Exact nil callback result | MainActor suite | Fresh cell/spaces | None |
 | `LaunchPadTests.FolderCellTests/testControlTextDidEndEditing_whitespaceTitle_doesNotCallOnRenamed` | `LaunchPadTests.FolderCellTests/controlTextDidEndEditing_whitespaceTitle_doesNotCallOnRenamed()` | Exact nil callback result | MainActor suite | Fresh cell/newline-tab | None |
 | `LaunchPadTests.FolderCellTests/testConfigure_nilGroup_usesDefaultTitle` | `LaunchPadTests.FolderCellTests/configure_nilGroup_usesDefaultTitle()` | Exact fallback title | MainActor suite | Fresh cell/nil group | None |
-| `LaunchPadTests.FolderCellTests/testConfigure_twice_removesExistingSubviews` | `LaunchPadTests.FolderCellTests/configure_twice_removesExistingSubviews()` | Preserved repeated configure path | MainActor suite | Fresh cell/four images | None |
+| `LaunchPadTests.FolderCellTests/testConfigure_twice_removesExistingSubviews` | `LaunchPadTests.FolderCellTests/configure_twice_removesExistingSubviews()` | Strengthened to repeated-configure label and nine-frame state | MainActor suite | Fresh cell/four images | None |
 | `LaunchPadTests.AppGridCollectionViewTests/testInit_frame_doesNotCrash` | `LaunchPadTests.AppGridCollectionViewTests/init_frame_doesNotCrash()` | Equivalent `#expect` assertions | MainActor suite | Fresh SUT/injected dependencies | Per-test ownership |
 | `LaunchPadTests.AppGridCollectionViewTests/testInit_coder_doesNotCrash` | `LaunchPadTests.AppGridCollectionViewTests/init_coder_doesNotCrash()` | Equivalent `#expect` assertions | MainActor suite | Fresh SUT/injected dependencies | Per-test ownership |
 | `LaunchPadTests.AppGridCollectionViewTests/testConfigure_setsIconCache` | `LaunchPadTests.AppGridCollectionViewTests/configure_setsIconCache()` | Equivalent `#expect` assertions | MainActor suite | Fresh SUT/injected dependencies | Per-test ownership |

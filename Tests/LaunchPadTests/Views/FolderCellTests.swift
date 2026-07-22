@@ -24,7 +24,8 @@ struct FolderCellTests {
 
     @Test func init_loadsView() {
         let cell = makeSUT()
-        #expect(cell.view != nil)
+        #expect(cell.view.subviews.count == 2)
+        #expect(cell.view.accessibilityRole() == .button)
     }
 
     @Test func identifier_isCorrect() {
@@ -206,7 +207,49 @@ struct FolderCellTests {
         let group = makeGroup()
         cell.configure(item: group, childIcons: icons)
         cell.configure(item: group, childIcons: icons)
-        #expect(cell.view != nil)
+        #expect(cell.view.accessibilityLabel() == "Folder")
+        #expect(cell.configuredThumbnailFrames.count == 9)
+    }
+
+    @Test("FolderCell 重新配置 96pt 时同步九个缩略图及位置")
+    func folderCellReconfiguresEntireThumbnailGrid() {
+        let cell = makeSUT()
+        cell.configure(
+            item: TestDataFactory.makePageItem(
+                id: 2,
+                type: .group,
+                group: TestDataFactory.makeGroupInfo(id: 2)
+            ),
+            childIcons: [],
+            iconSize: 96
+        )
+        #expect(cell.configuredIconSize == 96)
+        #expect(
+            cell.configuredThumbnailGridSize
+                == CGSize(width: 96, height: 96)
+        )
+        cell.view.layoutSubtreeIfNeeded()
+        let frames = cell.configuredThumbnailFrames
+        let bounds = cell.configuredThumbnailGridBounds
+        let bottomConstants = cell.configuredThumbnailBottomConstants
+        #expect(frames.count == 9)
+        #expect(frames.allSatisfy { bounds.contains($0) })
+        #expect(frames.filter { $0.minY > 0 }.count == 6)
+        #expect(bottomConstants.count == 9)
+        #expect(bottomConstants.suffix(3).allSatisfy { $0 == 0 })
+        #expect(bottomConstants.prefix(6).allSatisfy { $0 < 0 })
+        let thumbnailSize = (CGFloat(96) - 2 * CGFloat(2)) / 3
+        for (index, constant) in bottomConstants.enumerated() {
+            let rowFromBottom = 2 - index / 3
+            let expectedInset = CGFloat(rowFromBottom) * (thumbnailSize + 2)
+            #expect(abs(-constant - expectedInset) <= 0.001)
+        }
+        for first in frames.indices {
+            for second in frames.indices where first < second {
+                #expect(frames[first].origin != frames[second].origin)
+                #expect(!frames[first].intersects(frames[second]))
+            }
+        }
     }
 }
 #endif

@@ -18,6 +18,13 @@ public class AppIconCell: NSCollectionViewItem {
     private var currentBundleId: String?
     private var iconWidthConstraint: NSLayoutConstraint?
     private var iconHeightConstraint: NSLayoutConstraint?
+    private(set) var configuredIconSize: CGFloat = 64
+    var configuredIconConstraintSize: CGSize {
+        CGSize(
+            width: iconWidthConstraint?.constant ?? 0,
+            height: iconHeightConstraint?.constant ?? 0
+        )
+    }
     private var workspaceObservers: [NSObjectProtocol] = []
 
     /// 删除按钮点击回调
@@ -200,14 +207,14 @@ public class AppIconCell: NSCollectionViewItem {
     // MARK: - Configuration
 
     public func configure(item: PageItem, icon: NSImage?, iconSize: CGFloat = 64) {
+        configuredIconSize = iconSize
+        iconWidthConstraint?.constant = iconSize
+        iconHeightConstraint?.constant = iconSize
+
         let title = item.app?.title ?? item.group?.title ?? ""
         titleLabel.stringValue = title
         iconImageView.image = icon ?? NSImage(named: NSImage.applicationIconName)
         view.setAccessibilityLabel(title)
-
-        // 动态更新图标尺寸
-        iconWidthConstraint?.constant = iconSize
-        iconHeightConstraint?.constant = iconSize
 
         currentBundleId = item.app?.bundleId
         updateRunningState()

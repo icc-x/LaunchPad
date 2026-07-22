@@ -22,8 +22,31 @@ public class FolderCell: NSCollectionViewItem {
     internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
 
     private static let gridSize = 3
-    private static let thumbnailSize: CGFloat = 20
     private static let thumbnailSpacing: CGFloat = 2
+    private var thumbnailGridWidthConstraint: NSLayoutConstraint?
+    private var thumbnailGridHeightConstraint: NSLayoutConstraint?
+    private var thumbnailSizeConstraints: [NSLayoutConstraint] = []
+    private var thumbnailLeadingConstraints: [(NSLayoutConstraint, column: Int)] = []
+    private var thumbnailBottomConstraints: [(NSLayoutConstraint, rowFromBottom: Int)] = []
+    private(set) var configuredIconSize: CGFloat = 64
+    var configuredThumbnailGridSize: CGSize {
+        CGSize(
+            width: thumbnailGridWidthConstraint?.constant ?? 0,
+            height: thumbnailGridHeightConstraint?.constant ?? 0
+        )
+    }
+    var configuredThumbnailSizes: [CGFloat] {
+        thumbnailSizeConstraints.map(\.constant)
+    }
+    var configuredThumbnailBottomConstants: [CGFloat] {
+        thumbnailBottomConstraints.map { $0.0.constant }
+    }
+    var configuredThumbnailFrames: [CGRect] {
+        thumbnailImageViews.map(\.frame)
+    }
+    var configuredThumbnailGridBounds: CGRect {
+        thumbnailGrid.bounds
+    }
 
     // MARK: - Lifecycle
 
@@ -59,12 +82,20 @@ public class FolderCell: NSCollectionViewItem {
             containerView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             containerView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
             containerView.bottomAnchor.constraint(equalTo: view.bottomAnchor),
+        ])
 
+        let gridWidth = thumbnailGrid.widthAnchor.constraint(equalToConstant: 64)
+        let gridHeight = thumbnailGrid.heightAnchor.constraint(equalToConstant: 64)
+        thumbnailGridWidthConstraint = gridWidth
+        thumbnailGridHeightConstraint = gridHeight
+        NSLayoutConstraint.activate([
             thumbnailGrid.topAnchor.constraint(equalTo: containerView.topAnchor, constant: 8),
             thumbnailGrid.centerXAnchor.constraint(equalTo: containerView.centerXAnchor),
-            thumbnailGrid.widthAnchor.constraint(equalToConstant: Self.gridTotalSize),
-            thumbnailGrid.heightAnchor.constraint(equalToConstant: Self.gridTotalSize),
+            gridWidth,
+            gridHeight,
+        ])
 
+        NSLayoutConstraint.activate([
             titleLabel.topAnchor.constraint(equalTo: thumbnailGrid.bottomAnchor, constant: 4),
             titleLabel.leadingAnchor.constraint(equalTo: containerView.leadingAnchor, constant: 2),
             titleLabel.trailingAnchor.constraint(equalTo: containerView.trailingAnchor, constant: -2),
@@ -91,39 +122,64 @@ public class FolderCell: NSCollectionViewItem {
         view.setAccessibilityRole(.button)
     }
 
-    private static var gridTotalSize: CGFloat {
-        CGFloat(gridSize) * thumbnailSize + CGFloat(gridSize - 1) * thumbnailSpacing
-    }
-
     private func setupThumbnailGrid() {
         thumbnailImageViews.removeAll()
+        thumbnailSizeConstraints.removeAll()
+        thumbnailLeadingConstraints.removeAll()
+        thumbnailBottomConstraints.removeAll()
         thumbnailGrid.subviews.forEach { $0.removeFromSuperview() }
+        let thumbnailSize = (CGFloat(64) - 2 * Self.thumbnailSpacing) / 3
 
         for row in 0..<Self.gridSize {
-            for col in 0..<Self.gridSize {
+            for column in 0..<Self.gridSize {
                 let imageView = NSImageView()
                 imageView.imageScaling = .scaleProportionallyUpOrDown
                 imageView.translatesAutoresizingMaskIntoConstraints = false
                 thumbnailGrid.addSubview(imageView)
-
-                let x = CGFloat(col) * (Self.thumbnailSize + Self.thumbnailSpacing)
-                let y = CGFloat(Self.gridSize - 1 - row) * (Self.thumbnailSize + Self.thumbnailSpacing)
-
-                NSLayoutConstraint.activate([
-                    imageView.leadingAnchor.constraint(equalTo: thumbnailGrid.leadingAnchor, constant: x),
-                    imageView.bottomAnchor.constraint(equalTo: thumbnailGrid.bottomAnchor, constant: -y),
-                    imageView.widthAnchor.constraint(equalToConstant: Self.thumbnailSize),
-                    imageView.heightAnchor.constraint(equalToConstant: Self.thumbnailSize),
-                ])
-
+                let rowFromBottom = Self.gridSize - 1 - row
+                let leading = imageView.leadingAnchor.constraint(
+                    equalTo: thumbnailGrid.leadingAnchor,
+                    constant: CGFloat(column) * (thumbnailSize + Self.thumbnailSpacing)
+                )
+                let bottomInset = CGFloat(rowFromBottom)
+                    * (thumbnailSize + Self.thumbnailSpacing)
+                let bottom = imageView.bottomAnchor.constraint(
+                    equalTo: thumbnailGrid.bottomAnchor,
+                    constant: -bottomInset
+                )
+                let width = imageView.widthAnchor.constraint(equalToConstant: thumbnailSize)
+                let height = imageView.heightAnchor.constraint(equalToConstant: thumbnailSize)
+                NSLayoutConstraint.activate([leading, bottom, width, height])
                 thumbnailImageViews.append(imageView)
+                thumbnailSizeConstraints.append(contentsOf: [width, height])
+                thumbnailLeadingConstraints.append((leading, column))
+                thumbnailBottomConstraints.append((bottom, rowFromBottom))
             }
         }
     }
 
     // MARK: - Configuration
 
-    public func configure(item: PageItem, childIcons: [NSImage]) {
+    public func configure(
+        item: PageItem,
+        childIcons: [NSImage],
+        iconSize: CGFloat = 64
+    ) {
+        let thumbnailSpacing: CGFloat = 2
+        let thumbnailSize = max(0, (iconSize - 2 * thumbnailSpacing) / 3)
+        configuredIconSize = iconSize
+        thumbnailGridWidthConstraint?.constant = iconSize
+        thumbnailGridHeightConstraint?.constant = iconSize
+        thumbnailSizeConstraints.forEach { $0.constant = thumbnailSize }
+        thumbnailLeadingConstraints.forEach { constraint, column in
+            constraint.constant = CGFloat(column) * (thumbnailSize + thumbnailSpacing)
+        }
+        thumbnailBottomConstraints.forEach { constraint, rowFromBottom in
+            let bottomInset = CGFloat(rowFromBottom)
+                * (thumbnailSize + thumbnailSpacing)
+            constraint.constant = -bottomInset
+        }
+
         let title = item.group?.title ?? "Folder"
         titleLabel.stringValue = title
         view.setAccessibilityLabel(title)
