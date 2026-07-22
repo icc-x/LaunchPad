@@ -1,235 +1,212 @@
-import XCTest
+import Testing
 @testable import LaunchPad
 @testable import LaunchPadProtocols
 
 #if canImport(AppKit)
 import AppKit
 
-/// Tests for FolderCell (0% → target 80%+)
-@MainActor
-final class FolderCellTests: XCTestCase {
-
-    private var cell: FolderCell!
-
-    /// UserDefaults key backing `AccessibilitySettings.increaseContrast`.
-    private let contrastKey = "com.apple.universalaccess.highContrast"
-
-    override func setUp() {
-        super.setUp()
-        cell = FolderCell()
-        // Force loadView by accessing view
+@MainActor @Suite("FolderCell")
+struct FolderCellTests {
+    private func makeSUT() -> FolderCell {
+        let cell = FolderCell()
         _ = cell.view
+        return cell
     }
 
-    override func tearDown() {
-        // 恢复系统 Increase Contrast 默认值（关闭），避免污染其他测试
-        UserDefaults.standard.set(false, forKey: contrastKey)
-        cell = nil
-        super.tearDown()
-    }
-
-    // MARK: - Init
-
-    func testInit_loadsView() {
-        XCTAssertNotNil(cell.view)
-    }
-
-    func testIdentifier_isCorrect() {
-        XCTAssertEqual(FolderCell.identifier, NSUserInterfaceItemIdentifier("FolderCell"))
-    }
-
-    // MARK: - Configure
-
-    func testConfigure_setsTitle() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Utilities")
+    private func makeGroup(id: Int64 = 1, title: String = "Folder") -> PageItem {
+        TestDataFactory.makePageItem(
+            id: id,
+            type: .group,
+            ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: id, title: title)
         )
-        cell.configure(item: group, childIcons: [])
-        XCTAssertEqual(cell.view.accessibilityLabel(), "Utilities")
     }
 
-    func testConfigure_withChildIcons_populatesThumbnails() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        let icons = (0..<4).map { _ in NSImage(size: NSSize(width: 64, height: 64)) }
-        cell.configure(item: group, childIcons: icons)
-        // Should not crash; 4 thumbnails populated
+    @Test func init_loadsView() {
+        let cell = makeSUT()
+        #expect(cell.view != nil)
     }
 
-    func testConfigure_withNoChildIcons_showsEmptyGrid() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Empty Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        // Should not crash
+    @Test func identifier_isCorrect() {
+        let cell = makeSUT()
+        #expect(type(of: cell).identifier == NSUserInterfaceItemIdentifier("FolderCell"))
     }
 
-    func testConfigure_withMoreThan9Icons_usesOnlyFirst9() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Big Folder")
-        )
-        let icons = (0..<15).map { _ in NSImage(size: NSSize(width: 64, height: 64)) }
-        cell.configure(item: group, childIcons: icons)
-        // Should only use first 9
+    @Test func configure_setsTitle() {
+        let cell = makeSUT()
+        cell.configure(item: makeGroup(title: "Utilities"), childIcons: [])
+        #expect(cell.view.accessibilityLabel() == "Utilities")
     }
 
-    // MARK: - Increase Contrast
-
-    func testConfigure_increaseContrast_addsBorder() {
-        UserDefaults.standard.set(true, forKey: contrastKey)
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        XCTAssertEqual(cell.containerView.layer?.borderWidth, 1)
-    }
-
-    func testConfigure_increaseContrast_usesSemiboldFont() {
-        UserDefaults.standard.set(true, forKey: contrastKey)
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        let expected = NSFont.systemFont(ofSize: 11, weight: .semibold).fontDescriptor
-        XCTAssertEqual(cell.titleLabel.font?.fontDescriptor, expected)
-    }
-
-    func testConfigure_normalContrast_noBorder() {
-        UserDefaults.standard.set(false, forKey: contrastKey)
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        XCTAssertEqual(cell.containerView.layer?.borderWidth, 0)
-    }
-
-    // MARK: - Reduce Transparency (回归)
-
-    func testConfigure_reduceTransparency_changesMaterial() {
-        let settings = AccessibilitySettings.current()
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        // reduceTransparency 来自系统，不可在测试中强制；按当前系统值断言对应分支
-        if settings.reduceTransparency {
-            XCTAssertEqual(cell.frostedBackground.material, .menu)
-            XCTAssertEqual(cell.frostedBackground.state, .inactive)
-        } else {
-            XCTAssertEqual(cell.frostedBackground.material, .hudWindow)
-            XCTAssertEqual(cell.frostedBackground.state, .active)
+    @Test func configure_withChildIcons_populatesThumbnails() {
+        let cell = makeSUT()
+        let icons = (0..<4).map { _ in
+            NSImage(size: NSSize(width: 64, height: 64))
         }
+        cell.configure(item: makeGroup(), childIcons: icons)
     }
 
-    func testConfigure_reduceTransparency_provider_changesMaterial() {
-        // 通过注入 accessibilitySettingsProvider 确定性触发 reduceTransparency 回退分支
+    @Test func configure_withNoChildIcons_showsEmptyGrid() {
+        let cell = makeSUT()
+        cell.configure(item: makeGroup(title: "Empty Folder"), childIcons: [])
+    }
+
+    @Test func configure_withMoreThan9Icons_usesOnlyFirst9() {
+        let cell = makeSUT()
+        let icons = (0..<15).map { _ in
+            NSImage(size: NSSize(width: 64, height: 64))
+        }
+        cell.configure(item: makeGroup(title: "Big Folder"), childIcons: icons)
+    }
+
+    @Test func configure_increaseContrast_addsBorder() {
+        let cell = makeSUT()
         cell.accessibilitySettingsProvider = {
-            AccessibilitySettings(reduceMotion: false, reduceTransparency: true, increaseContrast: false)
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: true
+            )
         }
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
-        )
-        cell.configure(item: group, childIcons: [])
-        XCTAssertEqual(cell.frostedBackground.material, .menu)
-        XCTAssertEqual(cell.frostedBackground.state, .inactive)
+        cell.configure(item: makeGroup(), childIcons: [])
+        #expect(cell.containerView.layer?.borderWidth == 1)
     }
 
-    // MARK: - Rename
-
-    func testOnRenamed_callbackIsSettable() {
-        var receivedTitle: String?
-        cell.onRenamed = { title in receivedTitle = title }
-        XCTAssertNotNil(cell.onRenamed)
+    @Test func configure_increaseContrast_usesSemiboldFont() {
+        let cell = makeSUT()
+        cell.accessibilitySettingsProvider = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: true
+            )
+        }
+        cell.configure(item: makeGroup(), childIcons: [])
+        let expected = NSFont.systemFont(
+            ofSize: 11, weight: .semibold
+        ).fontDescriptor
+        #expect(cell.titleLabel.font?.fontDescriptor == expected)
     }
 
-    // MARK: - Prepare for Reuse
+    @Test func configure_normalContrast_noBorder() {
+        let cell = makeSUT()
+        cell.accessibilitySettingsProvider = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
+        cell.configure(item: makeGroup(), childIcons: [])
+        #expect(cell.containerView.layer?.borderWidth == 0)
+    }
 
-    func testPrepareForReuse_resetsState() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+    @Test func configure_reduceTransparency_changesMaterial() {
+        let cell = makeSUT()
+        let settings = AccessibilitySettings.current()
+        cell.accessibilitySettingsProvider = { settings }
+        cell.configure(item: makeGroup(), childIcons: [])
+        if settings.reduceTransparency {
+            #expect(cell.frostedBackground.material == .menu)
+            #expect(cell.frostedBackground.state == .inactive)
+        } else {
+            #expect(cell.frostedBackground.material == .hudWindow)
+            #expect(cell.frostedBackground.state == .active)
+        }
+    }
+
+    @Test func configure_reduceTransparency_provider_changesMaterial() {
+        let cell = makeSUT()
+        cell.accessibilitySettingsProvider = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: true,
+                increaseContrast: false
+            )
+        }
+        cell.configure(item: makeGroup(), childIcons: [])
+        #expect(cell.frostedBackground.material == .menu)
+        #expect(cell.frostedBackground.state == .inactive)
+    }
+
+    @Test func onRenamed_callbackIsSettable() {
+        let cell = makeSUT()
+        cell.onRenamed = { _ in }
+        #expect(cell.onRenamed != nil)
+    }
+
+    @Test func prepareForReuse_resetsState() {
+        let cell = makeSUT()
+        cell.configure(
+            item: makeGroup(),
+            childIcons: [NSImage(size: NSSize(width: 64, height: 64))]
         )
-        cell.configure(item: group, childIcons: [NSImage(size: NSSize(width: 64, height: 64))])
         cell.prepareForReuse()
-        // Verify reuse doesn't crash and cell can be reconfigured
-        let group2 = TestDataFactory.makePageItem(
-            id: 2, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 2, title: "New Folder")
-        )
-        cell.configure(item: group2, childIcons: [])
+        cell.configure(item: makeGroup(id: 2, title: "New Folder"), childIcons: [])
     }
 
-    // MARK: - Accessibility
-
-    func testAccessibilityRole_isButton() {
-        XCTAssertEqual(cell.view.accessibilityRole(), .button)
+    @Test func accessibilityRole_isButton() {
+        let cell = makeSUT()
+        #expect(cell.view.accessibilityRole() == .button)
     }
 
-    // MARK: - Double-click editing
-
-    func testHandleDoubleClick_entersEditMode() {
-        // Invoke the private @objc method via perform
+    @Test func handleDoubleClick_entersEditMode() {
+        let cell = makeSUT()
         cell.perform(NSSelectorFromString("handleDoubleClick"))
-        // Should not crash; titleLabel.isEditable should be true
-        XCTAssertTrue(cell.titleLabel.isEditable)
+        #expect(cell.titleLabel.isEditable)
     }
 
-    // MARK: - controlTextDidEndEditing
-
-    func testControlTextDidEndEditing_validTitle_callsOnRenamed() {
+    @Test func controlTextDidEndEditing_validTitle_callsOnRenamed() {
+        let cell = makeSUT()
         var receivedTitle: String?
-        cell.onRenamed = { title in receivedTitle = title }
+        cell.onRenamed = { receivedTitle = $0 }
         cell.titleLabel.stringValue = "New Folder Name"
-        cell.controlTextDidEndEditing(Notification(name: NSTextField.textDidEndEditingNotification))
-        XCTAssertEqual(receivedTitle, "New Folder Name")
-    }
-
-    func testControlTextDidEndEditing_emptyTitle_doesNotCallOnRenamed() {
-        var receivedTitle: String?
-        cell.onRenamed = { title in receivedTitle = title }
-        cell.titleLabel.stringValue = "   "
-        cell.controlTextDidEndEditing(Notification(name: NSTextField.textDidEndEditingNotification))
-        XCTAssertNil(receivedTitle)
-    }
-
-    func testControlTextDidEndEditing_whitespaceTitle_doesNotCallOnRenamed() {
-        var receivedTitle: String?
-        cell.onRenamed = { title in receivedTitle = title }
-        cell.titleLabel.stringValue = "\n\t"
-        cell.controlTextDidEndEditing(Notification(name: NSTextField.textDidEndEditingNotification))
-        XCTAssertNil(receivedTitle)
-    }
-
-    // MARK: - configure with nil group (covers ?? \"Folder\" fallback)
-
-    func testConfigure_nilGroup_usesDefaultTitle() {
-        let item = TestDataFactory.makePageItem(id: 1, type: .group, ordering: 0, group: nil)
-        cell.configure(item: item, childIcons: [])
-        XCTAssertEqual(cell.view.accessibilityLabel(), "Folder")
-    }
-
-    // MARK: - setupThumbnailGrid with existing subviews (covers forEach closure)
-
-    func testConfigure_twice_removesExistingSubviews() {
-        let group = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0,
-            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        cell.controlTextDidEndEditing(
+            Notification(name: NSTextField.textDidEndEditingNotification)
         )
-        let icons = (0..<4).map { _ in NSImage(size: NSSize(width: 64, height: 64)) }
+        #expect(receivedTitle == "New Folder Name")
+    }
+
+    @Test func controlTextDidEndEditing_emptyTitle_doesNotCallOnRenamed() {
+        let cell = makeSUT()
+        var receivedTitle: String?
+        cell.onRenamed = { receivedTitle = $0 }
+        cell.titleLabel.stringValue = "   "
+        cell.controlTextDidEndEditing(
+            Notification(name: NSTextField.textDidEndEditingNotification)
+        )
+        #expect(receivedTitle == nil)
+    }
+
+    @Test func controlTextDidEndEditing_whitespaceTitle_doesNotCallOnRenamed() {
+        let cell = makeSUT()
+        var receivedTitle: String?
+        cell.onRenamed = { receivedTitle = $0 }
+        cell.titleLabel.stringValue = "\n\t"
+        cell.controlTextDidEndEditing(
+            Notification(name: NSTextField.textDidEndEditingNotification)
+        )
+        #expect(receivedTitle == nil)
+    }
+
+    @Test func configure_nilGroup_usesDefaultTitle() {
+        let cell = makeSUT()
+        let item = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0, group: nil
+        )
+        cell.configure(item: item, childIcons: [])
+        #expect(cell.view.accessibilityLabel() == "Folder")
+    }
+
+    @Test func configure_twice_removesExistingSubviews() {
+        let cell = makeSUT()
+        let icons = (0..<4).map { _ in
+            NSImage(size: NSSize(width: 64, height: 64))
+        }
+        let group = makeGroup()
         cell.configure(item: group, childIcons: icons)
-        // 二次 configure 触发 setupThumbnailGrid 内 forEach removeFromSuperview
         cell.configure(item: group, childIcons: icons)
-        XCTAssertNotNil(cell.view)
+        #expect(cell.view != nil)
     }
 }
 #endif
