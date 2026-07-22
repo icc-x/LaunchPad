@@ -66,6 +66,9 @@ struct AppDelegateTests {
     /// 创建一个所有危险系统调用都被替换为安全实现的 AppDelegate
     private func makeDelegate() -> AppDelegate {
         let sut = AppDelegate()
+        let databasePath = "/tmp/launchpad-appdelegate-\(UUID().uuidString).sqlite3"
+        sut.databasePathProvider = { databasePath }
+        sut.databaseRemover = { _ in }
         let hotkeyManager = makeIsolatedHotkeyManager()
         sut.activationPolicySetter = { _ in }
         sut.appTerminator = {}
@@ -246,29 +249,84 @@ struct AppDelegateTests {
     @Test("setupServices：数据库损坏后删除并重建成功")
     func setupServices_corruptionRecovery() throws {
         let sut = makeDelegate()
+        let safePath = sut.databasePathProvider()
         var attempts = 0
-        sut.storageFactory = { _ in
+        var factoryPaths: [String] = []
+        var handlerPaths: [String] = []
+        var removedPaths: [String] = []
+        sut.storageFactory = { path in
             attempts += 1
+            factoryPaths.append(path)
             if attempts == 1 { throw NSError(domain: "db", code: 1) }
             return try StorageManager(dbPath: ":memory:")
         }
-        sut.corruptionHandler = { _ in .deleteAndRescan }
+        sut.corruptionHandler = { path in
+            handlerPaths.append(path)
+            return .deleteAndRescan
+        }
+        sut.databaseRemover = { removedPaths.append($0) }
 
         sut.setupServices()
 
         #expect(attempts == 2)
+        #expect(factoryPaths == [safePath, safePath])
+        #expect(handlerPaths == [safePath])
+        #expect(removedPaths == [safePath])
         #expect(sut.storage != nil)
     }
 
     @Test("setupServices：损坏且非重建策略时放弃启动")
-    func setupServices_fatal() throws {
+    func setupServices_nonDeleteStrategyDoesNotRemoveOrRetry() throws {
         let sut = makeDelegate()
-        sut.storageFactory = { _ in throw NSError(domain: "db", code: 2) }
-        sut.corruptionHandler = { _ in .healthy }
+        let safePath = sut.databasePathProvider()
+        var factoryPaths: [String] = []
+        var handlerPaths: [String] = []
+        var removedPaths: [String] = []
+        sut.storageFactory = { path in
+            factoryPaths.append(path)
+            throw NSError(domain: "db", code: 2)
+        }
+        sut.corruptionHandler = { path in
+            handlerPaths.append(path)
+            return .healthy
+        }
+        sut.databaseRemover = { removedPaths.append($0) }
 
         sut.setupServices()
 
+        #expect(factoryPaths == [safePath])
+        #expect(handlerPaths == [safePath])
+        #expect(removedPaths.isEmpty)
         #expect(sut.storage == nil)
+    }
+
+    @Test("setupServices：删除失败仍使用同一路径重试")
+    func setupServices_removerThrowsStillRetries() throws {
+        let sut = makeDelegate()
+        let safePath = sut.databasePathProvider()
+        var factoryPaths: [String] = []
+        var handlerPaths: [String] = []
+        var removedPaths: [String] = []
+        sut.storageFactory = { path in
+            factoryPaths.append(path)
+            if factoryPaths.count == 1 { throw NSError(domain: "db", code: 3) }
+            return try StorageManager(dbPath: ":memory:")
+        }
+        sut.corruptionHandler = { path in
+            handlerPaths.append(path)
+            return .deleteAndRescan
+        }
+        sut.databaseRemover = { path in
+            removedPaths.append(path)
+            throw NSError(domain: "db", code: 4)
+        }
+
+        sut.setupServices()
+
+        #expect(factoryPaths == [safePath, safePath])
+        #expect(handlerPaths == [safePath])
+        #expect(removedPaths == [safePath])
+        #expect(sut.storage != nil)
     }
 
     // MARK: - setupControllers
@@ -662,11 +720,29 @@ struct AppDelegateTests {
         #expect(true)
     }
 
-    @Test("databasePath 返回非空路径")
-    func databasePath_returnsPath() {
+    @Test("setupServices 仅转发注入的安全数据库路径")
+    func setupServices_usesInjectedDatabasePath() throws {
         let sut = makeDelegate()
-        let path = sut.databasePath()
-        #expect(!path.isEmpty)
+        let safePath = "/tmp/launchpad-appdelegate-\(UUID().uuidString).sqlite3"
+        var providerCalls = 0
+        var factoryPaths: [String] = []
+        var removedPaths: [String] = []
+        sut.databasePathProvider = {
+            providerCalls += 1
+            return safePath
+        }
+        sut.databaseRemover = { removedPaths.append($0) }
+        sut.storageFactory = { path in
+            factoryPaths.append(path)
+            return try StorageManager(dbPath: ":memory:")
+        }
+
+        sut.setupServices()
+
+        #expect(providerCalls == 1)
+        #expect(factoryPaths == [safePath])
+        #expect(removedPaths.isEmpty)
+        #expect(sut.storage != nil)
     }
 
     // MARK: - 默认闭包覆盖
@@ -721,13 +797,14 @@ struct AppDelegateTests {
     @Test("SystemIconProvider 与 SystemFileSystemService 方法均被调用")
     func systemServiceImplementations() {
         let iconProvider = SystemIconProvider()
-        _ = iconProvider.icon(forPath: "/Applications/Safari.app")
-        _ = iconProvider.modificationDate(forPath: "/Applications/Safari.app")
+        let missingAppPath = "/tmp/launchpad-missing-\(UUID().uuidString).app"
+        _ = iconProvider.icon(forPath: missingAppPath)
+        _ = iconProvider.modificationDate(forPath: missingAppPath)
 
         let fs = SystemFileSystemService()
-        _ = fs.fileExists(at: URL(fileURLWithPath: "/Applications"))
-        _ = try? fs.contentsOfDirectory(at: URL(fileURLWithPath: "/Applications"))
-        _ = fs.bundleInfo(at: URL(fileURLWithPath: "/Applications/Safari.app"))
+        _ = fs.fileExists(at: URL(fileURLWithPath: missingAppPath))
+        _ = try? fs.contentsOfDirectory(at: URL(fileURLWithPath: missingAppPath))
+        _ = fs.bundleInfo(at: URL(fileURLWithPath: missingAppPath))
         // 不存在的包路径触发 bundleInfo 的 guard-else 分支
         _ = fs.bundleInfo(at: URL(fileURLWithPath: "/tmp/launchpad_no_such_\(UUID().uuidString).app"))
         #expect(true)

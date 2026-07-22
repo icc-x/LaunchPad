@@ -33,6 +33,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 数据库工厂（默认创建真实 StorageManager，测试可注入以触发 SQLite 损坏恢复分支）
     var storageFactory: (String) throws -> StorageManager = { try StorageManager(dbPath: $0) }
 
+    /// 数据库路径提供器（默认沿用生产路径创建逻辑，测试注入临时路径以隔离用户数据）
+    lazy var databasePathProvider: () -> String = { [unowned self] in self.databasePath() }
+
+    /// 数据库删除器（默认删除生产数据库，测试注入以隔离文件系统副作用）
+    var databaseRemover: (String) throws -> Void = { try FileManager.default.removeItem(atPath: $0) }
+
     /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
     var activationPolicySetter: (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) }
 
@@ -126,14 +132,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupServices() {
         // Database
-        let dbPath = databasePath()
+        let dbPath = databasePathProvider()
         do {
             storage = try storageFactory(dbPath)
         } catch {
             // If DB is corrupted, delete and retry
             let strategy = corruptionHandler(dbPath)
             if case .deleteAndRescan = strategy {
-                try? FileManager.default.removeItem(atPath: dbPath)
+                try? databaseRemover(dbPath)
                 storage = try? storageFactory(dbPath)
             }
         }
