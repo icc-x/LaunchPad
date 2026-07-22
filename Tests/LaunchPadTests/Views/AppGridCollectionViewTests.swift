@@ -21,23 +21,50 @@ struct AppGridCollectionViewTests {
         return Fixture(collectionView: collectionView, iconCache: iconCache)
     }
 
+    private func host(
+        _ collectionView: AppGridCollectionView,
+        viewportSize: CGSize
+    ) -> NSWindow {
+        let scrollView = NSScrollView(
+            frame: NSRect(origin: .zero, size: viewportSize)
+        )
+        scrollView.documentView = collectionView
+        let window = NSWindow(
+            contentRect: NSRect(origin: .zero, size: viewportSize),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        window.contentView = scrollView
+        window.contentView?.layoutSubtreeIfNeeded()
+        return window
+    }
+
+    private func firstImageView(in view: NSView) -> NSImageView? {
+        if let imageView = view as? NSImageView { return imageView }
+        for subview in view.subviews {
+            if let imageView = firstImageView(in: subview) { return imageView }
+        }
+        return nil
+    }
+
     // MARK: - Init
 
     @Test func init_frame_doesNotCrash() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let view = AppGridCollectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-        #expect((view) != nil)
-        #expect(view !== collectionView)
+        let frame = NSRect(x: 0, y: 0, width: 800, height: 600)
+        let view = AppGridCollectionView(frame: frame)
+        #expect(view.frame == frame)
+        #expect(view.collectionViewLayout is AppGridFlowLayout)
+        #expect(view.isSelectable)
+        #expect(view.backgroundColors == [.clear])
     }
 
     @Test func init_coder_doesNotCrash() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // NSCoder init is not supported, but we test the frame init path
         let view = AppGridCollectionView(frame: .zero)
-        #expect((view) != nil)
-        #expect(view !== collectionView)
+        #expect(view.frame == .zero)
+        #expect(view.collectionViewLayout is AppGridFlowLayout)
+        #expect(view.isSelectable)
+        #expect(view.backgroundColors == [.clear])
     }
 
     // MARK: - Configure
@@ -222,15 +249,6 @@ struct AppGridCollectionViewTests {
 
     // MARK: - Callbacks
 
-    @Test func onItemSelected_callbackIsSettable() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        var called = false
-        collectionView.onItemSelected = { _ in called = true }
-        // Just verify the callback is settable without crash
-        #expect((collectionView.onItemSelected) != nil)
-    }
-
     @Test func onItemDelete_callbackIsSettable() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
@@ -352,229 +370,6 @@ struct AppGridCollectionViewTests {
         let indexPath = IndexPath(item: 0, section: 0)
         let cell = collectionView.diffableDataSource.collectionView(collectionView, itemForRepresentedObjectAt: indexPath)
         #expect(cell is FolderCell)
-    }
-
-    // MARK: - Pasteboard writer (drag source)
-
-    @Test func pasteboardWriterForItemAt_appItem_writesUuid() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let app = TestDataFactory.makePageItem(id: 1, uuid: "drag-app-1", type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-
-        let writer = collectionView.collectionView(collectionView,
-                                                    pasteboardWriterForItemAt: IndexPath(item: 0, section: 0))
-        #expect((writer) != nil)
-        let pbItem = writer as? NSPasteboardItem
-        #expect((pbItem?.string(forType: .string)) == ("drag-app-1"))
-    }
-
-    @Test func pasteboardWriterForItemAt_groupItem_writesUuid() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let group = TestDataFactory.makePageItem(id: 2, uuid: "drag-group-2", type: .group, ordering: 0,
-                                                  group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder"))
-        collectionView.reload(pages: [[group]], searchResults: nil, searchQuery: nil)
-
-        let writer = collectionView.collectionView(collectionView,
-                                                    pasteboardWriterForItemAt: IndexPath(item: 0, section: 0))
-        #expect((writer) != nil)
-        let pbItem = writer as? NSPasteboardItem
-        #expect((pbItem?.string(forType: .string)) == ("drag-group-2"))
-    }
-
-    @Test func pasteboardWriterForItemAt_pageItem_returnsNil() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // page 类型不应作为拖拽源
-        let page = TestDataFactory.makePageItem(id: 1, uuid: "page-1", type: .page, ordering: 0)
-        collectionView.reload(pages: [[page]], searchResults: nil, searchQuery: nil)
-
-        let writer = collectionView.collectionView(collectionView,
-                                                    pasteboardWriterForItemAt: IndexPath(item: 0, section: 0))
-        #expect((writer) == nil)
-    }
-
-    // MARK: - Validate drop
-
-    @Test func validateDrop_screenEdge_returnsGeneric() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.pasteboardUUIDReader = { _ in nil }
-        // 拖到左边缘 → 返回 .generic（触发翻页）
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
-
-        let info = MockDraggingInfo(pasteboard: NSPasteboard(name: .init("test")),
-                                     location: NSPoint(x: 10, y: 100))
-        var proposed = NSIndexPath(forItem: 0, inSection: 0)
-        var dropOp: NSCollectionView.DropOperation = .on
-        let result: NSDragOperation = withUnsafeMutablePointer(to: &dropOp) { opPtr -> NSDragOperation in
-            withUnsafeMutablePointer(to: &proposed) { ptr -> NSDragOperation in
-                collectionView.collectionView(collectionView,
-                                              validateDrop: info,
-                                              proposedIndexPath: AutoreleasingUnsafeMutablePointer(ptr),
-                                              dropOperation: opPtr)
-            }
-        }
-        #expect(result.contains(.generic))
-    }
-
-    @Test func validateDrop_rightEdge_returnsGeneric() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.pasteboardUUIDReader = { _ in nil }
-        // 拖到右边缘 → 返回 .generic（触发翻页）
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
-
-        // bounds.width=1440，右边缘区域 = x > 1400
-        let info = MockDraggingInfo(pasteboard: NSPasteboard(name: .init("test")),
-                                     location: NSPoint(x: 1430, y: 100))
-        var proposed = NSIndexPath(forItem: 0, inSection: 0)
-        var dropOp: NSCollectionView.DropOperation = .on
-        let result: NSDragOperation = withUnsafeMutablePointer(to: &dropOp) { opPtr -> NSDragOperation in
-            withUnsafeMutablePointer(to: &proposed) { ptr -> NSDragOperation in
-                collectionView.collectionView(collectionView,
-                                              validateDrop: info,
-                                              proposedIndexPath: AutoreleasingUnsafeMutablePointer(ptr),
-                                              dropOperation: opPtr)
-            }
-        }
-        #expect(result.contains(.generic))
-    }
-
-    @Test func validateDrop_emptyArea_returnsMove() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.pasteboardUUIDReader = { _ in nil }
-        // 拖到空白区域 → 返回 .move，dropOperation 设为 .on
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
-
-        // 中心区域（非边缘），且 indexPathForItem 在无布局测试环境返回 nil → empty 分支
-        let info = MockDraggingInfo(pasteboard: NSPasteboard(name: .init("test")),
-                                     location: NSPoint(x: 500, y: 500))
-        var proposed = NSIndexPath(forItem: 0, inSection: 0)
-        var dropOp: NSCollectionView.DropOperation = .before
-        let result: NSDragOperation = withUnsafeMutablePointer(to: &dropOp) { opPtr -> NSDragOperation in
-            withUnsafeMutablePointer(to: &proposed) { ptr -> NSDragOperation in
-                collectionView.collectionView(collectionView,
-                                              validateDrop: info,
-                                              proposedIndexPath: AutoreleasingUnsafeMutablePointer(ptr),
-                                              dropOperation: opPtr)
-            }
-        }
-        #expect(result.contains(.move))
-        #expect((dropOp) == (.on))
-    }
-
-    // MARK: - Accept drop
-
-    @Test func acceptDrop_onGroupTarget_returnsTrue() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // 拖到文件夹上 → 返回 true 并调用 dragController.handleDrop
-        let app = TestDataFactory.makePageItem(id: 1, uuid: "src-app", type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        let group = TestDataFactory.makePageItem(id: 2, type: .group, ordering: 1,
-                                                  group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder"))
-        collectionView.reload(pages: [[app, group]], searchResults: nil, searchQuery: nil)
-        let dragController = DragController()
-        dragController.handleDragStart()
-        collectionView.dragController = dragController
-        collectionView.pasteboardUUIDReader = { _ in app.uuid }
-
-        let pb = NSPasteboard(name: .init("test"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-
-        let result = collectionView.collectionView(collectionView,
-                                                    acceptDrop: info,
-                                                    indexPath: IndexPath(item: 1, section: 0),
-                                                    dropOperation: .on)
-        #expect(result)
-        #expect((dragController.state) == (.idle))
-    }
-
-    @Test func acceptDrop_invalidPasteboard_returnsFalse() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // 剪贴板无有效 UUID → 返回 false
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        let dragController = DragController()
-        dragController.handleDragStart()
-        collectionView.dragController = dragController
-        collectionView.pasteboardUUIDReader = { _ in nil }
-
-        let pb = NSPasteboard(name: .init("test"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-
-        let result = collectionView.collectionView(collectionView,
-                                                    acceptDrop: info,
-                                                    indexPath: IndexPath(item: 0, section: 0),
-                                                    dropOperation: .on)
-        #expect(!(result))
-        #expect((dragController.state) == (.dragging))
-    }
-
-    // MARK: - Dragging image
-
-    @Test func draggingImageForItemsAt_returnsImage() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        collectionView.layoutSubtreeIfNeeded()
-
-        var dragImageOffset = NSPoint.zero
-        let image = collectionView.collectionView(collectionView,
-                                                   draggingImageForItemsAt: [IndexPath(item: 0, section: 0)],
-                                                   with: NSEvent(),
-                                                   offset: &dragImageOffset)
-        // 即使 cell 未实例化，方法也不应崩溃；有 cell 时返回 64×64 image
-        if image.size != .zero {
-            #expect((image.size) == (NSSize(width: 64, height: 64)))
-        }
-    }
-
-    // MARK: - Selection callback
-
-    @Test func onItemSelected_triggeredViaDidSelect() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        var selected: PageItem?
-        collectionView.onItemSelected = { selected = $0 }
-
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-
-        collectionView.collectionView(collectionView, didSelectItemsAt: [IndexPath(item: 0, section: 0)])
-        #expect((selected?.id) == (app.id))
-    }
-
-    @Test func onItemSelected_emptySelection_doesNotFire() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        var called = false
-        collectionView.onItemSelected = { _ in called = true }
-
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-
-        collectionView.collectionView(collectionView, didSelectItemsAt: [])
-        #expect(!(called))
     }
 
     // MARK: - Init(coder:)
@@ -712,42 +507,6 @@ struct AppGridCollectionViewTests {
         #expect((renamed?.1) == ("Renamed"))
     }
 
-    // MARK: - Drop hover resolution (extracted)
-
-    @Test func resolveHoverLocation_overIcon_whenGroupAtLocation() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.indexPathResolver = { _ in IndexPath(item: 0, section: 0) }
-        let group = TestDataFactory.makePageItem(id: 2, type: .group, ordering: 0,
-                                                  group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder"))
-        collectionView.reload(pages: [[group]], searchResults: nil, searchQuery: nil)
-        let hover = collectionView.resolveHoverLocation(at: .zero)
-        if case .overIcon(let targetId) = hover {
-            #expect((targetId) == (group.id))
-        } else {
-            Issue.record("expected .overIcon, got \(hover)")
-        }
-    }
-
-    @Test func resolveHoverLocation_empty_whenAppAtLocation() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.indexPathResolver = { _ in IndexPath(item: 0, section: 0) }
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        let hover = collectionView.resolveHoverLocation(at: .zero)
-        #expect((hover) == (.empty))
-    }
-
-    @Test func resolveHoverLocation_empty_whenResolverReturnsNil() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.indexPathResolver = { _ in nil }
-        let hover = collectionView.resolveHoverLocation(at: .zero)
-        #expect((hover) == (.empty))
-    }
-
     // MARK: - Drag image (extracted)
 
     @Test func makeDragImage_returns64x64Image() {
@@ -765,8 +524,14 @@ struct AppGridCollectionViewTests {
         let collectionView = fixture.collectionView
         collectionView.cellViewProvider = { _ in NSView() }
         let items = TestDataFactory.makeAppItems(count: 5)
+        let indexPaths = items.indices.map {
+            IndexPath(item: $0, section: 0)
+        }
         // columns=2 → 3 行：[0,1],[2,3],[4]
-        let rows = collectionView.buildAccessibilityRows(items: items, columns: 2)
+        let rows = collectionView.buildAccessibilityRows(
+            itemIndexPathsBySection: [indexPaths],
+            columns: 2
+        )
         #expect((rows.count) == (3))
         #expect((rows[0].count) == (2))
         #expect((rows[1].count) == (2))
@@ -777,59 +542,11 @@ struct AppGridCollectionViewTests {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
         collectionView.cellViewProvider = { _ in NSView() }
-        let rows = collectionView.buildAccessibilityRows(items: [], columns: 7)
+        let rows = collectionView.buildAccessibilityRows(
+            itemIndexPathsBySection: [],
+            columns: 7
+        )
         #expect((rows.count) == (0))
-    }
-
-    // MARK: - Accept drop (reorder + invalid target)
-
-    @Test func acceptDrop_reorderSamePage_performsReorder() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // 拖拽 app 到另一个 app（非 group 目标）→ 触发同页重排分支
-        let app1 = TestDataFactory.makePageItem(id: 1, uuid: "reorder-1", type: .app, ordering: 0,
-                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "A1"))
-        let app2 = TestDataFactory.makePageItem(id: 2, uuid: "reorder-2", type: .app, ordering: 1,
-                                                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2"))
-        collectionView.reload(pages: [[app1, app2]], searchResults: nil, searchQuery: nil)
-        let dragController = DragController()
-        dragController.handleDragStart()
-        collectionView.dragController = dragController
-        collectionView.pasteboardUUIDReader = { _ in app1.uuid }
-
-        let pb = NSPasteboard(name: .init("test-reorder"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-
-        let result = collectionView.collectionView(collectionView,
-                                                    acceptDrop: info,
-                                                    indexPath: IndexPath(item: 1, section: 0),
-                                                    dropOperation: .on)
-        #expect(result)
-        #expect((collectionView.diffableDataSource.snapshot().itemIdentifiers.map(\.id)) == ([app1.id, app2.id]))
-        #expect((dragController.state) == (.idle))
-    }
-
-    @Test func acceptDrop_outOfRangeTarget_returnsFalse() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // 目标 indexPath 无对应 item → 返回 false
-        let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        let dragController = DragController()
-        dragController.handleDragStart()
-        collectionView.dragController = dragController
-        collectionView.pasteboardUUIDReader = { _ in app.uuid }
-
-        let pb = NSPasteboard(name: .init("test-oob"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-
-        let result = collectionView.collectionView(collectionView,
-                                                    acceptDrop: info,
-                                                    indexPath: IndexPath(item: 99, section: 0),
-                                                    dropOperation: .on)
-        #expect(!(result))
-        #expect((dragController.state) == (.dragging))
     }
 
     // MARK: - Entrance animation loop (injected providers)
@@ -837,6 +554,9 @@ struct AppGridCollectionViewTests {
     @Test func animateEntrance_withInjectedProviders_runsLoopBody() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        ))
         // 注入可见 indexPath 与 cell，驱动入场动画循环体（覆盖 animateEntrance 循环 + applyEntranceAnimation）
         collectionView.visibleIndexPathsProvider = { [IndexPath(item: 0, section: 0), IndexPath(item: 1, section: 0)] }
         collectionView.visibleCellProvider = { _ in AppIconCell() }
@@ -847,80 +567,292 @@ struct AppGridCollectionViewTests {
         #expect(ran)
     }
 
-    // MARK: - Extract dragged item (extracted)
-
-    @Test func extractDraggedItem_validPasteboard_returnsItem() {
+    @Test("legacy updateLayout 同时读取 clip view 两个有效轴")
+    func legacyUpdateLayoutUsesBothClipAxes() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        let app = TestDataFactory.makePageItem(id: 1, uuid: "ex-app", type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "A"))
-        collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
-        collectionView.pasteboardUUIDReader = { _ in app.uuid }
-        let pb = NSPasteboard(name: .init("test-extract"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-        let extracted = collectionView.extractDraggedItem(from: info)
-        #expect((extracted?.id) == (app.id))
+        let scrollView = NSScrollView(frame: NSRect(
+            x: 0, y: 0, width: 800, height: 500
+        ))
+        scrollView.documentView = collectionView
+        scrollView.contentView.bounds = NSRect(
+            x: 0, y: 0, width: 800, height: 500
+        )
+
+        collectionView.updateLayout(screenWidth: 1234)
+
+        let expected = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 500)
+        )
+        #expect(collectionView.gridMetrics == expected)
+        #expect(collectionView.gridMetrics?.pageWidth == 800)
+        #expect(collectionView.gridMetrics?.rows == expected.rows)
     }
 
-    @Test func extractDraggedItem_emptyPasteboard_returnsNil() {
+    @Test("legacy updateLayout 仅对每个无效 clip 轴独立回退")
+    func legacyUpdateLayoutFallsBackOnlyForInvalidClipAxes() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        collectionView.pasteboardUUIDReader = { _ in nil }
-        let pb = NSPasteboard(name: .init("test-extract-empty"))
-        let info = MockDraggingInfo(pasteboard: pb, location: .zero)
-        let extracted = collectionView.extractDraggedItem(from: info)
-        #expect((extracted) == nil)
-    }
-
-    // MARK: - Perform drop (extracted)
-
-    @Test func performDrop_onGroupTarget_returnsTrue() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let app = TestDataFactory.makePageItem(id: 1, uuid: "pd-app", type: .app, ordering: 0,
-                                                app: TestDataFactory.makeAppInfo(id: 1, title: "A"))
-        let group = TestDataFactory.makePageItem(id: 2, uuid: "pd-group", type: .group, ordering: 1,
-                                                  group: TestDataFactory.makeGroupInfo(id: 2, title: "F"))
-        collectionView.reload(pages: [[app, group]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
-        let result = collectionView.performDrop(draggedItem: app, targetItem: group)
-        #expect(result)
-    }
-
-    @Test func performDrop_reorderSamePage_returnsTrue() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        let app1 = TestDataFactory.makePageItem(id: 1, uuid: "pd-r1", type: .app, ordering: 0,
-                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "A1"))
-        let app2 = TestDataFactory.makePageItem(id: 2, uuid: "pd-r2", type: .app, ordering: 1,
-                                                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2"))
-        collectionView.reload(pages: [[app1, app2]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
-        let result = collectionView.performDrop(draggedItem: app1, targetItem: app2)
-        #expect(result)
-        // 重排后 app1 应位于 app2 之前
-        let snapshot = collectionView.diffableDataSource.snapshot()
-        let ids = snapshot.itemIdentifiers.map { $0.id }
-        #expect((ids.firstIndex(of: app1.id)!) == (ids.firstIndex(of: app2.id)! - 1))
-    }
-
-    // MARK: - Dragging image (injected cell provider)
-
-    @Test func draggingImageForItemsAt_usesInjectedCellProvider() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        collectionView.visibleCellProvider = { _ in
-            let cell = AppIconCell()
-            cell.view.frame = NSRect(x: 0, y: 0, width: 80, height: 80)
-            return cell
+        let scrollView = NSScrollView(frame: NSRect(
+            x: 0, y: 0, width: 800, height: 500
+        ))
+        scrollView.documentView = collectionView
+        collectionView.clipViewSizeProvider = {
+            CGSize(width: 0, height: 500)
         }
-        var offset = NSPoint.zero
-        let image = collectionView.collectionView(collectionView,
-                                                  draggingImageForItemsAt: [IndexPath(item: 0, section: 0)],
-                                                  with: NSEvent(),
-                                                  offset: &offset)
-        #expect((image.size) == (NSSize(width: 64, height: 64)))
+        collectionView.updateLayout(screenWidth: 1234)
+        #expect(
+            collectionView.gridMetrics
+                == GridLayoutCalculator.calculate(
+                    viewportSize: CGSize(width: 1234, height: 500)
+                )
+        )
+
+        collectionView.clipViewSizeProvider = {
+            CGSize(width: 800, height: 0)
+        }
+        collectionView.updateLayout(screenWidth: 1234)
+        #expect(
+            collectionView.gridMetrics
+                == GridLayoutCalculator.calculate(
+                    viewportSize: CGSize(width: 800, height: 620)
+                )
+        )
     }
+
+    @Test("applyGridMetrics 用同一 iconSize 重配可见 app 与 folder cell")
+    func applyGridMetricsReconfiguresVisibleAppAndFolderCells() throws {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        let initial = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        )
+        let updated = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1920, height: 900)
+        )
+        let app = TestDataFactory.makePageItem(
+            id: 1,
+            type: .app,
+            app: TestDataFactory.makeAppInfo(id: 1)
+        )
+        let group = TestDataFactory.makePageItem(
+            id: 2,
+            type: .group,
+            group: TestDataFactory.makeGroupInfo(id: 2)
+        )
+        let window = host(
+            collectionView,
+            viewportSize: CGSize(width: 1920, height: 900)
+        )
+        defer { window.contentView = nil }
+        collectionView.applyGridMetrics(initial)
+        collectionView.reload(
+            pages: [[app, group]],
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+        let appCell = try #require(
+            collectionView.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+        )
+        let folderCell = try #require(
+            collectionView.item(at: IndexPath(item: 1, section: 0)) as? FolderCell
+        )
+        defer { appCell.prepareForReuse() }
+        #expect(appCell.configuredIconSize == initial.iconSize)
+        #expect(folderCell.configuredIconSize == initial.iconSize)
+
+        collectionView.applyGridMetrics(updated)
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let updatedAppCell = try #require(
+            collectionView.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+        )
+        let updatedFolderCell = try #require(
+            collectionView.item(at: IndexPath(item: 1, section: 0)) as? FolderCell
+        )
+        defer { updatedAppCell.prepareForReuse() }
+        #expect(collectionView.gridMetrics == updated)
+        #expect(updatedAppCell.configuredIconSize == updated.iconSize)
+        #expect(updatedFolderCell.configuredIconSize == updated.iconSize)
+    }
+
+    @Test("reload reconfigureItems 刷新 identity 未变化的可见 icon")
+    func reloadReconfigureItemsRefreshesUnchangedVisibleIcon() throws {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        let metrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        )
+        let item = TestDataFactory.makePageItem(
+            id: 1,
+            uuid: "unchanged-visible-icon",
+            type: .app,
+            app: TestDataFactory.makeAppInfo(id: 1)
+        )
+        let firstIcon = NSImage(size: NSSize(width: 32, height: 32))
+        let secondIcon = NSImage(size: NSSize(width: 48, height: 48))
+        fixture.iconCache.iconResult = firstIcon
+        let window = host(collectionView, viewportSize: CGSize(
+            width: 800, height: 620
+        ))
+        defer { window.contentView = nil }
+        collectionView.applyGridMetrics(metrics)
+        collectionView.reload(
+            pages: [[item]],
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+        let cell = try #require(
+            collectionView.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+        )
+        defer { cell.prepareForReuse() }
+        let imageView = try #require(firstImageView(in: cell.view))
+        #expect(imageView.image === firstIcon)
+
+        fixture.iconCache.iconResult = secondIcon
+        collectionView.reload(
+            pages: [[item]],
+            searchResults: nil,
+            searchQuery: nil,
+            reconfigureItems: true,
+            animateEntrance: false
+        )
+        window.contentView?.layoutSubtreeIfNeeded()
+
+        let refreshed = try #require(
+            collectionView.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+        )
+        defer { refreshed.prepareForReuse() }
+        let refreshedImageView = try #require(firstImageView(in: refreshed.view))
+        #expect(refreshedImageView.image === secondIcon)
+    }
+
+    @Test("accessibility helper 保留 1-item 与 2-item section 边界")
+    func buildAccessibilityRowsPreservesOneThenTwoItemSections() {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        let indexPaths = [
+            [IndexPath(item: 0, section: 0)],
+            [IndexPath(item: 0, section: 1), IndexPath(item: 1, section: 1)],
+        ]
+        let requestedViews = Dictionary(uniqueKeysWithValues:
+            indexPaths.flatMap { $0 }.map { ($0, NSView()) }
+        )
+        var requestedIndexPaths: [IndexPath] = []
+        collectionView.cellViewProvider = { indexPath in
+            requestedIndexPaths.append(indexPath)
+            return requestedViews[indexPath]
+        }
+        let rows = collectionView.buildAccessibilityRows(
+            itemIndexPathsBySection: indexPaths,
+            columns: 2
+        )
+        #expect(rows.map(\.count) == [1, 2])
+        #expect(requestedIndexPaths == indexPaths.flatMap { $0 })
+        let flattenedViews = rows.flatMap { $0 }
+        for (index, indexPath) in indexPaths.flatMap({ $0 }).enumerated() {
+            #expect(flattenedViews[index] as AnyObject === requestedViews[indexPath])
+        }
+
+        let noRows = collectionView.buildAccessibilityRows(
+            itemIndexPathsBySection: indexPaths,
+            columns: 0
+        )
+        #expect(noRows.isEmpty)
+    }
+
+    @Test("outer accessibilityRows 使用真实 snapshot section 边界")
+    func accessibilityRowsUsesRealSnapshotSections() throws {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        let pages = [
+            [TestDataFactory.makePageItem(
+                id: 1,
+                uuid: "first-0",
+                app: TestDataFactory.makeAppInfo(id: 1, title: "First 0")
+            )],
+            [
+                TestDataFactory.makePageItem(
+                    id: 2,
+                    uuid: "second-0",
+                    app: TestDataFactory.makeAppInfo(id: 2, title: "Second 0")
+                ),
+                TestDataFactory.makePageItem(
+                    id: 3,
+                    uuid: "second-1",
+                    app: TestDataFactory.makeAppInfo(id: 3, title: "Second 1")
+                ),
+            ],
+        ]
+        var requestedIndexPaths: [IndexPath] = []
+        collectionView.cellViewProvider = { indexPath in
+            requestedIndexPaths.append(indexPath)
+            return NSView()
+        }
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        ))
+        collectionView.reload(
+            pages: pages,
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+
+        let rows = try #require(collectionView.accessibilityRows())
+        let expected = [
+            IndexPath(item: 0, section: 0),
+            IndexPath(item: 0, section: 1),
+            IndexPath(item: 1, section: 1),
+        ]
+        let typedRows = rows.compactMap { $0 as? [Any] }
+        #expect(typedRows.map(\.count) == [1, 2])
+        #expect(requestedIndexPaths == expected)
+    }
+
+    @Test("稳定 ID 在重新分段后解析并更新真实 AppKit selection")
+    func stableIDSelectionUpdatesActualSelectionIndexPaths() throws {
+        let collectionView = AppGridCollectionView(frame: NSRect(
+            x: 0, y: 0, width: 800, height: 600
+        ))
+        let items = TestDataFactory.makeAppItems(count: 5)
+        collectionView.reload(
+            pages: [Array(items.prefix(2)), Array(items.dropFirst(2))],
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+
+        let selected = try #require(collectionView.selectItem(id: items[4].id))
+        #expect(selected == IndexPath(item: 2, section: 1))
+        #expect(collectionView.selectionIndexPaths == [selected])
+    }
+
+    @Test("nil 与未知稳定 ID 都清空真实 AppKit selection")
+    func nilAndUnknownStableIDsClearActualSelection() throws {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        let items = TestDataFactory.makeAppItems(count: 2)
+        collectionView.reload(
+            pages: [items],
+            searchResults: nil,
+            searchQuery: nil,
+            animateEntrance: false
+        )
+        _ = try #require(collectionView.selectItem(id: items[0].id))
+        #expect(!collectionView.selectionIndexPaths.isEmpty)
+
+        #expect(collectionView.selectItem(id: nil) == nil)
+        #expect(collectionView.selectionIndexPaths.isEmpty)
+        _ = try #require(collectionView.selectItem(id: items[1].id))
+        #expect(collectionView.selectItem(id: 9_999_999) == nil)
+        #expect(collectionView.selectionIndexPaths.isEmpty)
+    }
+
 }
 
 // MARK: - Mock IconCaching
@@ -952,33 +884,6 @@ private final class MockDataStoring: DataStoring, @unchecked Sendable {
     func fetchImage(itemId: Int64) throws -> (Data, Data)? { return nil }
 }
 
-// MARK: - Mock NSDraggingInfo (for validateDrop / acceptDrop)
-
-@MainActor
-private final class MockDraggingInfo: NSObject, @MainActor NSDraggingInfo {
-    let draggingPasteboard: NSPasteboard
-    var draggingLocation: NSPoint
-    var draggingSequenceNumber: Int = 0
-    var draggingSourceOperationMask: NSDragOperation = .move
-    var draggedImageLocation: NSPoint = .zero
-    var draggingDestinationWindow: NSWindow?
-    var draggingSource: Any?
-    var animatesToDestination: Bool = false
-    var numberOfValidItemsForDrop: Int = 1
-    var draggedImage: NSImage?
-    var draggingFormation: NSDraggingFormation = .default
-    var springLoadingHighlight: NSSpringLoadingHighlight = .none
-    func slideDraggedImage(to screenPoint: NSPoint) {}
-    func enumerateDraggingItems(options: NSDraggingItemEnumerationOptions, for view: NSView?, classes classArray: [AnyClass], searchOptions: [NSPasteboard.ReadingOptionKey: Any], using block: @escaping (NSDraggingItem, Int, UnsafeMutablePointer<ObjCBool>) -> Void) {}
-    func resetSpringLoading() {}
-
-    init(pasteboard: NSPasteboard, location: NSPoint) {
-        self.draggingPasteboard = pasteboard
-        self.draggingLocation = location
-        super.init()
-    }
-}
-
 // MARK: - Branch coverage: .app type with nil app data
 
 extension AppGridCollectionViewTests {
@@ -994,16 +899,44 @@ extension AppGridCollectionViewTests {
 
     // MARK: - 额外分支覆盖
 
-    @Test func animateEntrance_visibleCellProviderNil_fallsBackToCollectionView() {
+    @Test func animateEntrance_visibleCellProviderNil_fallsBackToCollectionView() throws {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        // 覆盖 L120 ?? false 分支：visibleCellProvider 返回 nil 时回退到 item(at:)
-        collectionView.visibleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
-        collectionView.visibleCellProvider = { _ in nil } // provider 返回 nil → ?? 走 else 分支
-        collectionView.animationScheduler = { _, _ in } // 避免异步调度干扰
+        let window = host(
+            collectionView,
+            viewportSize: CGSize(width: 800, height: 620)
+        )
+        defer { window.orderOut(nil) }
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        ))
         let items = TestDataFactory.makeAppItems(count: 1)
-        collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
-        // 不应崩溃
+        collectionView.reload(
+            pages: [items], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        collectionView.layoutSubtreeIfNeeded()
+        let path = IndexPath(item: 0, section: 0)
+        let realCell = try #require(collectionView.item(at: path))
+        var providerRequests: [IndexPath] = []
+        collectionView.visibleIndexPathsProvider = { [path] }
+        collectionView.visibleCellProvider = {
+            providerRequests.append($0)
+            return nil
+        }
+        var scheduledDelays: [TimeInterval] = []
+        collectionView.animationScheduler = { delay, _ in
+            scheduledDelays.append(delay)
+        }
+
+        collectionView.reload(
+            pages: [items], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false
+        )
+
+        #expect(providerRequests == [path])
+        #expect(scheduledDelays == [0])
+        #expect(realCell.view.alphaValue == 0)
     }
 
     @Test func applyCellAppearAnimation_cellViewNil_returnsEarly() {
@@ -1037,28 +970,15 @@ extension AppGridCollectionViewTests {
     @Test func accessibilityRows_zeroBoundsWidth_usesDefaultWidth() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        // 覆盖 L261 bounds.width > 0 ternary false 分支
         collectionView.bounds = NSRect(x: 0, y: 0, width: 0, height: 0)
         let items = TestDataFactory.makeAppItems(count: 3)
-        collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
-        let rows = collectionView.accessibilityRows()
-        // 不应崩溃
-        #expect((rows) != nil)
+        collectionView.reload(
+            pages: [items], searchResults: nil, searchQuery: nil,
+            animateEntrance: false
+        )
+        #expect(collectionView.gridMetrics == nil)
+        #expect(collectionView.accessibilityRows()?.isEmpty == true)
     }
 
-    @Test func performDrop_bothItemsNotInSnapshot_noOp() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
-        // 覆盖 L370 || 表达式 false 分支：draggedItem 和 targetItem 都不在 section
-        let app1 = TestDataFactory.makePageItem(id: 1, uuid: "pd-bad-1", type: .app, ordering: 0,
-                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "A1"))
-        let app2 = TestDataFactory.makePageItem(id: 2, uuid: "pd-bad-2", type: .app, ordering: 1,
-                                                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2"))
-        // 不 reload，让 snapshot 为空 → 两者都不在 section
-        collectionView.dragController = DragController()
-        // draggedItem 和 targetItem 都不在 snapshot 的 section 中
-        let result = collectionView.performDrop(draggedItem: app1, targetItem: app2)
-        #expect((result) == (true))
-    }
 }
 #endif

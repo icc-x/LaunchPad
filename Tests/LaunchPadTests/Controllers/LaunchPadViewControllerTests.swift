@@ -671,41 +671,82 @@ struct LaunchPadViewControllerTests {
         #expect(storage.updatedItems.count == 2) // 两个 app 移入文件夹
     }
 
-    // MARK: - handleItemSelection（通过 collectionView.onItemSelected 回调）
+    // MARK: - handleItemSelection（通过 coordinator activation 输出）
 
-    @Test("onItemSelected 对 app 类型触发启动动画并安全回退")
-    func onItemSelected_app_triggersAppLaunchSafely() {
+    @Test("coordinator activation 对 app 类型触发启动动画并安全回退")
+    func coordinatorActivation_app_triggersAppLaunchSafely() throws {
         let (sut, _, _) = makeSUT()
         _ = sut.view
-        guard let cv = extractCollectionView(from: sut) else {
-            Issue.record("collectionView not accessible via reflection")
-            return
-        }
         // 不存在的 bundleId：animateAppLaunch 找不到 cell → launchApp → urlForApplication 返回 nil → 安全 return
         let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
                                                 app: TestDataFactory.makeAppInfo(id: 10,
                                                 bundleId: "com.test.nonexistent.app"))
 
-        cv.onItemSelected?(app)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        coordinator.onItemActivated?(app)
     }
 
-    @Test("onItemSelected 对 group 类型打开文件夹并加载子项")
-    func onItemSelected_group_opensFolder() {
+    @Test("coordinator activation 对 group 类型打开文件夹并加载子项")
+    func coordinatorActivation_group_opensFolder() throws {
         let (sut, _, storage) = makeSUT()
         _ = sut.view
         let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
                                                    parentId: 1,
                                                    group: TestDataFactory.makeGroupInfo(id: 100, title: "Folder"))
         storage.childrenByPage = [100: []]
-        guard let cv = extractCollectionView(from: sut) else {
-            Issue.record("collectionView not accessible via reflection")
-            return
-        }
 
         let before = storage.fetchAllItemsCallCount
-        cv.onItemSelected?(folder)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        coordinator.onItemActivated?(folder)
         // openFolder 调用 storage.fetchAllItems(parentId: folder.id) 加载子项
         #expect(storage.fetchAllItemsCallCount > before)
+    }
+
+    @Test("ViewController 强持当前 grid coordinator 并完成真实 delegate 装配")
+    func gridInteractionCoordinator_isStronglyRetained() throws {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        let grid = try #require(extractCollectionView(from: sut))
+        #expect(grid.delegate === coordinator)
+        #expect(grid.delegate !== grid)
+    }
+
+    @Test("重建 view 时旧 grid 解绑且新 coordinator 装配到新 grid")
+    func loadView_rebuildDetachesOldGridAndInstallsNewCoordinator() throws {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        let firstGrid = try #require(extractCollectionView(from: sut))
+        let firstCoordinator = try #require(sut.gridInteractionCoordinator)
+
+        sut.loadView()
+
+        let secondGrid = try #require(extractCollectionView(from: sut))
+        let secondCoordinator = try #require(sut.gridInteractionCoordinator)
+        #expect(firstGrid.delegate == nil)
+        #expect(firstCoordinator !== secondCoordinator)
+        #expect(secondGrid !== firstGrid)
+        #expect(secondGrid.delegate === secondCoordinator)
+        #expect(secondGrid.delegate !== secondGrid)
+    }
+
+    @Test("释放 ViewController 后 coordinator 与 grid 一并释放")
+    func controllerRelease_releasesCoordinatorAndGrid() throws {
+        weak var weakController: LaunchPadViewController?
+        weak var weakCoordinator: AppGridInteractionCoordinator?
+        weak var weakGrid: AppGridCollectionView?
+        autoreleasepool {
+            let (sut, _, _) = makeSUT()
+            _ = sut.view
+            weakController = sut
+            weakCoordinator = sut.gridInteractionCoordinator
+            weakGrid = extractCollectionView(from: sut)
+            #expect(weakCoordinator != nil)
+            #expect(weakGrid != nil)
+        }
+        #expect(weakController == nil)
+        #expect(weakCoordinator == nil)
+        #expect(weakGrid == nil)
     }
 
     // MARK: - handleSearch 非空查询

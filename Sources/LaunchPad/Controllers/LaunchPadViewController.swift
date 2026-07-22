@@ -29,6 +29,7 @@ public class LaunchPadViewController: NSViewController {
     let dragController: DragController
     private let folderController: FolderController
     private let searchScheduler: Scheduler
+    private(set) var gridInteractionCoordinator: AppGridInteractionCoordinator?
 
     // MARK: - Test injection points
 
@@ -112,6 +113,7 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - View Lifecycle
 
     override public func loadView() {
+        gridInteractionCoordinator?.detach()
         view = NSView()
         view.wantsLayer = true
 
@@ -123,7 +125,12 @@ public class LaunchPadViewController: NSViewController {
         // Collection view
         collectionView = AppGridCollectionView(frame: .zero)
         collectionView.configure(iconCache: iconCache, storage: storage)
-        collectionView.dragController = dragController
+        let coordinator = AppGridInteractionCoordinator(
+            dragController: dragController,
+            pasteboardUUIDReader: { $0.string(forType: .string) }
+        )
+        gridInteractionCoordinator = coordinator
+        coordinator.attach(to: collectionView)
         collectionView.translatesAutoresizingMaskIntoConstraints = false
         scrollView.documentView = collectionView
 
@@ -217,8 +224,8 @@ public class LaunchPadViewController: NSViewController {
             self?.searchDebouncer.search(query: query)
         }
 
-        // Collection view selection
-        collectionView.onItemSelected = { [weak self] item in
+        // Collection view activation
+        gridInteractionCoordinator?.onItemActivated = { [weak self] item in
             self?.handleItemSelection(item)
         }
 
