@@ -1,271 +1,261 @@
-import XCTest
+import Testing
 @testable import LaunchPad
 @testable import LaunchPadProtocols
 
 #if canImport(AppKit)
 import AppKit
 
-/// Tests for AppIconCell (0% → target 80%+)
-@MainActor
-final class AppIconCellTests: XCTestCase {
-
-    private var cell: AppIconCell!
-
-    override func setUp() {
-        super.setUp()
-        cell = AppIconCell()
-        // Force loadView by accessing view
+@MainActor @Suite("AppIconCell")
+struct AppIconCellTests {
+    private func makeSUT() -> AppIconCell {
+        let cell = AppIconCell()
+        cell.workspaceNotificationCenter = NotificationCenter()
+        cell.runningApplicationProvider = { [] }
+        cell.notificationBundleIDReader = { _ in nil }
         _ = cell.view
+        return cell
     }
 
-    override func tearDown() {
-        cell = nil
-        super.tearDown()
+    @Test func init_loadsView() {
+        let cell = makeSUT()
+        #expect(cell.view != nil)
     }
 
-    // MARK: - Helpers
-
-    // MARK: - Init
-
-    func testInit_loadsView() {
-        XCTAssertNotNil(cell.view)
+    @Test func identifier_isCorrect() {
+        let cell = makeSUT()
+        #expect(type(of: cell).identifier == NSUserInterfaceItemIdentifier("AppIconCell"))
     }
 
-    func testIdentifier_isCorrect() {
-        XCTAssertEqual(AppIconCell.identifier, NSUserInterfaceItemIdentifier("AppIconCell"))
-    }
-
-    // MARK: - Configure
-
-    func testConfigure_appItem_setsTitle() {
+    @Test func configure_appItem_setsTitle() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "Safari")
         )
         cell.configure(item: app, icon: nil)
-        // The title label should have the app name
-        // We can't directly access titleLabel, but we can check accessibility
-        XCTAssertEqual(cell.view.accessibilityLabel(), "Safari")
+        #expect(cell.view.accessibilityLabel() == "Safari")
     }
 
-    func testConfigure_groupItem_setsTitle() {
+    @Test func configure_groupItem_setsTitle() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let group = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "My Folder")
         )
         cell.configure(item: group, icon: nil)
-        XCTAssertEqual(cell.view.accessibilityLabel(), "My Folder")
+        #expect(cell.view.accessibilityLabel() == "My Folder")
     }
 
-    func testConfigure_withIcon_setsImage() {
+    @Test func configure_withIcon_setsImage() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let icon = NSImage(size: NSSize(width: 128, height: 128))
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: icon)
-        // Should not crash
     }
 
-    func testConfigure_withNilIcon_usesDefault() {
+    @Test func configure_withNilIcon_usesDefault() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: nil)
-        // Should use NSApplicationIcon as default
     }
 
-    func testConfigure_customIconSize_updatesConstraints() {
+    @Test func configure_customIconSize_updatesConstraints() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: nil, iconSize: 96)
-        // Should update icon constraints to 96
     }
 
-    func testConfigure_defaultIconSize_is64() {
+    @Test func configure_defaultIconSize_is64() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: nil)
-        // Default iconSize should be 64
     }
 
-    // MARK: - Jiggle Animation
-
-    func testStartJiggling_setsJiggling() {
+    @Test func startJiggling_setsJiggling() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: nil)
         cell.startJiggling()
-        // Should not crash; jiggle animation started
     }
 
-    func testStartJiggling_calledTwice_doesNotCrash() {
+    @Test func startJiggling_calledTwice_doesNotCrash() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         cell.startJiggling()
-        cell.startJiggling() // Second call should be no-op
-    }
-
-    func testStopJiggling_afterStart_stopsCleanly() {
         cell.startJiggling()
-        cell.stopJiggling()
-        // Should not crash
     }
 
-    func testStopJiggling_withoutStart_doesNotCrash() {
+    @Test func stopJiggling_afterStart_stopsCleanly() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
+        cell.startJiggling()
         cell.stopJiggling()
     }
 
-    // MARK: - Delete Button
-
-    func testDeleteButton_callbackIsSettable() {
-        var called = false
-        cell.onDelete = { called = true }
-        XCTAssertNotNil(cell.onDelete)
+    @Test func stopJiggling_withoutStart_doesNotCrash() {
+        let cell = makeSUT()
+        cell.stopJiggling()
     }
 
-    // MARK: - Prepare for Reuse
+    @Test func deleteButton_callbackIsSettable() {
+        let cell = makeSUT()
+        cell.onDelete = {}
+        #expect(cell.onDelete != nil)
+    }
 
-    func testPrepareForReuse_resetsState() {
+    @Test func prepareForReuse_resetsState() {
+        let cell = makeSUT()
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
-        cell.configure(item: app, icon: NSImage(size: NSSize(width: 64, height: 64)))
+        cell.configure(
+            item: app,
+            icon: NSImage(size: NSSize(width: 64, height: 64))
+        )
         cell.startJiggling()
-
         cell.prepareForReuse()
-
-        // After reuse, jiggling should be stopped (verify by starting again without crash)
         cell.startJiggling()
         cell.stopJiggling()
     }
 
-    // MARK: - Running Indicator
-
-    func testConfigure_withBundleId_updatesRunningState() {
+    @Test func configure_withBundleId_updatesRunningState() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Finder",
-                                              bundleId: "com.apple.finder")
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "Finder", bundleId: "com.apple.finder"
+            )
         )
         cell.configure(item: app, icon: nil)
-        // Finder is always running on macOS, so indicator should be visible
-        // (unless running in CI without Finder)
     }
 
-    func testConfigure_withoutBundleId_hidesIndicator() {
+    @Test func configure_withoutBundleId_hidesIndicator() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp",
-                                              bundleId: "com.nonexistent.app12345")
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "TestApp", bundleId: "com.nonexistent.app12345"
+            )
         )
         cell.configure(item: app, icon: nil)
-        // Non-running app should have hidden indicator
     }
 
-    // MARK: - Workspace Notifications
-
-    func testConfigure_registersWorkspaceNotifications() {
+    @Test func configure_registersWorkspaceNotifications() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Finder",
-                                              bundleId: "com.apple.finder")
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "Finder", bundleId: "com.apple.finder"
+            )
         )
         cell.configure(item: app, icon: nil)
-        XCTAssertTrue(cell.hasWorkspaceObservers, "configure should register workspace notification observers")
+        #expect(cell.hasWorkspaceObservers)
     }
 
-    func testPrepareForReuse_unregistersNotifications() {
+    @Test func prepareForReuse_unregistersNotifications() {
+        let cell = makeSUT()
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Finder",
-                                              bundleId: "com.apple.finder")
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "Finder", bundleId: "com.apple.finder"
+            )
         )
         cell.configure(item: app, icon: nil)
-        XCTAssertTrue(cell.hasWorkspaceObservers)
-
+        #expect(cell.hasWorkspaceObservers)
         cell.prepareForReuse()
-        XCTAssertFalse(cell.hasWorkspaceObservers, "prepareForReuse should unregister workspace notification observers")
+        #expect(!cell.hasWorkspaceObservers)
     }
 
-    func testDidActivateNotification_showsRunningIndicator() {
-        let center = NotificationCenter()
+    @Test func didActivateNotification_showsRunningIndicator() {
+        let cell = makeSUT()
+        let center = cell.workspaceNotificationCenter
         let bundleID = "com.example.task4.workspace"
-        cell.workspaceNotificationCenter = center
-        cell.runningApplicationProvider = { [] }
         cell.notificationBundleIDReader = { _ in bundleID }
         defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Fixture",
-                                              bundleId: bundleID)
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "Fixture", bundleId: bundleID
+            )
         )
         cell.configure(item: app, icon: nil)
 
-        XCTAssertFalse(cell.isRunningIndicatorVisible)
+        #expect(!cell.isRunningIndicatorVisible)
         center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
-        XCTAssertTrue(cell.isRunningIndicatorVisible, "indicator should be visible after activate")
+        #expect(cell.isRunningIndicatorVisible)
     }
 
-    func testDidDeactivateNotification_hidesRunningIndicator() {
-        let center = NotificationCenter()
+    @Test func didDeactivateNotification_hidesRunningIndicator() {
+        let cell = makeSUT()
+        let center = cell.workspaceNotificationCenter
         let bundleID = "com.example.task4.workspace"
-        cell.workspaceNotificationCenter = center
-        cell.runningApplicationProvider = { [] }
         cell.notificationBundleIDReader = { _ in bundleID }
         defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Fixture",
-                                              bundleId: bundleID)
+            app: TestDataFactory.makeAppInfo(
+                id: 1, title: "Fixture", bundleId: bundleID
+            )
         )
         cell.configure(item: app, icon: nil)
 
         center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
-        XCTAssertTrue(cell.isRunningIndicatorVisible)
+        #expect(cell.isRunningIndicatorVisible)
         center.post(name: NSWorkspace.didDeactivateApplicationNotification, object: nil)
-        XCTAssertFalse(cell.isRunningIndicatorVisible, "indicator should be hidden after deactivate")
+        #expect(!cell.isRunningIndicatorVisible)
     }
 
-    // MARK: - Accessibility: Increase Contrast
-
-    func testConfigure_increaseContrast_appliesBorderAndBoldFont() {
-        UserDefaults.standard.set(true, forKey: "com.apple.universalaccess.highContrast")
-        defer { UserDefaults.standard.set(false, forKey: "com.apple.universalaccess.highContrast") }
-
-        let app = TestDataFactory.makePageItem(
-            id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
-        )
-        cell.configure(item: app, icon: nil)
-        // increaseContrast path should be covered
-    }
-
-    func testStartJiggling_reduceMotion_usesPulseAnimation() {
-        // Try to enable reduce motion via UserDefaults
-        UserDefaults.standard.set(true, forKey: "com.apple.universalaccess.reduceMotion")
-        defer { UserDefaults.standard.set(false, forKey: "com.apple.universalaccess.reduceMotion") }
-
-        let app = TestDataFactory.makePageItem(
-            id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
-        )
-        cell.configure(item: app, icon: nil)
-        cell.startJiggling()
-        cell.stopJiggling()
-        // reduceMotion path should be covered (if system picks up the setting)
-    }
-
-    func testStartJiggling_reduceMotion_provider_usesPulse() {
-        // 通过注入 accessibilitySettingsProvider 确定性触发 reduceMotion 脉冲分支
+    @Test func configure_increaseContrast_appliesBorderAndBoldFont() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
         cell.accessibilitySettingsProvider = {
-            AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: true
+            )
+        }
+        let app = TestDataFactory.makePageItem(
+            id: 1, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
+        )
+        cell.configure(item: app, icon: nil)
+    }
+
+    @Test func startJiggling_reduceMotion_usesPulseAnimation() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
+        UserDefaults.standard.set(true, forKey: "com.apple.universalaccess.reduceMotion")
+        defer {
+            UserDefaults.standard.set(
+                false, forKey: "com.apple.universalaccess.reduceMotion"
+            )
         }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
@@ -274,34 +264,43 @@ final class AppIconCellTests: XCTestCase {
         cell.configure(item: app, icon: nil)
         cell.startJiggling()
         cell.stopJiggling()
-        // reduceMotion 分支（缩放脉冲动画）应被执行
     }
 
-    // MARK: - Accessibility
-
-    func testAccessibilityRole_isButton() {
-        XCTAssertEqual(cell.view.accessibilityRole(), .button)
+    @Test func startJiggling_reduceMotion_provider_usesPulse() {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
+        cell.accessibilitySettingsProvider = {
+            AccessibilitySettings(
+                reduceMotion: true,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
+        let app = TestDataFactory.makePageItem(
+            id: 1, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
+        )
+        cell.configure(item: app, icon: nil)
+        cell.startJiggling()
+        cell.stopJiggling()
     }
 
-    // MARK: - Delete Button Action
+    @Test func accessibilityRole_isButton() {
+        let cell = makeSUT()
+        #expect(cell.view.accessibilityRole() == .button)
+    }
 
-    func testDeleteButtonClicked_triggersOnDelete() {
+    @Test func deleteButtonClicked_triggersOnDelete() {
+        let cell = makeSUT()
         var deleteCalled = false
         cell.onDelete = { deleteCalled = true }
-
-        // Invoke the private @objc method via perform
         cell.perform(NSSelectorFromString("deleteButtonClicked"))
-
-        XCTAssertTrue(deleteCalled)
+        #expect(deleteCalled)
     }
 
-    func testDeleteButtonClicked_withoutCallback_doesNotCrash() {
-        // No callback set
+    @Test func deleteButtonClicked_withoutCallback_doesNotCrash() {
+        let cell = makeSUT()
         cell.perform(NSSelectorFromString("deleteButtonClicked"))
-        // Should not crash
     }
 }
-
-// NOTE: FolderCellTests 已抽取到独立的 FolderCellTests.swift（更完整的超集），
-// 此处删除遗留的重复类以解决 "invalid redeclaration" 编译错误。
 #endif
