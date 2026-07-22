@@ -74,6 +74,30 @@ struct KeyboardNavigatorTests {
         #expect(action == .enterSearchMode("s"))
     }
 
+    @Test("idle 首字符进入搜索态，后续字符追加")
+    func firstAndFollowingCharactersUpdateMode() {
+        let sut = KeyboardNavigator()
+        #expect(sut.handleCharacter("s") == .enterSearchMode("s"))
+        #expect(sut.mode == .search(query: "s"))
+        #expect(sut.handleCharacter("a") == .appendToQuery("a"))
+        #expect(sut.mode == .search(query: "sa"))
+    }
+
+    @Test("搜索态 Delete 同步缩短查询")
+    func deleteUpdatesQuery() {
+        let sut = KeyboardNavigator()
+        sut.mode = .search(query: "saf")
+        #expect(sut.handleKey(.delete) == .deleteLastCharacter)
+        #expect(sut.mode == .search(query: "sa"))
+    }
+
+    @Test("空字符串输入被忽略且不改变模式")
+    func emptyCharacterIsIgnored() {
+        let sut = KeyboardNavigator()
+        #expect(sut.handleCharacter("") == .ignored)
+        #expect(sut.mode == .idle)
+    }
+
     // MARK: - Search state
 
     @Test("Search state — ESC returns clearSearch action")

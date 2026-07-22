@@ -54,12 +54,15 @@ public final class KeyboardNavigator {
         switch mode {
         case .idle:
             return handleKeyInIdle(key)
-        case .search:
+        case .search(let query):
             let action = handleKeyInSearch(key)
-            // ESC-twice behavior: clear search and return to idle
-            // so next ESC returns closeWindow
-            if action == .clearSearch {
+            switch action {
+            case .clearSearch:
                 mode = .idle
+            case .deleteLastCharacter:
+                mode = .search(query: String(query.dropLast()))
+            default:
+                break
             }
             return action
         case .edit:
@@ -68,10 +71,13 @@ public final class KeyboardNavigator {
     }
 
     public func handleCharacter(_ char: String) -> Action {
+        guard !char.isEmpty else { return .ignored }
         switch mode {
         case .idle:
+            mode = .search(query: char)
             return .enterSearchMode(char)
-        case .search(_):
+        case .search(let query):
+            mode = .search(query: query + char)
             return .appendToQuery(char)
         case .edit:
             return .ignored
