@@ -174,6 +174,7 @@ import AppKit
     @Test func emptyStateView_init_doesNotCrash() {
         let view = EmptyStateView()
         #expect(view.isHidden)
+        #expect(view.alphaValue == 0)
     }
 
     @Test func emptyStateView_show_unhides() {
@@ -249,6 +250,7 @@ import AppKit
     @Test func searchBar_init_doesNotCrash() {
         let bar = SearchBar()
         #expect(bar.isHidden)
+        #expect(bar.alphaValue == 0)
     }
 
     @Test func searchBar_show_unhides() {
@@ -603,7 +605,8 @@ private func expectRowMajor(
 
     @Test func pageControlView_init_doesNotCrash() {
         let viewModel = PageControlViewModel()
-        _ = PageControlView(viewModel: viewModel)
+        let view = PageControlView(viewModel: viewModel)
+        #expect(view.onDotSelected == nil)
     }
 
     @Test func pageControlView_update_withMultiplePages_isVisible() {
