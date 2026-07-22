@@ -11,6 +11,23 @@ private final class SendableCounter: @unchecked Sendable {
     var flag: Bool = false
 }
 
+private final class KeyCodeRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var storage: [UInt16] = []
+
+    func append(_ keyCode: UInt16) {
+        lock.lock()
+        storage.append(keyCode)
+        lock.unlock()
+    }
+
+    var values: [UInt16] {
+        lock.lock()
+        defer { lock.unlock() }
+        return storage
+    }
+}
+
 @MainActor
 @Suite("HotkeyManager")
 struct HotkeyManagerTests {
@@ -628,8 +645,8 @@ struct HotkeyManagerTests {
         #expect(weakBox == nil)
     }
 
-    @Test("local monitor lifecycle uses injected boundary")
-    func localMonitorLifecycleUsesInjectedBoundary() {
+    @Test("重复注册 local monitor 只安装一次")
+    func localMonitorRegistrationIsIdempotent() {
         let manager = makeIsolatedManager()
         let token = NSObject()
         var installCount = 0
@@ -673,19 +690,53 @@ struct HotkeyManagerTests {
         #expect(counter.flag == true)
     }
 
-    @Test("handleLocalMonitorEvent ESC/arrow/enter keys return event unchanged")
-    func handleLocalMonitorEvent_specialKeys_returnEvent() {
+    @Test("local monitor 转发 ESC 方向键 Enter 并保留 nil")
+    func localMonitorForwardsSpecialKeysAndNil() {
         let manager = makeIsolatedManager()
+        let keyCodes = KeyCodeRecorder()
         manager.onKeyDown = { event in
-            Issue.record("onKeyDown should not fire for special keys")
-            return event
+            keyCodes.append(event.keyCode)
+            return nil
         }
-        let esc = makeNSKeyEvent(type: .keyDown, keyCode: 53)
-        #expect(manager.handleLocalMonitorEvent(esc) === esc)
-        let left = makeNSKeyEvent(type: .keyDown, keyCode: 123)
-        #expect(manager.handleLocalMonitorEvent(left) === left)
-        let enter = makeNSKeyEvent(type: .keyDown, keyCode: 36)
-        #expect(manager.handleLocalMonitorEvent(enter) === enter)
+        let handler = manager.localMonitorHandler
+
+        for keyCode: UInt16 in [53, 123, 124, 125, 126, 36] {
+            #expect(handler?(makeNSKeyEvent(type: .keyDown, keyCode: keyCode)) == nil)
+        }
+        #expect(keyCodes.values == [53, 123, 124, 125, 126, 36])
+    }
+
+    @Test("local monitor 无 callback 时放行原对象")
+    func localMonitorWithoutCallbackReturnsOriginal() {
+        let manager = makeIsolatedManager()
+        let event = makeNSKeyEvent(type: .keyDown, keyCode: 53)
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("local monitor manager 释放后放行原对象")
+    func localMonitorHandlerAfterManagerDeallocationReturnsOriginal() {
+        var manager: HotkeyManager? = makeIsolatedManager()
+        let handler = manager?.localMonitorHandler
+        manager = nil
+        let event = makeNSKeyEvent(type: .keyDown, keyCode: 53)
+
+        #expect(handler?(event) === event)
+    }
+
+    @Test("local monitor flagsChanged 转发并保留 nil")
+    func localMonitorForwardsFlagsChangedAndNil() {
+        let manager = makeIsolatedManager()
+        let keyCodes = KeyCodeRecorder()
+        manager.onKeyDown = { event in
+            keyCodes.append(event.keyCode)
+            return nil
+        }
+
+        #expect(manager.localMonitorHandler?(
+            makeNSKeyEvent(type: .flagsChanged, keyCode: 58)
+        ) == nil)
+        #expect(keyCodes.values == [58])
     }
 
     @Test("handleLocalMonitorEvent other key forwards to onKeyDown")
@@ -727,6 +778,7 @@ struct HotkeyManagerTests {
     func localMonitorHandler_forwards() {
         let manager = makeIsolatedManager()
         manager.registerLocalMonitor()
+        defer { manager.unregisterLocalMonitor() }
         let counter = SendableCounter()
         manager.onKeyDown = { event in counter.flag = true; return event }
         _ = manager.localMonitorHandler?(makeNSKeyEvent(type: .keyDown, keyCode: 0))

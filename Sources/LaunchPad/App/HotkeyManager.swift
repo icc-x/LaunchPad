@@ -82,7 +82,8 @@ public final class HotkeyManager: HotkeyManaging {
     public init() {
         accessibilityChecker = HotkeyManager.defaultAccessibilityCheck
         localMonitorHandler = { [weak self] event in
-            self?.handleLocalMonitorEvent(event) ?? event
+            guard let self else { return event }
+            return self.handleLocalMonitorEvent(event)
         }
     }
 
@@ -211,13 +212,8 @@ public final class HotkeyManager: HotkeyManaging {
 
     /// 本地键盘监视器事件处理（抽出便于测试）。
     func handleLocalMonitorEvent(_ event: NSEvent) -> NSEvent? {
-        if event.type == .flagsChanged {
-            return onKeyDown?(event) ?? event
-        }
-        if event.keyCode == 53 { return event }          // ESC
-        if [123, 124, 125, 126].contains(event.keyCode) { return event } // Arrow keys
-        if event.keyCode == 36 { return event }           // Enter
-        return onKeyDown?(event) ?? event
+        guard let onKeyDown else { return event }
+        return onKeyDown(event)
     }
 
     public func unregisterLocalMonitor() {
