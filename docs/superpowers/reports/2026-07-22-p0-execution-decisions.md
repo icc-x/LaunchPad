@@ -862,3 +862,31 @@ the approved plan or task-specific test reports.
   completed `225 tests / 7 suites / 4 issues`; all four issues remained confined
   to the registered three Window tests with distribution `2/1/1`, and the
   AppDelegate suite passed.
+
+## Decision 039: Make transient-message cancellation state internally Sendable
+
+- Status: adopted and verified in Task 17.
+- Evidence: a generation guard correctly prevented an explicitly performed,
+  cancelled work item from hiding a newer message, but the first implementation
+  stored the generation on the MainActor view and the non-Sendable
+  `DispatchWorkItem` in an unsynchronized `@unchecked Sendable` owner. The view's
+  nonisolated deinitializer could cancel that item only by relying on an implicit
+  single-thread ownership argument that the type itself did not enforce.
+- Decision: keep message, label, visibility, and accessibility state isolated to
+  `MainActor`, while a private `HideState` owns both generation and pending work
+  under one `NSLock`. Begin, replacement, consumption, manual invalidation, and
+  deinitialization all use that synchronized state. Cancellation remains resource
+  cleanup; equality with the current generation remains the correctness gate.
+  Keep the decoded label as an ordinary nonoptional property and reuse an archived
+  label instead of duplicating the view hierarchy.
+- Impact: an already delivered or manually performed stale item cannot affect a
+  later message, deinitialization atomically invalidates and cancels outstanding
+  work without suppressing Swift concurrency diagnostics through an unprotected
+  mutable box, and coder initialization contains no IUO or duplicate constraints.
+- Verification: the regression explicitly performed the cancelled first item and
+  preserved the second message, then performed the current item and hid it. The
+  release test proved the work item does not retain the view and is cancelled at
+  destruction. Frame/coder, default/custom duration, manual hide, accessibility,
+  and no-window layout completed `9 tests / 1 suite / 0 issues`; formal review
+  reported spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0`.
