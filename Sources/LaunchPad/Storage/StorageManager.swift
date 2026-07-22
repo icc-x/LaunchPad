@@ -2,9 +2,56 @@ import Foundation
 import SQLite3
 import LaunchPadProtocols
 
+struct PersistedLayoutSnapshot: Equatable {
+    let allItems: [PageItem]
+
+    var rootItems: [PageItem] {
+        allItems.filter { $0.parentId == nil }.sorted(by: Self.layoutOrder)
+    }
+
+    var pages: [PageItem] {
+        rootItems.filter { $0.type == .page }
+    }
+
+    var pageChildren: [Int64: [PageItem]] {
+        Dictionary(uniqueKeysWithValues: pages.map { page in
+            (page.id, children(of: page.id))
+        })
+    }
+
+    var folderChildren: [Int64: [PageItem]] {
+        let groups = allItems.filter { $0.type == .group }
+        return Dictionary(uniqueKeysWithValues: groups.map { group in
+            (group.id, children(of: group.id))
+        })
+    }
+
+    var flattenedTopLevelIDs: [Int64] {
+        pages.flatMap { pageChildren[$0.id] ?? [] }.map(\.id)
+    }
+
+    func children(of parentID: Int64) -> [PageItem] {
+        allItems
+            .filter { $0.parentId == parentID }
+            .sorted(by: Self.layoutOrder)
+    }
+
+    private static func layoutOrder(_ lhs: PageItem, _ rhs: PageItem) -> Bool {
+        lhs.ordering == rhs.ordering
+            ? lhs.id < rhs.id
+            : lhs.ordering < rhs.ordering
+    }
+}
+
 /// SQLite 数据存储管理器。
 /// 生产环境使用文件路径，测试使用 ":memory:" 内存数据库。
-public final class StorageManager: DataStoring, @unchecked Sendable {
+public final class StorageManager: DataStoring, LayoutMutating, @unchecked Sendable {
+    private struct ResolvedPage {
+        let id: Int64
+        let ordering: Int
+        let itemIDs: [Int64]
+    }
+
     private var db: OpaquePointer?
     private let databaseQueue = DispatchQueue(
         label: "com.launchpad.storage.database",
@@ -116,6 +163,42 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
         }
     }
 
+    public func apply(
+        _ intent: LayoutDropIntent,
+        pageCapacity: Int
+    ) throws {
+        try withDatabase { database in
+            try runTransaction(database: database, mode: .immediate) {
+                guard case .moveTopLevel = intent else {
+                    throw LayoutDomainError.unsupportedIntent
+                }
+                let before = try readPersistedLayoutSnapshot(
+                    database: database
+                )
+                var state = try readLayoutDomainState(snapshot: before)
+                _ = try state.apply(intent)
+                let plan = try state.makePageRebuildPlan(
+                    pageCapacity: pageCapacity
+                )
+                let resolvedPages = try persistPagePlan(
+                    plan,
+                    database: database
+                )
+                try verifyPersistedLayout(
+                    state: state,
+                    pages: resolvedPages,
+                    database: database
+                )
+            }
+        }
+    }
+
+    func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
+        try withDatabase { database in
+            try readPersistedLayoutSnapshot(database: database)
+        }
+    }
+
     private func requireDatabase() throws -> OpaquePointer {
         guard isUsable, let db else { throw StorageError.storageUnavailable }
         return db
@@ -154,6 +237,369 @@ public final class StorageManager: DataStoring, @unchecked Sendable {
         } catch let rollbackFailure as SQLiteRollbackFailure {
             invalidateDatabase()
             throw rollbackFailure
+        }
+    }
+
+    private func fetchAllPersistedItems(
+        database: OpaquePointer
+    ) throws -> [PageItem] {
+        let kind = SQLiteStatementKind.fetchAllItems
+        let sql = """
+            SELECT i.id, i.uuid, i.type, i.ordering, i.parent_id,
+                   a.title, a.bundle_id, a.path, a.store_id, a.category,
+                   g.title
+            FROM items i
+            LEFT JOIN apps a ON i.id = a.item_id
+            LEFT JOIN groups g ON i.id = g.item_id
+            ORDER BY i.id
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: sql,
+            statement: &statement,
+            kind: kind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+
+        var items: [PageItem] = []
+        var stepCode = sqliteDriver.step(statement, kind: kind)
+        while stepCode == SQLITE_ROW {
+            items.append(decodePageItem(statement: statement))
+            stepCode = sqliteDriver.step(statement, kind: kind)
+        }
+        guard stepCode == SQLITE_DONE else {
+            throw StorageError.queryFailed
+        }
+        return items
+    }
+
+    private func readPersistedLayoutSnapshot(
+        database: OpaquePointer
+    ) throws -> PersistedLayoutSnapshot {
+        PersistedLayoutSnapshot(
+            allItems: try fetchAllPersistedItems(database: database)
+        )
+    }
+
+    private func readLayoutDomainState(
+        snapshot: PersistedLayoutSnapshot
+    ) throws -> LayoutDomainState {
+        var persistedIDs = Set<Int64>()
+        for item in snapshot.allItems {
+            guard persistedIDs.insert(item.id).inserted else {
+                throw LayoutDomainError.duplicateItem(item.id)
+            }
+        }
+
+        guard snapshot.rootItems.allSatisfy({ $0.type == .page }) else {
+            throw LayoutDomainError.invalidParent(
+                snapshot.rootItems.first { $0.type != .page }?.id ?? 0
+            )
+        }
+        var reachable = Set(snapshot.pages.map(\.id))
+        var topLevel: [LayoutNode] = []
+        var folderChildren: [Int64: [LayoutNode]] = [:]
+        for page in snapshot.pages {
+            let children = snapshot.pageChildren[page.id] ?? []
+            guard children.allSatisfy({
+                $0.type == .app || $0.type == .group
+            }) else {
+                throw LayoutDomainError.invalidType(
+                    children.first { $0.type == .page }?.id ?? page.id
+                )
+            }
+            for child in children {
+                guard reachable.insert(child.id).inserted else {
+                    throw LayoutDomainError.duplicateItem(child.id)
+                }
+                topLevel.append(LayoutNode(id: child.id, type: child.type))
+                if child.type == .group {
+                    let nested = snapshot.folderChildren[child.id] ?? []
+                    guard nested.allSatisfy({ $0.type == .app }) else {
+                        throw LayoutDomainError.invalidType(
+                            nested.first { $0.type != .app }?.id ?? child.id
+                        )
+                    }
+                    for item in nested {
+                        guard reachable.insert(item.id).inserted else {
+                            throw LayoutDomainError.duplicateItem(item.id)
+                        }
+                    }
+                    folderChildren[child.id] = nested.map {
+                        LayoutNode(id: $0.id, type: $0.type)
+                    }
+                }
+            }
+        }
+
+        let allIDs = Set(snapshot.allItems.map(\.id))
+        guard reachable == allIDs else {
+            throw LayoutDomainError.invalidParent(
+                allIDs.subtracting(reachable).sorted().first ?? 0
+            )
+        }
+        return LayoutDomainState(
+            existingPageIDs: snapshot.pages.map(\.id),
+            topLevelItems: topLevel,
+            childrenByFolderID: folderChildren
+        )
+    }
+
+    private func updateParentAndOrdering(
+        itemID: Int64,
+        parentID: Int64,
+        ordering: Int,
+        database: OpaquePointer
+    ) throws {
+        let kind = SQLiteStatementKind.updateLayoutItem
+        let sql = "UPDATE items SET parent_id = ?, ordering = ? WHERE id = ?"
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: sql,
+            statement: &statement,
+            kind: kind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_int64(statement, 1, parentID),
+            kind: kind,
+            index: 1
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int(statement, 2, Int32(ordering)),
+            kind: kind,
+            index: 2
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int64(statement, 3, itemID),
+            kind: kind,
+            index: 3
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(statement, kind: kind) == SQLITE_DONE,
+              sqliteDriver.changes(database: database, kind: kind) == 1 else {
+            throw StorageError.updateFailed
+        }
+    }
+
+    private func updatePageOrdering(
+        pageID: Int64,
+        ordering: Int,
+        database: OpaquePointer
+    ) throws {
+        let kind = SQLiteStatementKind.updatePageOrdering
+        let sql = """
+            UPDATE items
+            SET parent_id = NULL, ordering = ?
+            WHERE id = ? AND type = ?
+            """
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: sql,
+            statement: &statement,
+            kind: kind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_int(statement, 1, Int32(ordering)),
+            kind: kind,
+            index: 1
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int64(statement, 2, pageID),
+            kind: kind,
+            index: 2
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int(statement, 3, Int32(ItemType.page.rawValue)),
+            kind: kind,
+            index: 3
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(statement, kind: kind) == SQLITE_DONE,
+              sqliteDriver.changes(database: database, kind: kind) == 1 else {
+            throw StorageError.updateFailed
+        }
+    }
+
+    private func insertPage(
+        ordering: Int,
+        database: OpaquePointer
+    ) throws -> Int64 {
+        let kind = SQLiteStatementKind.insertPage
+        let sql = """
+            INSERT INTO items (uuid, type, parent_id, ordering)
+            VALUES (?, ?, NULL, ?)
+            """
+        let uuid = UUID().uuidString
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: sql,
+            statement: &statement,
+            kind: kind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_text(
+                statement,
+                1,
+                (uuid as NSString).utf8String,
+                -1,
+                Self.sqliteTransient
+            ),
+            kind: kind,
+            index: 1
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int(statement, 2, Int32(ItemType.page.rawValue)),
+            kind: kind,
+            index: 2
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int(statement, 3, Int32(ordering)),
+            kind: kind,
+            index: 3
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(statement, kind: kind) == SQLITE_DONE,
+              sqliteDriver.changes(database: database, kind: kind) == 1 else {
+            throw StorageError.insertFailed
+        }
+        return sqlite3_last_insert_rowid(database)
+    }
+
+    private func deleteLayoutItem(
+        itemID: Int64,
+        database: OpaquePointer
+    ) throws {
+        let kind = SQLiteStatementKind.deleteLayoutItem
+        var statement: OpaquePointer?
+        defer { sqlite3_finalize(statement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: "DELETE FROM items WHERE id = ?",
+            statement: &statement,
+            kind: kind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_int64(statement, 1, itemID),
+            kind: kind,
+            index: 1
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(statement, kind: kind) == SQLITE_DONE,
+              sqliteDriver.changes(database: database, kind: kind) == 1 else {
+            throw StorageError.deleteFailed
+        }
+    }
+
+    private func persistPagePlan(
+        _ plan: PageRebuildPlan,
+        database: OpaquePointer
+    ) throws -> [ResolvedPage] {
+        var resolved: [ResolvedPage] = []
+        for page in plan.pages {
+            let pageID: Int64
+            if let existingPageID = page.existingPageID {
+                pageID = existingPageID
+            } else {
+                pageID = try insertPage(
+                    ordering: page.ordering,
+                    database: database
+                )
+            }
+            try updatePageOrdering(
+                pageID: pageID,
+                ordering: page.ordering,
+                database: database
+            )
+            resolved.append(ResolvedPage(
+                id: pageID,
+                ordering: page.ordering,
+                itemIDs: page.itemIDs
+            ))
+        }
+        for page in resolved {
+            for (ordering, itemID) in page.itemIDs.enumerated() {
+                try updateParentAndOrdering(
+                    itemID: itemID,
+                    parentID: page.id,
+                    ordering: ordering,
+                    database: database
+                )
+            }
+        }
+        for obsoletePageID in plan.obsoletePageIDs {
+            try deleteLayoutItem(
+                itemID: obsoletePageID,
+                database: database
+            )
+        }
+        return resolved
+    }
+
+    private func verifyPersistedLayout(
+        state: LayoutDomainState,
+        pages: [ResolvedPage],
+        createdFolderTitles: [Int64: String] = [:],
+        database: OpaquePointer
+    ) throws {
+        let snapshot = try readPersistedLayoutSnapshot(database: database)
+        guard snapshot.pages.map(\.id) == pages.map(\.id),
+              snapshot.pages.map(\.ordering) == Array(0..<pages.count) else {
+            throw LayoutDomainError.persistedStateMismatch
+        }
+        for page in pages {
+            let children = snapshot.pageChildren[page.id] ?? []
+            guard children.map(\.id) == page.itemIDs,
+                  children.map(\.ordering) == Array(0..<children.count) else {
+                throw LayoutDomainError.persistedStateMismatch
+            }
+        }
+        guard snapshot.flattenedTopLevelIDs
+                == state.topLevelItems.map(\.id) else {
+            throw LayoutDomainError.persistedStateMismatch
+        }
+        for (folderID, expectedChildren) in state.childrenByFolderID {
+            let children = snapshot.folderChildren[folderID] ?? []
+            guard children.map(\.id) == expectedChildren.map(\.id),
+                  children.map(\.ordering) == Array(0..<children.count),
+                  children.allSatisfy({ $0.type == .app }) else {
+                throw LayoutDomainError.persistedStateMismatch
+            }
+        }
+        for (folderID, title) in createdFolderTitles {
+            guard snapshot.allItems.first(where: {
+                $0.id == folderID
+            })?.group?.title == title else {
+                throw LayoutDomainError.persistedStateMismatch
+            }
+        }
+        let expectedIDs = Set(pages.map(\.id))
+            .union(state.topLevelItems.map(\.id))
+            .union(state.childrenByFolderID.values.flatMap { nodes in
+                nodes.map(\.id)
+            })
+        guard Set(snapshot.allItems.map(\.id)) == expectedIDs else {
+            throw LayoutDomainError.persistedStateMismatch
         }
     }
 

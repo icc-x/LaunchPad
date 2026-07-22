@@ -1013,7 +1013,7 @@ struct StorageManagerSQLiteBoundaryTests {
         #expect(storedSecond.ordering == 1)
     }
 
-    @Test("全部 7 个 public API 精确进入同一 databaseQueue")
+    @Test("全部 8 个 public API 精确进入同一 databaseQueue")
     func everyPublicMethodUsesDatabaseQueue() throws {
         let sut = try StorageManager(dbPath: ":memory:")
         let pageID = try sut.insertItem(
@@ -1026,8 +1026,19 @@ struct StorageManagerSQLiteBoundaryTests {
         let appID = try sut.insertItem(TestDataFactory.makePageItem(
             uuid: "queue-app",
             type: .app,
+            ordering: 0,
             parentId: pageID,
             app: app
+        ))
+        let anchorID = try sut.insertItem(TestDataFactory.makePageItem(
+            uuid: "queue-anchor",
+            type: .app,
+            ordering: 1,
+            parentId: pageID,
+            app: TestDataFactory.makeAppInfo(
+                title: "Queue Anchor",
+                bundleId: "com.test.queue.anchor"
+            )
         ))
         let recorder = QueueObservationRecorder()
         sut.databaseAccessObserver = { recorder.append($0) }
@@ -1053,11 +1064,21 @@ struct StorageManagerSQLiteBoundaryTests {
         ))
         try sut.deleteItem(id: removableID)
         _ = try sut.fetchAllItems(parentId: pageID)
-        try sut.reorderItems(parentId: pageID, orderedIds: [appID])
+        try sut.reorderItems(
+            parentId: pageID,
+            orderedIds: [appID, anchorID]
+        )
         try sut.saveImage(itemId: appID, icon1x: Data([1]), icon2x: Data([2]))
         _ = try sut.fetchImage(itemId: appID)
+        try sut.apply(
+            .moveTopLevel(
+                itemID: appID,
+                placement: .afterItem(itemID: anchorID)
+            ),
+            pageCapacity: 2
+        )
 
-        #expect(recorder.snapshot.count == 7)
+        #expect(recorder.snapshot.count == 8)
         #expect(recorder.snapshot.allSatisfy { $0 })
     }
 }
