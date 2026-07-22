@@ -25,6 +25,18 @@ public class AppIconCell: NSCollectionViewItem {
 
     /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduceMotion 脉冲分支。
     internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
+    internal var workspaceNotificationCenter: NotificationCenter =
+        NSWorkspace.shared.notificationCenter
+    internal var runningApplicationProvider: () -> [NSRunningApplication] = {
+        NSWorkspace.shared.runningApplications
+    }
+    internal var notificationBundleIDReader: (Notification) -> String? = {
+        notification in
+        let application = notification.userInfo?[
+            NSWorkspace.applicationUserInfoKey
+        ] as? NSRunningApplication
+        return application?.bundleIdentifier
+    }
 
     // MARK: - Lifecycle
 
@@ -132,7 +144,7 @@ public class AppIconCell: NSCollectionViewItem {
             runningIndicator.isHidden = true
             return
         }
-        let isRunning = NSWorkspace.shared.runningApplications.contains {
+        let isRunning = runningApplicationProvider().contains {
             $0.bundleIdentifier == bundleId
         }
         runningIndicator.isHidden = !isRunning
@@ -152,16 +164,15 @@ public class AppIconCell: NSCollectionViewItem {
 
     private func registerWorkspaceNotifications() {
         unregisterWorkspaceNotifications()
-        let center = NSWorkspace.shared.notificationCenter
+        let center = workspaceNotificationCenter
         let activate = center.addObserver(
             forName: NSWorkspace.didActivateApplicationNotification,
             object: nil, queue: nil
         ) { [weak self] notification in
-            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let bundleId = app?.bundleIdentifier
+            nonisolated(unsafe) let notification = notification
             MainActor.assumeIsolated {
                 guard let self,
-                      let bundleId,
+                      let bundleId = self.notificationBundleIDReader(notification),
                       bundleId == self.currentBundleId else { return }
                 self.runningIndicator.isHidden = false
             }
@@ -170,11 +181,10 @@ public class AppIconCell: NSCollectionViewItem {
             forName: NSWorkspace.didDeactivateApplicationNotification,
             object: nil, queue: nil
         ) { [weak self] notification in
-            let app = notification.userInfo?[NSWorkspace.applicationUserInfoKey] as? NSRunningApplication
-            let bundleId = app?.bundleIdentifier
+            nonisolated(unsafe) let notification = notification
             MainActor.assumeIsolated {
                 guard let self,
-                      let bundleId,
+                      let bundleId = self.notificationBundleIDReader(notification),
                       bundleId == self.currentBundleId else { return }
                 self.runningIndicator.isHidden = true
             }
@@ -183,7 +193,7 @@ public class AppIconCell: NSCollectionViewItem {
     }
 
     private func unregisterWorkspaceNotifications() {
-        workspaceObservers.forEach { NSWorkspace.shared.notificationCenter.removeObserver($0) }
+        workspaceObservers.forEach { workspaceNotificationCenter.removeObserver($0) }
         workspaceObservers.removeAll()
     }
 

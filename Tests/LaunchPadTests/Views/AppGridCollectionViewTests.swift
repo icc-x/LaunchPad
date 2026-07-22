@@ -412,10 +412,12 @@ final class AppGridCollectionViewTests: XCTestCase {
         let group = TestDataFactory.makePageItem(id: 2, type: .group, ordering: 1,
                                                   group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder"))
         collectionView.reload(pages: [[app, group]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
+        let dragController = DragController()
+        dragController.handleDragStart()
+        collectionView.dragController = dragController
+        collectionView.pasteboardUUIDReader = { _ in app.uuid }
 
         let pb = NSPasteboard(name: .init("test"))
-        pb.setPropertyList(app.uuid, forType: .string)
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
 
         let result = collectionView.collectionView(collectionView,
@@ -423,6 +425,7 @@ final class AppGridCollectionViewTests: XCTestCase {
                                                     indexPath: IndexPath(item: 1, section: 0),
                                                     dropOperation: .on)
         XCTAssertTrue(result)
+        XCTAssertEqual(dragController.state, .idle)
     }
 
     func testAcceptDrop_invalidPasteboard_returnsFalse() {
@@ -430,6 +433,10 @@ final class AppGridCollectionViewTests: XCTestCase {
         let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
         collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
+        let dragController = DragController()
+        dragController.handleDragStart()
+        collectionView.dragController = dragController
+        collectionView.pasteboardUUIDReader = { _ in nil }
 
         let pb = NSPasteboard(name: .init("test"))
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
@@ -439,6 +446,7 @@ final class AppGridCollectionViewTests: XCTestCase {
                                                     indexPath: IndexPath(item: 0, section: 0),
                                                     dropOperation: .on)
         XCTAssertFalse(result)
+        XCTAssertEqual(dragController.state, .dragging)
     }
 
     // MARK: - Dragging image
@@ -667,10 +675,12 @@ final class AppGridCollectionViewTests: XCTestCase {
         let app2 = TestDataFactory.makePageItem(id: 2, uuid: "reorder-2", type: .app, ordering: 1,
                                                  app: TestDataFactory.makeAppInfo(id: 2, title: "A2"))
         collectionView.reload(pages: [[app1, app2]], searchResults: nil, searchQuery: nil)
-        collectionView.dragController = DragController()
+        let dragController = DragController()
+        dragController.handleDragStart()
+        collectionView.dragController = dragController
+        collectionView.pasteboardUUIDReader = { _ in app1.uuid }
 
         let pb = NSPasteboard(name: .init("test-reorder"))
-        pb.setPropertyList(app1.uuid, forType: .string)
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
 
         let result = collectionView.collectionView(collectionView,
@@ -678,6 +688,11 @@ final class AppGridCollectionViewTests: XCTestCase {
                                                     indexPath: IndexPath(item: 1, section: 0),
                                                     dropOperation: .on)
         XCTAssertTrue(result)
+        XCTAssertEqual(
+            collectionView.diffableDataSource.snapshot().itemIdentifiers.map(\.id),
+            [app1.id, app2.id]
+        )
+        XCTAssertEqual(dragController.state, .idle)
     }
 
     func testAcceptDrop_outOfRangeTarget_returnsFalse() {
@@ -685,9 +700,12 @@ final class AppGridCollectionViewTests: XCTestCase {
         let app = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0,
                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "App1"))
         collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
+        let dragController = DragController()
+        dragController.handleDragStart()
+        collectionView.dragController = dragController
+        collectionView.pasteboardUUIDReader = { _ in app.uuid }
 
         let pb = NSPasteboard(name: .init("test-oob"))
-        pb.setPropertyList(app.uuid, forType: .string)
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
 
         let result = collectionView.collectionView(collectionView,
@@ -695,6 +713,7 @@ final class AppGridCollectionViewTests: XCTestCase {
                                                     indexPath: IndexPath(item: 99, section: 0),
                                                     dropOperation: .on)
         XCTAssertFalse(result)
+        XCTAssertEqual(dragController.state, .dragging)
     }
 
     // MARK: - Entrance animation loop (injected providers)
@@ -716,14 +735,15 @@ final class AppGridCollectionViewTests: XCTestCase {
         let app = TestDataFactory.makePageItem(id: 1, uuid: "ex-app", type: .app, ordering: 0,
                                                 app: TestDataFactory.makeAppInfo(id: 1, title: "A"))
         collectionView.reload(pages: [[app]], searchResults: nil, searchQuery: nil)
+        collectionView.pasteboardUUIDReader = { _ in app.uuid }
         let pb = NSPasteboard(name: .init("test-extract"))
-        pb.setPropertyList(app.uuid, forType: .string)
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
         let extracted = collectionView.extractDraggedItem(from: info)
         XCTAssertEqual(extracted?.id, app.id)
     }
 
     func testExtractDraggedItem_emptyPasteboard_returnsNil() {
+        collectionView.pasteboardUUIDReader = { _ in nil }
         let pb = NSPasteboard(name: .init("test-extract-empty"))
         let info = MockDraggingInfo(pasteboard: pb, location: .zero)
         let extracted = collectionView.extractDraggedItem(from: info)

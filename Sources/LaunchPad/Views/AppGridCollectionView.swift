@@ -44,6 +44,11 @@ public class AppGridCollectionView: NSCollectionView {
     /// 可见 indexPath 提供器（测试可注入以驱动入场动画循环体；默认回退到 indexPathsForVisibleItems()）
     var visibleIndexPathsProvider: (() -> [IndexPath])?
 
+    /// 拖拽 UUID 读取器（测试注入以隔离系统 pasteboard；默认读取字符串类型）。
+    internal var pasteboardUUIDReader: (NSPasteboard) -> String? = {
+        $0.string(forType: .string)
+    }
+
     // MARK: - Init
 
     public override init(frame frameRect: NSRect) {
@@ -360,7 +365,7 @@ extension AppGridCollectionView: NSCollectionViewDelegate {
 
     /// 从拖拽信息中提取被拖拽的 item（抽出便于测试，无需真实剪贴板往返）
     func extractDraggedItem(from draggingInfo: NSDraggingInfo) -> PageItem? {
-        guard let pasteboard = draggingInfo.draggingPasteboard.propertyList(forType: .string) as? String else {
+        guard let pasteboard = pasteboardUUIDReader(draggingInfo.draggingPasteboard) else {
             return nil
         }
         return findItem(byUuid: pasteboard)

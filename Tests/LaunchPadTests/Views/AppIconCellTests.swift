@@ -25,21 +25,6 @@ final class AppIconCellTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private static func runningApp(forBundleId bundleId: String) throws -> NSRunningApplication {
-        guard let app = NSWorkspace.shared.runningApplications.first(where: { $0.bundleIdentifier == bundleId }) else {
-            throw XCTSkip("No running application with bundleId: \(bundleId)")
-        }
-        return app
-    }
-
-    private static func postWorkspaceNotification(_ name: Notification.Name, app: NSRunningApplication) {
-        NSWorkspace.shared.notificationCenter.post(
-            name: name,
-            object: nil,
-            userInfo: [NSWorkspace.applicationUserInfoKey: app]
-        )
-    }
-
     // MARK: - Init
 
     func testInit_loadsView() {
@@ -209,40 +194,42 @@ final class AppIconCellTests: XCTestCase {
         XCTAssertFalse(cell.hasWorkspaceObservers, "prepareForReuse should unregister workspace notification observers")
     }
 
-    func testDidActivateNotification_showsRunningIndicator() throws {
+    func testDidActivateNotification_showsRunningIndicator() {
+        let center = NotificationCenter()
+        let bundleID = "com.example.task4.workspace"
+        cell.workspaceNotificationCenter = center
+        cell.runningApplicationProvider = { [] }
+        cell.notificationBundleIDReader = { _ in bundleID }
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Finder",
-                                              bundleId: "com.apple.finder")
+            app: TestDataFactory.makeAppInfo(id: 1, title: "Fixture",
+                                              bundleId: bundleID)
         )
         cell.configure(item: app, icon: nil)
 
-        let runningApp = try Self.runningApp(forBundleId: "com.apple.finder")
-
-        // First hide via didDeactivate
-        Self.postWorkspaceNotification(NSWorkspace.didDeactivateApplicationNotification, app: runningApp)
-        XCTAssertFalse(cell.isRunningIndicatorVisible, "indicator should be hidden after deactivate")
-
-        // Then show via didActivate
-        Self.postWorkspaceNotification(NSWorkspace.didActivateApplicationNotification, app: runningApp)
+        XCTAssertFalse(cell.isRunningIndicatorVisible)
+        center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
         XCTAssertTrue(cell.isRunningIndicatorVisible, "indicator should be visible after activate")
     }
 
-    func testDidDeactivateNotification_hidesRunningIndicator() throws {
+    func testDidDeactivateNotification_hidesRunningIndicator() {
+        let center = NotificationCenter()
+        let bundleID = "com.example.task4.workspace"
+        cell.workspaceNotificationCenter = center
+        cell.runningApplicationProvider = { [] }
+        cell.notificationBundleIDReader = { _ in bundleID }
+        defer { cell.prepareForReuse() }
         let app = TestDataFactory.makePageItem(
             id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "Finder",
-                                              bundleId: "com.apple.finder")
+            app: TestDataFactory.makeAppInfo(id: 1, title: "Fixture",
+                                              bundleId: bundleID)
         )
         cell.configure(item: app, icon: nil)
 
-        let runningApp = try Self.runningApp(forBundleId: "com.apple.finder")
-
-        // Finder is running, indicator should be visible
-        XCTAssertTrue(cell.isRunningIndicatorVisible, "indicator should be visible for running app")
-
-        // Post didDeactivate -> should hide
-        Self.postWorkspaceNotification(NSWorkspace.didDeactivateApplicationNotification, app: runningApp)
+        center.post(name: NSWorkspace.didActivateApplicationNotification, object: nil)
+        XCTAssertTrue(cell.isRunningIndicatorVisible)
+        center.post(name: NSWorkspace.didDeactivateApplicationNotification, object: nil)
         XCTAssertFalse(cell.isRunningIndicatorVisible, "indicator should be hidden after deactivate")
     }
 
