@@ -149,44 +149,22 @@ public final class HotkeyManager: HotkeyManaging {
     /// 静态 CGEventTap 回调（@convention(c)）。事件状态机必须同步交付，
     /// 否则 flagsChanged 和随后的 keyDown 可能发生乱序。
     nonisolated static let tapCallback: CGEventTapCallBack = { _, type, event, refcon in
-        guard let refcon else { return Unmanaged.passUnretained(event) }
-        let contextAddress = UInt(bitPattern: refcon)
-        let eventAddress = UInt(bitPattern: Unmanaged.passUnretained(event).toOpaque())
-
-        if Thread.isMainThread {
-            MainActor.assumeIsolated {
-                handleTapCallback(
-                    contextAddress: contextAddress,
-                    eventAddress: eventAddress,
-                    type: type
-                )
-            }
-        } else {
-            DispatchQueue.main.sync {
-                MainActor.assumeIsolated {
-                    handleTapCallback(
-                        contextAddress: contextAddress,
-                        eventAddress: eventAddress,
-                        type: type
-                    )
-                }
-            }
+        precondition(
+            Thread.isMainThread,
+            "CGEventTap callback must execute on the main run loop"
+        )
+        // The source is installed on MainActor's current run loop. These aliases
+        // remain valid only for this synchronous callback invocation.
+        nonisolated(unsafe) let mainThreadRefcon = refcon
+        nonisolated(unsafe) let mainThreadEvent = event
+        MainActor.assumeIsolated {
+            guard let mainThreadRefcon else { return }
+            let box = Unmanaged<HotkeyCallbackBox>
+                .fromOpaque(mainThreadRefcon)
+                .takeUnretainedValue()
+            box.manager?.handleGlobalEvent(type: type, event: mainThreadEvent)
         }
         return Unmanaged.passUnretained(event)
-    }
-
-    private static func handleTapCallback(
-        contextAddress: UInt,
-        eventAddress: UInt,
-        type: CGEventType
-    ) {
-        guard let context = UnsafeMutableRawPointer(bitPattern: contextAddress),
-              let eventPointer = UnsafeMutableRawPointer(bitPattern: eventAddress) else {
-            return
-        }
-        let box = Unmanaged<HotkeyCallbackBox>.fromOpaque(context).takeUnretainedValue()
-        let event = Unmanaged<CGEvent>.fromOpaque(eventPointer).takeUnretainedValue()
-        box.manager?.handleGlobalEvent(type: type, event: event)
     }
 
     /// CGEventTap 回调核心逻辑（抽出便于测试，主线程执行）。

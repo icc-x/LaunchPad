@@ -262,61 +262,53 @@ struct HotkeyManagerTests {
 
     // MARK: - C callback delivery
 
-    @Test("background C callbacks synchronously preserve flags/keyDown ordering")
-    func tapCallback_fromBackground_preservesEventOrdering() async throws {
+    @Test("main-runloop C callbacks synchronously preserve flags/keyDown ordering")
+    func tapCallback_onMainRunLoop_preservesEventOrdering() throws {
         let manager = makeIsolatedManager(accessibilityTrusted: true)
         let port = try makeMachPort()
         manager.tapProvider = nil
-        var contextAddress: UInt?
+        var callbackContext: UnsafeMutableRawPointer?
+        var creatorCalls = 0
+        var creatorRanOnMainThread = false
         manager.eventTapCreator = { _, _, context in
-            contextAddress = context.map { UInt(bitPattern: $0) }
+            MainActor.preconditionIsolated()
+            creatorCalls += 1
+            creatorRanOnMainThread = Thread.isMainThread
+            callbackContext = context
             return port
         }
         let counter = SendableCounter()
         manager.onToggle = {
             MainActor.preconditionIsolated()
+            counter.flag = Thread.isMainThread
             counter.count += 1
         }
         #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
-        let address = try #require(contextAddress)
+        let context = try #require(callbackContext)
+        let flagsEvent = try makeCGKeyEvent(keyCode: 49)
+        flagsEvent.flags = .maskAlternate
+        let keyEvent = try makeCGKeyEvent(keyCode: 49)
+        let proxy = try #require(CGEventTapProxy(bitPattern: 1))
 
-        await withCheckedContinuation { continuation in
-            DispatchQueue.global().async {
-                guard
-                    let context = UnsafeMutableRawPointer(bitPattern: address),
-                    let flagsEvent = CGEvent(
-                        keyboardEventSource: nil,
-                        virtualKey: 49,
-                        keyDown: true
-                    ),
-                    let keyEvent = CGEvent(
-                        keyboardEventSource: nil,
-                        virtualKey: 49,
-                        keyDown: true
-                    ),
-                    let proxy = CGEventTapProxy(bitPattern: 1)
-                else {
-                    continuation.resume()
-                    return
-                }
-                flagsEvent.flags = .maskAlternate
-                _ = HotkeyManager.tapCallback(
-                    proxy,
-                    .flagsChanged,
-                    flagsEvent,
-                    context
-                )
-                _ = HotkeyManager.tapCallback(
-                    proxy,
-                    .keyDown,
-                    keyEvent,
-                    context
-                )
-                continuation.resume()
-            }
-        }
+        let flagsResult = HotkeyManager.tapCallback(
+            proxy,
+            .flagsChanged,
+            flagsEvent,
+            context
+        )
+        let keyResult = HotkeyManager.tapCallback(
+            proxy,
+            .keyDown,
+            keyEvent,
+            context
+        )
 
+        #expect(creatorCalls == 1)
+        #expect(creatorRanOnMainThread == true)
+        #expect(flagsResult != nil)
+        #expect(keyResult != nil)
         #expect(counter.count == 1)
+        #expect(counter.flag == true)
         manager.unregisterGlobalHotkey()
     }
 
