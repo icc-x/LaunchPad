@@ -104,6 +104,7 @@ public class AppGridCollectionView: NSCollectionView {
         pages: [[PageItem]],
         searchResults: [PageItem]?,
         searchQuery: String?,
+        searchResultPages: [[PageItem]]? = nil,
         animatingDifferences: Bool = true,
         reconfigureItems: Bool = false,
         animateEntrance: Bool = true
@@ -111,7 +112,8 @@ public class AppGridCollectionView: NSCollectionView {
         var snapshot = DiffableDataSourceBuilder.buildSnapshot(
             pages: pages,
             searchResults: searchResults,
-            searchQuery: searchQuery
+            searchQuery: searchQuery,
+            searchResultPages: searchResultPages
         )
         if reconfigureItems {
             let existingItems = Set(diffableDataSource.snapshot().itemIdentifiers)

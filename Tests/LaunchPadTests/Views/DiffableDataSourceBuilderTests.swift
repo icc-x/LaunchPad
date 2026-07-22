@@ -136,5 +136,39 @@ struct DiffableDataSourceBuilderTests {
         #expect(sections.count == 1)
         #expect(sections[0] == .search)
     }
+
+    @Test("paged search contents 是权威输入并保持精确顺序")
+    func searchResultPagesAreAuthoritative() {
+        let items = TestDataFactory.makeAppItems(count: 9)
+        let snapshot = DiffableDataSourceBuilder.buildSnapshot(
+            pages: [],
+            searchResults: Array(items.reversed()),
+            searchQuery: "app",
+            searchResultPages: [
+                Array(items[0..<4]),
+                Array(items[4..<8]),
+                Array(items[8..<9]),
+            ]
+        )
+
+        #expect(snapshot.sectionIdentifiers == [
+            .searchPage(0), .searchPage(1), .searchPage(2),
+        ])
+        #expect(snapshot.itemIdentifiers.map(\.id) == items.map(\.id))
+    }
+
+    @Test("nil paged search 保留 legacy 单一 search section 与精确顺序")
+    func nilSearchResultPagesUsesLegacySearchSection() {
+        let items = TestDataFactory.makeAppItems(count: 4)
+        let snapshot = DiffableDataSourceBuilder.buildSnapshot(
+            pages: [],
+            searchResults: items,
+            searchQuery: "app",
+            searchResultPages: nil
+        )
+
+        #expect(snapshot.sectionIdentifiers == [.search])
+        #expect(snapshot.itemIdentifiers.map(\.id) == items.map(\.id))
+    }
 }
 #endif

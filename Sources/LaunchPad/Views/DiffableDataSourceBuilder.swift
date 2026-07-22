@@ -5,10 +5,11 @@ import LaunchPadProtocols
 // MARK: - Section definition
 
 /// DiffableDataSource section type
-/// In normal mode each page is a section, in search mode there is a single search section
+/// In normal mode each page is a section; search mode supports legacy and paged sections.
 public enum Section: Hashable {
     case page(Int)
     case search
+    case searchPage(Int)
 }
 
 // MARK: - Snapshot Builder
@@ -26,14 +27,22 @@ public enum DiffableDataSourceBuilder {
     public static func buildSnapshot(
         pages: [[PageItem]],
         searchResults: [PageItem]?,
-        searchQuery: String?
+        searchQuery: String?,
+        searchResultPages: [[PageItem]]? = nil
     ) -> NSDiffableDataSourceSnapshot<Section, PageItem> {
         var snapshot = NSDiffableDataSourceSnapshot<Section, PageItem>()
 
-        // Search mode: single section containing filtered results
         if let results = searchResults, let query = searchQuery, !query.isEmpty {
-            snapshot.appendSections([.search])
-            snapshot.appendItems(results, toSection: .search)
+            if let searchResultPages {
+                let sections = searchResultPages.indices.map(Section.searchPage)
+                snapshot.appendSections(sections)
+                for (index, page) in searchResultPages.enumerated() {
+                    snapshot.appendItems(page, toSection: .searchPage(index))
+                }
+            } else {
+                snapshot.appendSections([.search])
+                snapshot.appendItems(results, toSection: .search)
+            }
             return snapshot
         }
 
