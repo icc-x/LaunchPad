@@ -653,3 +653,34 @@ the approved plan or task-specific test reports.
   passed the controller's fresh `87/87` tests across 8 suites. The cumulative
   diff contained only the two authorized files, and formal review reported spec
   compliant, Task quality Approved, and Critical/Important/Minor `0/0/0`.
+
+## Decision 032: Delete explicit folders before obsolete parent pages
+
+- Status: adopted and verified in Task 14 formal review
+- Evidence: the initial Task 14 sequence let `persistPagePlan` delete obsolete
+  pages before processing `folderIDsToDelete`. In a valid two-page layout
+  `[before, after] / [emptyFolder]` with capacity 2, deleting the empty folder
+  makes the second page obsolete, but the folder remains parented to that page
+  because it is absent from the post-mutation page plan. SQLite's
+  `parent_id ... ON DELETE CASCADE` therefore deleted the folder with its page;
+  the later explicit folder delete observed zero changes and raised
+  `StorageError.deleteFailed`. A focused pre-fix test reproduced exactly this
+  failure.
+- Decision: split non-destructive page resolution/reparenting from obsolete-page
+  deletion. Persist surviving folder children, create/order pages, and reparent
+  every surviving top-level item first; then delete every explicit folder effect;
+  only then delete obsolete pages, verify the complete snapshot, and COMMIT. Do
+  not add temporary detach SQL and do not relax the checked `changes == 1`
+  contract. This refines Decision 030's broad "page writes before folder delete"
+  rule by separating constructive page writes from destructive page cleanup.
+- Impact: a parent-page cascade can no longer consume a folder before its checked
+  explicit delete, while surviving children are still reparented before any
+  folder deletion. The implementation avoids a new SQL statement family and
+  preserves deterministic fault injection for both folder and page deletion.
+- Verification: the two-page empty-folder case now commits to one dense page and
+  `[before, after]`. A four-case matrix fails the second `deleteLayoutItem` at
+  prepare/bind/step/changes after the first folder delete has reported successful
+  changes, and every case restores the complete pre-transaction snapshot. The
+  controller passed `116/116` tests across 9 suites; final cumulative review
+  reported spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0`.
