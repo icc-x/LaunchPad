@@ -22,6 +22,14 @@ struct AppScannerTests {
         return plist
     }
 
+    private func makeExcludedData(from root: [String: Any]) throws -> Data {
+        try PropertyListSerialization.data(
+            fromPropertyList: root,
+            format: .xml,
+            options: 0
+        )
+    }
+
     @Test("扫描返回 .app bundle 列表")
     func scan_returnsAppBundles() {
         let fs = MockFileSystemService()
@@ -33,7 +41,7 @@ struct AppScannerTests {
         fs.bundleInfos[safariURL] = makePlist(name: "Safari", bundleId: "com.apple.Safari")
         fs.bundleInfos[notesURL] = makePlist(name: "Notes", bundleId: "com.apple.Notes")
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         #expect(result.count == 2)
@@ -51,7 +59,7 @@ struct AppScannerTests {
         fs.bundleInfos[goodURL] = makePlist(name: "Safari", bundleId: "com.apple.Safari")
         fs.bundleInfos[badURL] = ["CFBundleIdentifier": "com.test.noname"]
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         #expect(result.count == 1)
@@ -69,7 +77,7 @@ struct AppScannerTests {
         fs.bundleInfos[safariURL] = makePlist(name: "Safari", bundleId: "com.apple.Safari")
         fs.bundleInfos[daemonURL] = makePlist(name: "BackgroundDaemon", bundleId: "com.test.daemon", isUIElement: true)
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         #expect(result.count == 1)
@@ -106,7 +114,7 @@ struct AppScannerTests {
         fs.bundleInfos[safariURL] = makePlist(name: "Safari", bundleId: "com.apple.Safari")
         fs.bundleInfos[myAppURL] = makePlist(name: "MyApp", bundleId: "com.test.myapp")
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir, userAppDir])
 
         #expect(result.count == 2)
@@ -122,7 +130,7 @@ struct AppScannerTests {
         fs.existingFiles = [goodURL, brokenURL]
         fs.bundleInfos[goodURL] = makePlist(name: "Safari", bundleId: "com.apple.Safari")
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         #expect(result.count == 1)
@@ -134,61 +142,84 @@ struct AppScannerTests {
         let fs = MockFileSystemService()
         fs.shouldThrowOnContentsOfDirectory = true
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         #expect(result.isEmpty)
     }
 
-    @Test("从系统 LaunchPadLayout.plist 读取排除列表")
-    func scan_loadsSystemExcludedBundleIds() {
-        let dir = NSHomeDirectory() + "/Library/Application Support/Dock"
-        let plistPath = dir + "/LaunchPadLayout.plist"
-        let fm = FileManager.default
+    @Test("nil exclusion data returns an empty set")
+    func parseExcludedBundleIDs_nil_returnsEmpty() {
+        #expect(AppScanner.parseExcludedBundleIDs(from: nil).isEmpty)
+    }
 
-        // 备份已有文件
-        let backupURL = URL(fileURLWithPath: plistPath + ".backup_test")
-        var hadOriginal = false
-        if fm.fileExists(atPath: plistPath) {
-            try? fm.copyItem(atPath: plistPath, toPath: backupURL.path)
-            try? fm.removeItem(atPath: plistPath)
-            hadOriginal = true
-        }
-        defer {
-            // 清理测试文件
-            try? fm.removeItem(atPath: plistPath)
-            if hadOriginal {
-                try? fm.moveItem(atPath: backupURL.path, toPath: plistPath)
-            }
-        }
+    @Test("malformed exclusion data returns an empty set")
+    func parseExcludedBundleIDs_malformedData_returnsEmpty() {
+        #expect(AppScanner.parseExcludedBundleIDs(
+            from: Data("not a plist".utf8)
+        ).isEmpty)
+    }
 
-        // 创建目录和测试 plist
-        try? fm.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        let plist: [String: Any] = [
+    @Test("a plist without pages returns an empty set")
+    func parseExcludedBundleIDs_missingPages_returnsEmpty() throws {
+        let data = try makeExcludedData(from: ["version": 1])
+        #expect(AppScanner.parseExcludedBundleIDs(from: data).isEmpty)
+    }
+
+    @Test("malformed item containers and entries are ignored")
+    func parseExcludedBundleIDs_malformedItems_areIgnored() throws {
+        let data = try makeExcludedData(from: [
+            "pages": [
+                ["items": "not an array"],
+                ["items": [
+                    ["bundleid": 17, "visible": false],
+                    ["bundleid": "missing.visible"],
+                    ["visible": false],
+                ]],
+            ],
+        ])
+        #expect(AppScanner.parseExcludedBundleIDs(from: data).isEmpty)
+    }
+
+    @Test("only hidden string bundle IDs are returned")
+    func parseExcludedBundleIDs_mixedVisibility_returnsOnlyHiddenStrings() throws {
+        let data = try makeExcludedData(from: [
             "pages": [
                 ["items": [
-                    ["bundleid": "com.apple.hidden1", "visible": false],
-                    ["bundleid": "com.apple.visible1", "visible": true],
+                    ["bundleid": "com.test.hidden.one", "visible": false],
+                    ["bundleid": "com.test.visible", "visible": true],
                 ]],
                 ["items": [
-                    ["bundleid": "com.apple.hidden2", "visible": false],
+                    ["bundleid": "com.test.hidden.two", "visible": false],
                 ]],
-            ]
-        ]
-        let data = try! PropertyListSerialization.data(fromPropertyList: plist, format: .xml, options: 0)
-        try! data.write(to: URL(fileURLWithPath: plistPath))
+            ],
+        ])
+        #expect(AppScanner.parseExcludedBundleIDs(from: data) == [
+            "com.test.hidden.one", "com.test.hidden.two",
+        ])
+    }
 
+    @Test("injected exclusion data filters a hidden app")
+    func scan_loadsInjectedSystemExcludedBundleIds() throws {
+        let data = try makeExcludedData(from: [
+            "pages": [["items": [[
+                "bundleid": "com.test.hidden", "visible": false,
+            ]]]],
+        ])
         let fs = MockFileSystemService()
-        let appURL = self.appURL("HiddenApp")
-        fs.directoryContentsMap[appDir] = [appURL]
-        fs.existingFiles = [appURL]
-        fs.bundleInfos[appURL] = makePlist(name: "HiddenApp", bundleId: "com.apple.hidden1")
+        let hiddenURL = appURL("HiddenApp")
+        fs.directoryContentsMap[appDir] = [hiddenURL]
+        fs.existingFiles = [hiddenURL]
+        fs.bundleInfos[hiddenURL] = makePlist(
+            name: "HiddenApp",
+            bundleId: "com.test.hidden"
+        )
+        let scanner = AppScanner(
+            fileSystemService: fs,
+            excludedDataProvider: { data }
+        )
 
-        let scanner = AppScanner(fileSystemService: fs)
-        let result = scanner.scanDirectories([appDir])
-
-        // com.apple.hidden1 应被排除
-        #expect(result.isEmpty)
+        #expect(scanner.scanDirectories([appDir]).isEmpty)
     }
 }
 
@@ -225,7 +256,7 @@ struct AppScannerPaginationTests {
     func paginate_100apps_3pages() {
         let fs = makeMockFS(count: 100)
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
 
         let scanned = scanner.scanDirectories([appDir])
         scanner.firstLaunchPaginate(scannedApps: scanned, maxPerPage: 35, writer: writer)
@@ -251,7 +282,7 @@ struct AppScannerPaginationTests {
         fs.directoryContentsMap[appDir] = urls
 
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
 
         let scanned = scanner.scanDirectories([appDir])
         scanner.firstLaunchPaginate(scannedApps: scanned, maxPerPage: 3, writer: writer)
@@ -281,7 +312,7 @@ struct AppScannerSyncTests {
     @Test("新应用被插入")
     func sync_insertsNewApps() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let scanned = [
             ScannedApp(name: "NewApp", bundleId: "com.new.app", path: "/Applications/NewApp.app")
         ]
@@ -295,7 +326,7 @@ struct AppScannerSyncTests {
     @Test("已删除应用被删除")
     func sync_deletesRemovedApps() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let existing = TestDataFactory.makePageItem(
             type: .app,
             app: TestDataFactory.makeAppInfo(title: "OldApp", bundleId: "com.old.app")
@@ -310,7 +341,7 @@ struct AppScannerSyncTests {
     @Test("已变更应用被更新")
     func sync_updatesChangedApps() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let existing = TestDataFactory.makePageItem(
             type: .app,
             app: TestDataFactory.makeAppInfo(title: "OldName", bundleId: "com.changed.app", path: "/old/path")
@@ -328,7 +359,7 @@ struct AppScannerSyncTests {
     @Test("未变更应用不操作")
     func sync_noChange_noop() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let existing = TestDataFactory.makePageItem(
             type: .app,
             app: TestDataFactory.makeAppInfo(title: "SameApp", bundleId: "com.same.app", path: "/same/path")
@@ -348,7 +379,7 @@ struct AppScannerSyncTests {
     func sync_insertError_logsAndContinues() {
         let writer = MockItemWriter()
         writer.insertError = TestError.generic
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let scanned = [
             ScannedApp(name: "NewApp", bundleId: "com.new.app", path: "/Applications/NewApp.app")
         ]
@@ -362,7 +393,7 @@ struct AppScannerSyncTests {
     func sync_updateError_logsAndContinues() {
         let writer = MockItemWriter()
         writer.updateError = TestError.generic
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let existing = TestDataFactory.makePageItem(
             type: .app,
             app: TestDataFactory.makeAppInfo(title: "OldName", bundleId: "com.changed.app", path: "/old/path")
@@ -380,7 +411,7 @@ struct AppScannerSyncTests {
     func sync_deleteError_logsAndContinues() {
         let writer = MockItemWriter()
         writer.deleteError = TestError.generic
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let existing = TestDataFactory.makePageItem(
             type: .app,
             app: TestDataFactory.makeAppInfo(title: "OldApp", bundleId: "com.old.app")
@@ -394,7 +425,7 @@ struct AppScannerSyncTests {
     @Test("existingItems 含重复 bundleId 时去重保留首个")
     func sync_duplicateBundleId_deduplicates() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
             app: TestDataFactory.makeAppInfo(title: "App1", bundleId: "com.dup.app", path: "/Applications/App1.app"))
         let app2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 1,
@@ -416,7 +447,7 @@ struct AppScannerSyncTests {
     func firstLaunchPaginate_insertError_continues() {
         let writer = MockItemWriter()
         writer.insertError = TestError.generic
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let scanned = [
             ScannedApp(name: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app")
         ]
@@ -429,7 +460,7 @@ struct AppScannerSyncTests {
     @Test("incrementalSync: existingItems 含 bundleId 为 nil 的 app 时跳过（覆盖 L126 guard else）")
     func incrementalSync_existingAppMissingBundleId_skipped() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         // app.bundleId 为空字符串 ""，guard let bundleId = item.app?.bundleId 应成功（空字符串非 nil）
         // 需要 app 本身为 nil 才能触发 nil 分支
         let appNoBundle = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0, app: nil)
@@ -442,7 +473,7 @@ struct AppScannerSyncTests {
     @Test("incrementalSync: delete loop 中 existing app 缺 bundleId 时跳过（覆盖 L173 guard else）")
     func incrementalSync_deleteLoopAppMissingBundleId_skipped() {
         let writer = MockItemWriter()
-        let scanner = AppScanner(fileSystemService: MockFileSystemService())
+        let scanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         let appNoBundle = TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0, app: nil)
         // scannedApps 为空 → 走 DELETE 分支 → L173 guard let bundleId else { continue }
         scanner.incrementalSync(scannedApps: [], existingItems: [appNoBundle], lastPageId: nil, writer: writer)
@@ -458,7 +489,7 @@ struct AppScannerSyncTests {
         // plist 有 CFBundleName 但缺 CFBundleIdentifier
         fs.bundleInfos[appURL] = ["CFBundleName": "NoBundleId"]
 
-        let scanner = AppScanner(fileSystemService: fs)
+        let scanner = AppScanner(fileSystemService: fs, excludedBundleIds: [])
         let result = scanner.scanDirectories([appDir])
 
         // 没有 CFBundleIdentifier 的应用被跳过

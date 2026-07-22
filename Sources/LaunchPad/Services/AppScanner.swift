@@ -4,39 +4,53 @@ import LaunchPadProtocols
 /// 应用扫描器 — 从指定目录扫描已安装的 .app bundle
 final class AppScanner: AppScanning {
 
+    typealias ExcludedDataProvider = @Sendable () -> Data?
+
     private let fileSystemService: FileSystemService
     private let excludedBundleIds: Set<String>
 
     init(
         fileSystemService: FileSystemService,
-        excludedBundleIds: Set<String>? = nil
+        excludedBundleIds: Set<String>? = nil,
+        excludedDataProvider: @escaping ExcludedDataProvider = AppScanner.systemExcludedData
     ) {
         self.fileSystemService = fileSystemService
-        // 如果未提供排除列表，从系统 LaunchPadLayout.plist 读取
-        self.excludedBundleIds = excludedBundleIds ?? Self.loadSystemExcludedBundleIds()
+        self.excludedBundleIds = excludedBundleIds
+            ?? Self.parseExcludedBundleIDs(from: excludedDataProvider())
     }
 
-    /// 从系统 LaunchPadLayout.plist 读取排除的 bundle ID 列表
-    private static func loadSystemExcludedBundleIds() -> Set<String> {
-        let plistPath = NSHomeDirectory() + "/Library/Application Support/Dock/LaunchPadLayout.plist"
-        guard let data = FileManager.default.contents(atPath: plistPath),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: Any],
-              let pages = plist["pages"] as? [[String: Any]] else {
+    static func systemExcludedData() -> Data? {
+        let path = NSHomeDirectory()
+            + "/Library/Application Support/Dock/LaunchPadLayout.plist"
+        return FileManager.default.contents(atPath: path)
+    }
+
+    static func parseExcludedBundleIDs(from data: Data?) -> Set<String> {
+        guard let data,
+              let propertyList = try? PropertyListSerialization.propertyList(
+                  from: data,
+                  format: nil
+              ),
+              let root = propertyList as? [String: Any],
+              let pages = root["pages"] as? [[String: Any]] else {
             return []
         }
 
-        var excluded = Set<String>()
+        var result = Set<String>()
         for page in pages {
-            if let items = page["items"] as? [[String: Any]] {
-                for item in items {
-                    if let bundleId = item["bundleid"] as? String,
-                       let visible = item["visible"] as? Bool, !visible {
-                        excluded.insert(bundleId)
-                    }
+            guard let items = page["items"] as? [[String: Any]] else {
+                continue
+            }
+            for item in items {
+                guard let id = item["bundleid"] as? String,
+                      let visible = item["visible"] as? Bool,
+                      visible == false else {
+                    continue
                 }
+                result.insert(id)
             }
         }
-        return excluded
+        return result
     }
 
     func isExcluded(bundleId: String) -> Bool {
