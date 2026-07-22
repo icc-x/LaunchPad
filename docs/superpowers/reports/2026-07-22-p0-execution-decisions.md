@@ -684,3 +684,118 @@ the approved plan or task-specific test reports.
   controller passed `116/116` tests across 9 suites; final cumulative review
   reported spec compliant, Task quality Approved, and
   Critical/Important/Minor `0/0/0`.
+
+## Decision 033: Commit drag state before callbacks and isolate the legacy bridge
+
+- Status: adopted and verified in Task 15.
+- Evidence: the initial implementation notified preview clearing before removing
+  the preview from `session`; a synchronous callback could therefore reenter
+  `finishDrag()` and recursively observe the same preview. Edge and preview
+  timers also matched only a destination, so an old action could hit a new,
+  value-similar drag. Separately, the still-unmigrated grid coordinator enters
+  gesture-only dragging without a native session and requires a temporary
+  `.overIcon` substate. The first formal review then proved that forwarding the
+  legacy API into the native path could clear a live native preview and emit a
+  callback, violating that temporary bridge's no-side-effect contract.
+- Decision: every callback-visible transition first commits `state`, immutable
+  `session`, timer cancellation, and a monotonically advancing session revision;
+  callback return paths perform no trailing state write. Delayed actions capture
+  the complete armed session and revision. The legacy hover API operates only
+  while gesture-only dragging has no native session, projects `.overIcon`, maps
+  directionless screen-edge/empty to `.none`, and never schedules, cancels,
+  calls back, or writes. Native sessions treat the legacy API as a strict no-op.
+- Impact: synchronous reentry cannot recurse on stale preview state or overwrite
+  a replacement session; stale timers cannot produce ABA-style page/preview
+  actions; Task 16 retains a narrow compile-time bridge without restoring order,
+  CRUD, writer, or persistence behavior.
+- Verification: five review-fix regressions first failed against the original
+  implementation; the final native-session legacy test produced 12 issues before
+  the fix and zero after it. Controller-fresh evidence is `239/239` for the
+  non-Window aggregate. The original Window gate contains `223` tests and still
+  has exactly the registered three tests/four issues. Final independent review
+  reported spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0` for commits `40393dd..a136bd5`.
+
+## Decision 034: Make Task 16 page-aware at the point edge policy is introduced
+
+- Status: adopted before Task 16 implementation.
+- Evidence: Task 16 makes `canHoverEdge` depend on the grid host's
+  `currentVisualPageIndex`, while the written plan delays synchronization from
+  the real page-scroll/controller source until Task 18. On visual page 1 this
+  would leave the host at zero and reject a valid backward edge hover. The same
+  preflight found that the planned shared `MockDraggingInfo` is currently named
+  `CoordinatorDraggingInfo`, `sourceVisualIndex` is not pinned to section versus
+  item, and a truly empty page has no stable item from which to construct the
+  required `afterItem` placement.
+- Decision: expand Task 16's explicit whitelist to
+  `LaunchPadViewController.swift` and its test file, and synchronize the grid at
+  the three primitive page-state boundaries: reload clamp, scroll callback, and
+  programmatic page synchronization. Derived dot, edge, selection, and search
+  paths inherit those primitives and must not add duplicate setters. Define
+  `sourceVisualIndex` as the snapshot section/visual-page index and test it with
+  different section and item values. Rename the module-internal dragging-info
+  fake to the Task 19 contract name. Treat a genuinely empty page section as an
+  invalid persisted/projection topology for drop anchoring and reject it; blank
+  space on a nonempty page always maps to `afterItem(lastStableID)`.
+- Impact: Task 16 becomes independently correct rather than relying on a later
+  task to repair its edge policy. Task 18 retains page-synchronization regression
+  tests but does not duplicate production wiring. Empty-page rejection avoids
+  inventing a visual page number or unstable synthetic anchor.
+- Verification: Task 16 must cover reload reduction, scroll, programmatic/dot,
+  both edge directions on a middle page, section-2/item-5 source identity,
+  search sections, nonempty blank append, and empty-section rejection. Its task
+  review must reconcile the expanded whitelist and show no duplicate setter path.
+
+## Decision 035: Guard transient auto-hide work with message identity
+
+- Status: adopted before Task 17 implementation.
+- Evidence: cancelling a `DispatchWorkItem` marks it cancelled but does not make
+  an already delivered or explicitly performed closure incapable of running.
+  The plan's closure unconditionally called `hide()`, so the old work item from
+  `show("first")` could hide a later `show("second")`. The planned repeated-show
+  test checked only `isCancelled` and never executed the stale item.
+- Decision: each show owns an identity token/generation in addition to the
+  cancellable work item. Auto-hide verifies it is still the current message
+  before clearing state. Manual hide and deinit cancel the owned item and
+  invalidate its identity. Add deterministic synchronous tests for stale/current
+  item execution, manual idempotent hide, release cancellation, custom duration,
+  accessibility role/priority, and no-window layout; keep the fixed layout-error
+  text owned by Task 18's domain call site rather than the generic view.
+- Impact: rapid consecutive failures cannot have an older timeout erase the most
+  recent accessible message, and Task 17 remains a reusable presentation view
+  without importing layout-domain wording.
+- Verification: Task 17 RED must explicitly perform the cancelled old item after
+  the second show and observe the second message still visible; the current item
+  must then be the only action that hides it.
+
+## Decision 036: Give native drag cleanup one owner and keep failure recovery sanitized
+
+- Status: adopted before Task 18 implementation.
+- Evidence: Task 16 assigns native terminal cleanup to
+  `draggingSession(_:endedAt:dragOperation:)`, while the Task 18 example also
+  places `finishDrag()` in `applyDropIntent`'s `defer`; `finishDrag()` advances
+  revision and cancels scheduling on every call, so this is observable double
+  cleanup. `KeyboardNavigator` can remain in `.search("")` after deleting the
+  final character, but the plan would re-enable drag from `handleSearch("")`,
+  splitting the source/validate/accept guards from the controller writer guard.
+  Finally, the planned sanitized mutation logger calls the existing `loadData()`
+  on failure, whose catch interpolates the underlying error into `NSLog`.
+- Decision: native `ended` is the sole terminal cleanup for native drags; the VC
+  writer owns only one mutation attempt, authoritative reload, fixed feedback,
+  and structured logging. Explicit search/ESC/window cancellation uses an
+  idempotent cancel entry. One `synchronizeDragAvailability()` derives all grid,
+  folder, and writer availability from both keyboard mode and current query, so
+  `.search("")` remains disabled until an actual idle transition. Mutation
+  failure reloads the last committed state through an injectable sanitized read
+  and log boundary; neither apply nor reload errors or folder titles enter logs.
+  Record attempted capacities before throws and trace apply-return/throw before
+  exact authoritative read counts.
+- Impact: accept-to-ended sequences clean up once, search cannot expose a partial
+  drag surface, and rollback/storage failures cannot bypass the structured log
+  policy. Failure reload is explicitly a snapback to committed state, not a UI
+  update based on an uncommitted mutation.
+- Verification: Task 18 must test accept-before/after-ended cleanup counts,
+  callback false/reject plus ended, all mixed mode/query search states, six intent
+  event mappings, sensitive sentinel errors from both mutation and reload, exact
+  attempted capacity, AppDelegate dual-reference identity/nil combinations, and
+  COMMIT-or-throw ordering before reads.
