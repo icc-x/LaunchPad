@@ -97,7 +97,7 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
     }
 
     deinit {
-        databaseQueue.sync {
+        onDatabaseQueue {
             if let db {
                 _ = sqlite3_close_v2(db)
                 self.db = nil
@@ -215,12 +215,21 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
     private func withDatabase<T>(
         _ body: (OpaquePointer) throws -> T
     ) throws -> T {
-        try databaseQueue.sync {
+        try onDatabaseQueue {
             databaseAccessObserver?(
                 DispatchQueue.getSpecific(key: databaseQueueKey)
                     == databaseQueueToken
             )
             return try body(requireDatabase())
+        }
+    }
+
+    private func onDatabaseQueue<T>(
+        _ body: () throws -> T
+    ) rethrows -> T {
+        try databaseQueue.sync {
+            dispatchPrecondition(condition: .onQueueAsBarrier(databaseQueue))
+            return try body()
         }
     }
 
