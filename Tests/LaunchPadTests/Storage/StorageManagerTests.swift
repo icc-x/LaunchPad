@@ -75,6 +75,47 @@ private final class QueueObservationRecorder: @unchecked Sendable {
     }
 }
 
+private final class ConcurrentStorageAccessRecorder: @unchecked Sendable {
+    struct Snapshot: Sendable {
+        let completedOperationCount: Int
+        let errors: [String]
+        let queueObservations: [Bool]
+    }
+
+    private let lock = NSLock()
+    private var completedOperationCount = 0
+    private var errors: [String] = []
+    private var queueObservations: [Bool] = []
+
+    func recordCompletion() {
+        lock.lock()
+        completedOperationCount += 1
+        lock.unlock()
+    }
+
+    func record(error: any Error) {
+        lock.lock()
+        errors.append(String(reflecting: error))
+        lock.unlock()
+    }
+
+    func recordQueueObservation(_ isOnDatabaseQueue: Bool) {
+        lock.lock()
+        queueObservations.append(isOnDatabaseQueue)
+        lock.unlock()
+    }
+
+    var snapshot: Snapshot {
+        lock.lock()
+        defer { lock.unlock() }
+        return Snapshot(
+            completedOperationCount: completedOperationCount,
+            errors: errors,
+            queueObservations: queueObservations
+        )
+    }
+}
+
 private func makeFaultableStorage(
     _ script: SQLiteFaultScript
 ) throws -> StorageManager {
@@ -1080,5 +1121,99 @@ struct StorageManagerSQLiteBoundaryTests {
 
         #expect(recorder.snapshot.count == 8)
         #expect(recorder.snapshot.allSatisfy { $0 })
+    }
+
+    @Test("并发读写经单一 databaseQueue 串行化")
+    func concurrentReadsAndWritesAreSerializedOnDatabaseQueue() throws {
+        let sut = try StorageManager(dbPath: ":memory:")
+        let pageID = try sut.insertItem(
+            TestDataFactory.makePageItem(
+                uuid: "concurrency-page",
+                type: .page
+            )
+        )
+        let writeCount = 24
+        let readCount = 24
+        let items = (0..<writeCount).map { index in
+            TestDataFactory.makePageItem(
+                uuid: "concurrency-item-\(index)",
+                type: .app,
+                ordering: index,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    title: "Concurrent \(index)",
+                    bundleId: "com.test.concurrent.\(index)"
+                )
+            )
+        }
+        let recorder = ConcurrentStorageAccessRecorder()
+        sut.databaseAccessObserver = {
+            recorder.recordQueueObservation($0)
+        }
+
+        let ready = DispatchGroup()
+        let finished = DispatchGroup()
+        let startGate = DispatchSemaphore(value: 0)
+        let workerQueue = DispatchQueue(
+            label: "com.launchpad.tests.concurrent-storage",
+            qos: .userInitiated,
+            attributes: .concurrent
+        )
+        let operationCount = writeCount + readCount
+
+        func schedule(_ operation: @escaping @Sendable () throws -> Void) {
+            ready.enter()
+            finished.enter()
+            workerQueue.async {
+                ready.leave()
+                startGate.wait()
+                defer {
+                    recorder.recordCompletion()
+                    finished.leave()
+                }
+                do {
+                    try operation()
+                } catch {
+                    recorder.record(error: error)
+                }
+            }
+        }
+
+        for item in items {
+            schedule {
+                _ = try sut.insertItem(item)
+            }
+        }
+        for _ in 0..<readCount {
+            schedule {
+                _ = try sut.fetchAllItems(parentId: pageID)
+            }
+        }
+
+        ready.wait()
+        for _ in 0..<operationCount {
+            startGate.signal()
+        }
+        finished.wait()
+
+        let concurrencySnapshot = recorder.snapshot
+        #expect(concurrencySnapshot.completedOperationCount == operationCount)
+        #expect(concurrencySnapshot.errors.isEmpty)
+        #expect(concurrencySnapshot.queueObservations.count == operationCount)
+        #expect(concurrencySnapshot.queueObservations.allSatisfy { $0 })
+
+        sut.databaseAccessObserver = nil
+        let persistedItems = try sut.fetchAllItems(parentId: pageID)
+        #expect(persistedItems.count == writeCount)
+        #expect(Set(persistedItems.map(\.uuid)).count == writeCount)
+        for item in items {
+            let persistedItem = try #require(
+                persistedItems.first { $0.uuid == item.uuid }
+            )
+            #expect(persistedItem.app?.title == item.app?.title)
+            #expect(persistedItem.app?.bundleId == item.app?.bundleId)
+            #expect(persistedItem.ordering == item.ordering)
+            #expect(persistedItem.parentId == pageID)
+        }
     }
 }
