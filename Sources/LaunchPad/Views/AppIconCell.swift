@@ -19,6 +19,7 @@ public class AppIconCell: NSCollectionViewItem {
     private var iconWidthConstraint: NSLayoutConstraint?
     private var iconHeightConstraint: NSLayoutConstraint?
     private(set) var configuredIconSize: CGFloat = 64
+    public private(set) var isFolderCreationPreviewVisible = false
     var configuredIconConstraintSize: CGSize {
         CGSize(
             width: iconWidthConstraint?.constant ?? 0,
@@ -49,6 +50,7 @@ public class AppIconCell: NSCollectionViewItem {
 
     override public func loadView() {
         view = NSView()
+        containerView.wantsLayer = true
 
         view.addSubview(containerView)
         containerView.addSubview(iconImageView)
@@ -99,6 +101,15 @@ public class AppIconCell: NSCollectionViewItem {
 
         // ✕ 删除按钮（左上角，默认隐藏）
         setupDeleteButton()
+    }
+
+    public func setFolderCreationPreviewVisible(_ visible: Bool) {
+        isFolderCreationPreviewVisible = visible
+        containerView.layer?.borderWidth = visible ? 2 : 0
+        containerView.layer?.borderColor = visible
+            ? NSColor.controlAccentColor.cgColor
+            : nil
+        containerView.layer?.cornerRadius = 8
     }
 
     private func setupDeleteButton() {
@@ -292,6 +303,7 @@ public class AppIconCell: NSCollectionViewItem {
 
     override public func prepareForReuse() {
         super.prepareForReuse()
+        setFolderCreationPreviewVisible(false)
         unregisterWorkspaceNotifications()
         stopJiggling()
         iconImageView.image = nil

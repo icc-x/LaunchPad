@@ -319,5 +319,30 @@ struct AppIconCellTests {
                 == CGSize(width: 96, height: 96)
         )
     }
+
+    @Test("folder creation preview 显示真实 accent 边框并可清除")
+    func folderCreationPreviewTogglesLayerAppearance() throws {
+        let cell = makeSUT()
+        let container = try #require(cell.view.subviews.first)
+        #expect(container.layer != nil)
+        #expect(!cell.isFolderCreationPreviewVisible)
+        cell.setFolderCreationPreviewVisible(true)
+        #expect(cell.isFolderCreationPreviewVisible)
+        #expect(container.layer?.borderWidth == 2)
+        #expect(container.layer?.borderColor == NSColor.controlAccentColor.cgColor)
+        #expect(container.layer?.cornerRadius == 8)
+        cell.setFolderCreationPreviewVisible(false)
+        #expect(!cell.isFolderCreationPreviewVisible)
+        #expect(container.layer?.borderWidth == 0)
+        #expect(container.layer?.borderColor == nil)
+    }
+
+    @Test("prepareForReuse 清除 folder creation preview")
+    func prepareForReuseClearsFolderCreationPreview() {
+        let cell = makeSUT()
+        cell.setFolderCreationPreviewVisible(true)
+        cell.prepareForReuse()
+        #expect(!cell.isFolderCreationPreviewVisible)
+    }
 }
 #endif

@@ -8,41 +8,52 @@ import AppKit
 @MainActor
 private final class InteractionHost: AppGridInteractionHosting {
     let collectionViewForDelegateInstallation: NSCollectionView
+    var interactionVisibleRect = NSRect(x: 0, y: 0, width: 800, height: 620)
+    var visualPageCount = 1
+    var currentVisualPageIndex = 0
+    var sections: [Int: Section] = [0: .page(0)]
     var itemsByPath: [IndexPath: PageItem] = [:]
-    var itemsByUUID: [String: PageItem] = [:]
+    var itemsByID: [Int64: PageItem] = [:]
+    var visualIndices: [Int64: Int] = [:]
+    var pathsByID: [Int64: IndexPath] = [:]
     var resolvedPath: IndexPath?
+    private(set) var resolvedPoints: [NSPoint] = []
+    var frames: [IndexPath: NSRect] = [:]
+    var emptyPlacementResult: ItemPlacement?
     var renderedImages: [IndexPath: NSImage] = [:]
-    private(set) var snapshotMoves: [(PageItem, PageItem)] = []
+    private(set) var previewCalls: [Int64?] = []
 
     init(collectionView: NSCollectionView = NSCollectionView()) {
         collectionViewForDelegateInstallation = collectionView
     }
 
-    func pageItem(at indexPath: IndexPath) -> PageItem? {
-        itemsByPath[indexPath]
-    }
-
-    func pageItem(uuid: String) -> PageItem? {
-        itemsByUUID[uuid]
-    }
-
+    func section(at index: Int) -> Section? { sections[index] }
+    func pageItem(at indexPath: IndexPath) -> PageItem? { itemsByPath[indexPath] }
+    func pageItem(id: Int64) -> PageItem? { itemsByID[id] }
+    func visualIndex(of item: PageItem) -> Int? { visualIndices[item.id] }
+    func indexPath(forItemID itemID: Int64) -> IndexPath? { pathsByID[itemID] }
     func resolvedIndexPath(at point: NSPoint) -> IndexPath? {
-        resolvedPath
+        resolvedPoints.append(point)
+        return resolvedPath
     }
-
-    func dragImage(at indexPath: IndexPath) -> NSImage? {
-        renderedImages[indexPath]
+    func layoutFrame(at indexPath: IndexPath) -> NSRect? { frames[indexPath] }
+    func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement? {
+        emptyPlacementResult
     }
+    func dragImage(at indexPath: IndexPath) -> NSImage? { renderedImages[indexPath] }
+    func setFolderCreationPreview(targetItemID: Int64?) { previewCalls.append(targetItemID) }
 
-    func moveSnapshotItem(_ item: PageItem, before target: PageItem) {
-        let knownIDs = Set(itemsByPath.values.map(\.id))
-        guard knownIDs.contains(item.id) || knownIDs.contains(target.id) else { return }
-        snapshotMoves.append((item, target))
+    func install(_ item: PageItem, at path: IndexPath, frame: NSRect? = nil) {
+        itemsByPath[path] = item
+        itemsByID[item.id] = item
+        visualIndices[item.id] = path.section
+        pathsByID[item.id] = path
+        if let frame { frames[path] = frame }
     }
 }
 
 @MainActor
-private final class CoordinatorDraggingInfo: NSObject, @MainActor NSDraggingInfo {
+final class MockDraggingInfo: NSObject, @MainActor NSDraggingInfo {
     let draggingPasteboard: NSPasteboard
     var draggingLocation: NSPoint
     var draggingSequenceNumber = 0
@@ -56,10 +67,11 @@ private final class CoordinatorDraggingInfo: NSObject, @MainActor NSDraggingInfo
     var draggingFormation: NSDraggingFormation = .default
     var springLoadingHighlight: NSSpringLoadingHighlight = .none
 
-    init(location: NSPoint = .zero) {
-        draggingPasteboard = NSPasteboard(
-            name: .init("AppGridInteractionCoordinatorTests-\(UUID().uuidString)")
-        )
+    init(
+        pasteboard: NSPasteboard = NSPasteboard(name: .init("grid-\(UUID().uuidString)")),
+        location: NSPoint = .zero
+    ) {
+        draggingPasteboard = pasteboard
         draggingLocation = location
     }
 
@@ -84,541 +96,627 @@ struct AppGridInteractionCoordinatorTests {
         dragController: DragController
     )
 
+    private typealias NativeDropSUT = (
+        grid: AppGridCollectionView,
+        coordinator: AppGridInteractionCoordinator,
+        dragController: DragController,
+        scheduler: MockScheduler,
+        source: PageItem,
+        target: PageItem,
+        sourcePath: IndexPath,
+        targetPath: IndexPath,
+        sourceFrame: NSRect,
+        targetFrame: NSRect,
+        previewCell: AppIconCell
+    )
+
+    private enum NativeDropScenario {
+        case extractionReject
+        case destinationReject
+        case allowsReject
+        case callbackNil
+        case callbackFalse
+        case callbackTrue
+    }
+
+    private enum NativeHoverState: Equatable {
+        case pendingTimer
+        case visiblePreview
+    }
+
     private func makeSUT(
-        reader: @escaping (NSPasteboard) -> String? = {
-            $0.string(forType: .string)
-        }
+        reader: @escaping (NSPasteboard) -> String? = { $0.string(forType: .string) }
     ) -> SUT {
         let host = InteractionHost()
-        host.collectionViewForDelegateInstallation.frame = NSRect(
-            x: 0, y: 0, width: 800, height: 620
-        )
+        host.collectionViewForDelegateInstallation.frame = NSRect(x: 0, y: 0, width: 800, height: 620)
         let dragController = DragController(scheduler: MockScheduler())
         let coordinator = AppGridInteractionCoordinator(
             dragController: dragController,
             pasteboardUUIDReader: reader
         )
         coordinator.attach(to: host)
-        return (
-            host,
-            host.collectionViewForDelegateInstallation,
-            coordinator,
-            dragController
-        )
+        return (host, host.collectionViewForDelegateInstallation, coordinator, dragController)
     }
 
-    private func app(id: Int64, uuid: String? = nil) -> PageItem {
+    private func makeApp(
+        id: Int64,
+        parentID: Int64? = 100,
+        ordering: Int = 0,
+        uuid: String? = nil
+    ) -> PageItem {
         TestDataFactory.makePageItem(
             id: id,
-            uuid: uuid ?? "app-\(id)",
+            uuid: uuid ?? "00000000-0000-0000-0000-\(String(format: "%012lld", id))",
             type: .app,
-            app: TestDataFactory.makeAppInfo(id: id, title: "App \(id)")
+            ordering: ordering,
+            parentId: parentID,
+            app: TestDataFactory.makeAppInfo(id: id, title: "A\(id)")
         )
     }
 
-    private func group(id: Int64, uuid: String? = nil) -> PageItem {
+    private func makeGroup(id: Int64, parentID: Int64? = 100) -> PageItem {
         TestDataFactory.makePageItem(
             id: id,
-            uuid: uuid ?? "group-\(id)",
+            uuid: "10000000-0000-0000-0000-\(String(format: "%012lld", id))",
             type: .group,
-            group: TestDataFactory.makeGroupInfo(id: id, title: "Folder \(id)")
+            parentId: parentID,
+            group: TestDataFactory.makeGroupInfo(id: id)
         )
     }
 
-    private func page(id: Int64) -> PageItem {
-        TestDataFactory.makePageItem(id: id, uuid: "page-\(id)", type: .page)
+    private func makePage(id: Int64) -> PageItem {
+        TestDataFactory.makePageItem(id: id, uuid: UUID().uuidString, type: .page)
+    }
+
+    private func session(for item: PageItem, kind: DragSourceKind = .topLevel) -> DragSession {
+        DragSession(
+            itemID: item.id,
+            itemUUID: item.uuid,
+            itemType: item.type,
+            sourceKind: kind,
+            sourceParentID: item.parentId ?? 100,
+            sourceVisualIndex: 0
+        )
+    }
+
+    private func beginValidSession(_ item: PageItem, sut: SUT) {
+        sut.host.itemsByID[item.id] = item
+        sut.dragController.beginDrag(session(for: item))
+        sut.coordinator.pasteboardUUIDReader = { _ in item.uuid }
+    }
+
+    private func makeNativeDropSUT() throws -> NativeDropSUT {
+        let grid = AppGridCollectionView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 620)
+        )
+        grid.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        ))
+        let source = makeApp(id: 1)
+        let target = makeApp(id: 2)
+        let sourcePath = IndexPath(item: 0, section: 0)
+        let targetPath = IndexPath(item: 1, section: 0)
+        grid.reload(
+            pages: [[source, target]],
+            searchResults: nil,
+            searchQuery: nil,
+            animatingDifferences: false,
+            animateEntrance: false
+        )
+        grid.collectionViewLayout?.prepare()
+        let sourceFrame = try #require(grid.layoutFrame(at: sourcePath))
+        let targetFrame = try #require(grid.layoutFrame(at: targetPath))
+        let previewCell = AppIconCell()
+        _ = previewCell.view
+        grid.visibleCellProvider = { path in
+            path == targetPath ? previewCell : nil
+        }
+        grid.indexPathResolver = { _ in targetPath }
+
+        let scheduler = MockScheduler()
+        let dragController = DragController(scheduler: scheduler)
+        let coordinator = AppGridInteractionCoordinator(
+            dragController: dragController,
+            pasteboardUUIDReader: { _ in source.uuid }
+        )
+        coordinator.attach(to: grid)
+        return (
+            grid, coordinator, dragController, scheduler, source, target,
+            sourcePath, targetPath, sourceFrame, targetFrame, previewCell
+        )
+    }
+
+    private func verifyNativeDropScenario(
+        _ scenario: NativeDropScenario,
+        hoverState: NativeHoverState = .visiblePreview
+    ) throws {
+        let sut = try makeNativeDropSUT()
+        sut.dragController.beginDrag(session(for: sut.source))
+        sut.dragController.updateDragHover(
+            .item(itemID: sut.target.id, itemType: sut.target.type)
+        )
+        switch hoverState {
+        case .pendingTimer:
+            #expect(!sut.scheduler.scheduledActions.isEmpty)
+            #expect(!sut.previewCell.isFolderCreationPreviewVisible)
+        case .visiblePreview:
+            sut.scheduler.advance(by: 0.8)
+            #expect(sut.scheduler.scheduledActions.isEmpty)
+            #expect(sut.previewCell.isFolderCreationPreviewVisible)
+        }
+
+        var localPoint = NSPoint(x: sut.targetFrame.midX, y: sut.targetFrame.midY)
+        var callbackCount = 0
+        switch scenario {
+        case .extractionReject:
+            sut.coordinator.pasteboardUUIDReader = { _ in nil }
+        case .destinationReject:
+            sut.grid.indexPathResolver = { _ in IndexPath(item: 99, section: 0) }
+        case .allowsReject:
+            sut.grid.indexPathResolver = { _ in sut.sourcePath }
+            localPoint = NSPoint(x: sut.sourceFrame.midX, y: sut.sourceFrame.midY)
+        case .callbackNil:
+            break
+        case .callbackFalse:
+            sut.coordinator.onDropRequested = { _, _ in
+                callbackCount += 1
+                return false
+            }
+        case .callbackTrue:
+            sut.coordinator.onDropRequested = { _, _ in
+                callbackCount += 1
+                return true
+            }
+        }
+
+        let snapshotBefore = sut.grid.diffableDataSource.snapshot()
+        let sessionBefore = sut.dragController.session
+        let cancelCountBefore = sut.scheduler.cancelCallCount
+        let accepted = sut.coordinator.collectionView(
+            sut.grid,
+            acceptDrop: MockDraggingInfo(
+                location: sut.grid.convert(localPoint, to: nil)
+            ),
+            indexPath: sut.targetPath,
+            dropOperation: .on
+        )
+        let expectedAccepted = scenario == .callbackTrue
+        let expectedCallbackCount = (scenario == .callbackFalse || scenario == .callbackTrue) ? 1 : 0
+
+        #expect(accepted == expectedAccepted)
+        #expect(callbackCount == expectedCallbackCount)
+        #expect(sut.grid.diffableDataSource.snapshot().sectionIdentifiers == snapshotBefore.sectionIdentifiers)
+        #expect(sut.grid.diffableDataSource.snapshot().itemIdentifiers == snapshotBefore.itemIdentifiers)
+        #expect(sut.dragController.session == sessionBefore)
+        #expect(sut.dragController.state == .dragging)
+        #expect(
+            sut.previewCell.isFolderCreationPreviewVisible
+                == (hoverState == .visiblePreview)
+        )
+        #expect(sut.scheduler.cancelCallCount == cancelCountBefore)
+
+        sut.coordinator.collectionView(
+            sut.grid,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: []
+        )
+
+        #expect(sut.dragController.session == nil)
+        #expect(sut.dragController.state == .idle)
+        #expect(sut.scheduler.scheduledActions.isEmpty)
+        #expect(!sut.previewCell.isFolderCreationPreviewVisible)
+        #expect(sut.scheduler.cancelCallCount == cancelCountBefore + 1)
+        #expect(callbackCount == expectedCallbackCount)
+        #expect(sut.grid.diffableDataSource.snapshot().sectionIdentifiers == snapshotBefore.sectionIdentifiers)
+        #expect(sut.grid.diffableDataSource.snapshot().itemIdentifiers == snapshotBefore.itemIdentifiers)
     }
 
     private func validate(
-        _ coordinator: AppGridInteractionCoordinator,
-        collectionView: NSCollectionView,
+        sut: SUT,
         location: NSPoint,
-        dropOperation: inout NSCollectionView.DropOperation
+        operation: inout NSCollectionView.DropOperation
     ) -> NSDragOperation {
-        let info = CoordinatorDraggingInfo(location: location)
         var proposed = NSIndexPath(forItem: 0, inSection: 0)
-        return withUnsafeMutablePointer(to: &dropOperation) { operation in
-            withUnsafeMutablePointer(to: &proposed) { path in
-                coordinator.collectionView(
-                    collectionView,
+        let info = MockDraggingInfo(
+            location: sut.collectionView.convert(location, to: nil)
+        )
+        return withUnsafeMutablePointer(to: &operation) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                sut.coordinator.collectionView(
+                    sut.collectionView,
                     validateDrop: info,
-                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(path),
-                    dropOperation: operation
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(proposedPointer),
+                    dropOperation: operationPointer
                 )
             }
         }
     }
 
-    @Test func onItemActivated_callbackIsSettable() {
-        let sut = makeSUT()
-        sut.coordinator.onItemActivated = { _ in }
-        #expect(sut.coordinator.onItemActivated != nil)
-    }
-
-    @Test func pasteboardWriterForItemAt_appItem_writesUuid() throws {
-        let sut = makeSUT()
-        let item = app(id: 1, uuid: "drag-app-1")
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = item
-        let writer = sut.coordinator.collectionView(
-            sut.collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
+    private func attachToWindow(_ view: NSView, origin: NSPoint) -> NSWindow {
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+            styleMask: [], backing: .buffered, defer: false
         )
-        let pasteboardItem = try #require(writer as? NSPasteboardItem)
-        #expect(pasteboardItem.string(forType: .string) == item.uuid)
+        let container = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = container
+        view.frame = NSRect(x: origin.x, y: origin.y, width: 700, height: 500)
+        container.addSubview(view)
+        return window
     }
 
-    @Test func pasteboardWriterForItemAt_groupItem_writesUuid() throws {
+    @Test("pasteboard writer 使用 section 作为真实视觉页")
+    func pasteboardWriterStartsSessionWithRealSourceIdentity() throws {
         let sut = makeSUT()
-        let item = group(id: 2, uuid: "drag-group-2")
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = item
-        let writer = sut.coordinator.collectionView(
-            sut.collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
-        )
-        let pasteboardItem = try #require(writer as? NSPasteboardItem)
-        #expect(pasteboardItem.string(forType: .string) == item.uuid)
+        let source = makeApp(id: 10, parentID: 77, ordering: 5)
+        let path = IndexPath(item: 5, section: 2)
+        sut.host.sections[2] = .page(2)
+        sut.host.install(source, at: path)
+        let writer = try #require(sut.coordinator.collectionView(
+            sut.collectionView, pasteboardWriterForItemAt: path
+        ) as? NSPasteboardItem)
+        #expect(writer.string(forType: .string) == source.uuid)
+        #expect(sut.dragController.session?.itemID == 10)
+        #expect(sut.dragController.session?.sourceParentID == 77)
+        #expect(sut.dragController.session?.sourceVisualIndex == 2)
     }
 
-    @Test func pasteboardWriterForItemAt_pageItem_returnsNil() {
+    @Test func pasteboardWriter_groupStartsTopLevelSession() throws {
         let sut = makeSUT()
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = page(id: 1)
+        let source = makeGroup(id: 2)
+        sut.host.install(source, at: IndexPath(item: 0, section: 0))
         #expect(sut.coordinator.collectionView(
-            sut.collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
-        ) == nil)
+            sut.collectionView, pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
+        ) != nil)
+        #expect(sut.dragController.session?.sourceKind == .topLevel)
+        #expect(sut.dragController.session?.itemType == .group)
     }
 
-    @Test func validateDrop_screenEdge_returnsGeneric() {
-        let sut = makeSUT()
-        var operation: NSCollectionView.DropOperation = .on
-        let result = validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 10, y: 100),
-            dropOperation: &operation
-        )
-        #expect(result == .generic)
-    }
-
-    @Test func validateDrop_rightEdge_returnsGeneric() {
-        let sut = makeSUT()
-        var operation: NSCollectionView.DropOperation = .on
-        let result = validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 790, y: 100),
-            dropOperation: &operation
-        )
-        #expect(result == .generic)
-    }
-
-    @Test func validateDrop_emptyArea_returnsMove() {
-        let sut = makeSUT()
-        var operation: NSCollectionView.DropOperation = .before
-        let result = validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 400, y: 100),
-            dropOperation: &operation
-        )
-        #expect(result == .move)
-        #expect(operation == .on)
-    }
-
-    @Test func acceptDrop_onGroupTarget_returnsTrue() {
-        let source = app(id: 1)
-        let sut = makeSUT(reader: { _ in source.uuid })
-        let target = group(id: 2)
-        sut.host.itemsByUUID[source.uuid] = source
-        sut.host.itemsByPath[IndexPath(item: 1, section: 0)] = target
-        sut.dragController.handleDragStart()
-        let accepted = sut.coordinator.collectionView(
-            sut.collectionView,
-            acceptDrop: CoordinatorDraggingInfo(),
-            indexPath: IndexPath(item: 1, section: 0),
-            dropOperation: .on
-        )
-        #expect(accepted)
-        #expect(sut.dragController.state == .idle)
-    }
-
-    @Test func acceptDrop_invalidPasteboard_returnsFalse() {
-        let sut = makeSUT(reader: { _ in nil })
-        sut.dragController.handleDragStart()
-        #expect(!sut.coordinator.collectionView(
-            sut.collectionView,
-            acceptDrop: CoordinatorDraggingInfo(),
-            indexPath: IndexPath(item: 0, section: 0),
-            dropOperation: .on
-        ))
-        #expect(sut.dragController.state == .dragging)
-    }
-
-    @Test func draggingImageForItemsAt_returnsImage() {
+    @Test func pasteboardWriter_pageSearchMissingParentAndMalformedUUIDReturnNil() {
         let sut = makeSUT()
         let path = IndexPath(item: 0, section: 0)
-        sut.host.renderedImages[path] = NSImage(size: NSSize(width: 64, height: 64))
-        var offset = NSPoint.zero
-        let image = sut.coordinator.collectionView(
-            sut.collectionView,
-            draggingImageForItemsAt: [path],
-            with: NSEvent(),
-            offset: &offset
-        )
-        #expect(image.size == NSSize(width: 64, height: 64))
+        let missingParent = makeApp(id: 1, parentID: nil)
+        sut.host.install(missingParent, at: path)
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.install(makeApp(id: 2, uuid: "bad"), at: path)
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.install(makePage(id: 3), at: path)
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.sections[0] = .search
+        sut.host.install(makeApp(id: 4), at: path)
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.sections[0] = .searchPage(0)
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.sections.removeAll()
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.sections[0] = .page(0)
+        sut.host.itemsByPath.removeAll()
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.host.install(makeApp(id: 5), at: path)
+        sut.host.visualIndices.removeAll()
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.coordinator.isDragEnabled = false
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
+        sut.coordinator.detach()
+        sut.coordinator.isDragEnabled = true
+        #expect(sut.coordinator.collectionView(sut.collectionView, pasteboardWriterForItemAt: path) == nil)
     }
 
-    @Test func onItemActivated_triggeredViaDidSelect() {
-        let sut = makeSUT()
-        let item = app(id: 1)
-        let path = IndexPath(item: 0, section: 0)
-        sut.host.itemsByPath[path] = item
-        var selected: PageItem?
-        sut.coordinator.onItemActivated = { selected = $0 }
-        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [path])
-        #expect(selected?.id == item.id)
-    }
-
-    @Test func onItemActivated_emptySelection_doesNotFire() {
-        let sut = makeSUT()
-        var called = false
-        sut.coordinator.onItemActivated = { _ in called = true }
-        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [])
-        #expect(!called)
-    }
-
-    @Test func resolveHoverLocation_overIcon_whenGroupAtLocation() {
-        let sut = makeSUT()
-        let path = IndexPath(item: 0, section: 0)
-        let item = group(id: 2)
-        sut.host.resolvedPath = path
-        sut.host.itemsByPath[path] = item
-        #expect(sut.coordinator.resolveHoverLocation(at: .zero) == .overIcon(targetId: item.id))
-    }
-
-    @Test func resolveHoverLocation_empty_whenAppAtLocation() {
-        let sut = makeSUT()
-        let path = IndexPath(item: 0, section: 0)
-        sut.host.resolvedPath = path
-        sut.host.itemsByPath[path] = app(id: 1)
-        #expect(sut.coordinator.resolveHoverLocation(at: .zero) == .empty)
-    }
-
-    @Test func resolveHoverLocation_empty_whenResolverReturnsNil() {
-        let sut = makeSUT()
-        #expect(sut.coordinator.resolveHoverLocation(at: .zero) == .empty)
-    }
-
-    @Test func acceptDrop_reorderSamePage_performsReorder() {
-        let source = app(id: 1)
-        let target = app(id: 2)
-        let sut = makeSUT(reader: { _ in source.uuid })
-        sut.host.itemsByUUID[source.uuid] = source
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = source
-        sut.host.itemsByPath[IndexPath(item: 1, section: 0)] = target
-        #expect(sut.coordinator.collectionView(
-            sut.collectionView,
-            acceptDrop: CoordinatorDraggingInfo(),
-            indexPath: IndexPath(item: 1, section: 0),
-            dropOperation: .on
-        ))
-        #expect(sut.host.snapshotMoves.map { [$0.0.id, $0.1.id] } == [[source.id, target.id]])
-    }
-
-    @Test func acceptDrop_outOfRangeTarget_returnsFalse() {
-        let source = app(id: 1)
-        let sut = makeSUT(reader: { _ in source.uuid })
-        sut.host.itemsByUUID[source.uuid] = source
-        #expect(!sut.coordinator.collectionView(
-            sut.collectionView,
-            acceptDrop: CoordinatorDraggingInfo(),
-            indexPath: IndexPath(item: 99, section: 0),
-            dropOperation: .on
-        ))
-    }
-
-    @Test func extractDraggedItem_validPasteboard_returnsItem() {
-        let item = app(id: 1)
-        let sut = makeSUT(reader: { _ in item.uuid })
-        sut.host.itemsByUUID[item.uuid] = item
-        #expect(sut.coordinator.extractDraggedItem(from: CoordinatorDraggingInfo())?.id == item.id)
-    }
-
-    @Test func extractDraggedItem_emptyPasteboard_returnsNil() {
-        let sut = makeSUT(reader: { _ in nil })
-        #expect(sut.coordinator.extractDraggedItem(from: CoordinatorDraggingInfo()) == nil)
-    }
-
-    @Test func performDrop_onGroupTarget_returnsTrue() {
-        let sut = makeSUT()
-        #expect(sut.coordinator.performDrop(draggedItem: app(id: 1), targetItem: group(id: 2)))
-        #expect(sut.host.snapshotMoves.isEmpty)
-    }
-
-    @Test func performDrop_reorderSamePage_returnsTrue() {
-        let sut = makeSUT()
-        let source = app(id: 1)
-        let target = app(id: 2)
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = source
-        sut.host.itemsByPath[IndexPath(item: 1, section: 0)] = target
-        #expect(sut.coordinator.performDrop(draggedItem: source, targetItem: target))
-        #expect(sut.host.snapshotMoves.count == 1)
-    }
-
-    @Test func draggingImageForItemsAt_usesInjectedCellProvider() {
-        let sut = makeSUT()
-        let path = IndexPath(item: 0, section: 0)
-        let expected = NSImage(size: NSSize(width: 64, height: 64))
-        sut.host.renderedImages[path] = expected
-        var offset = NSPoint.zero
-        let result = sut.coordinator.collectionView(
-            sut.collectionView,
-            draggingImageForItemsAt: [path],
-            with: NSEvent(),
-            offset: &offset
-        )
-        #expect(result === expected)
-    }
-
-    @Test func performDrop_bothItemsNotInSnapshot_noOp() {
-        let sut = makeSUT()
-        #expect(sut.coordinator.performDrop(draggedItem: app(id: 1), targetItem: app(id: 2)))
-        #expect(sut.host.snapshotMoves.isEmpty)
-    }
-
-    @Test("selection callbacks 保持 changed 后 activated 的精确顺序")
-    func selectionCallbacksPreserveChangedThenActivatedOrder() {
-        let sut = makeSUT()
-        let item = app(id: 1)
-        let path = IndexPath(item: 0, section: 0)
-        sut.host.itemsByPath[path] = item
-        var events: [String] = []
-        sut.coordinator.onSelectionChanged = { events.append("changed:\($0.id)") }
-        sut.coordinator.onItemActivated = { events.append("activated:\($0.id)") }
-        let delegate = sut.collectionView.delegate
-        delegate?.collectionView?(sut.collectionView, didSelectItemsAt: [path])
-        #expect(events == ["changed:1", "activated:1"])
-    }
-
-    @Test func selection_emptyAndStaleEmitNothing() {
-        let sut = makeSUT()
-        var events: [Int64] = []
-        sut.coordinator.onSelectionChanged = { events.append($0.id) }
-        sut.coordinator.onItemActivated = { events.append($0.id) }
-        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [])
-        sut.coordinator.collectionView(
-            sut.collectionView,
-            didSelectItemsAt: [IndexPath(item: 99, section: 0)]
-        )
-        #expect(events.isEmpty)
-    }
-
-    @Test func selection_validEmitsChangedThenActivated() {
-        let sut = makeSUT()
-        let item = app(id: 7)
-        let path = IndexPath(item: 0, section: 0)
-        sut.host.itemsByPath[path] = item
-        var events: [String] = []
-        sut.coordinator.onSelectionChanged = { events.append("changed:\($0.id)") }
-        sut.coordinator.onItemActivated = { events.append("activated:\($0.id)") }
-        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [path])
-        #expect(events == ["changed:7", "activated:7"])
-    }
-
-    @Test func selection_hasNoDeselectOutput() {
-        let sut = makeSUT()
-        var events: [Int64] = []
-        sut.coordinator.onSelectionChanged = { events.append($0.id) }
-        sut.collectionView.selectItems(at: [IndexPath(item: 0, section: 0)], scrollPosition: [])
-        sut.collectionView.deselectItems(at: sut.collectionView.selectionIndexPaths)
-        #expect(events.isEmpty)
-    }
-
-    @Test func writer_appGroupPageAndMissing() throws {
-        let sut = makeSUT()
-        let values = [app(id: 1), group(id: 2), page(id: 3)]
-        for (index, item) in values.enumerated() {
-            sut.host.itemsByPath[IndexPath(item: index, section: 0)] = item
-        }
-        for index in 0..<2 {
-            let writer = try #require(sut.coordinator.collectionView(
-                sut.collectionView,
-                pasteboardWriterForItemAt: IndexPath(item: index, section: 0)
-            ) as? NSPasteboardItem)
-            #expect(writer.string(forType: .string) == values[index].uuid)
-        }
-        #expect(sut.coordinator.collectionView(
-            sut.collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 2, section: 0)
-        ) == nil)
-        #expect(sut.coordinator.collectionView(
-            sut.collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 99, section: 0)
-        ) == nil)
-    }
-
-    @Test func validation_allLocationAndStateBranches() {
-        let sut = makeSUT()
-        let groupPath = IndexPath(item: 0, section: 0)
-        let appPath = IndexPath(item: 1, section: 0)
-        let pagePath = IndexPath(item: 2, section: 0)
-        sut.host.itemsByPath[groupPath] = group(id: 1)
-        sut.host.itemsByPath[appPath] = app(id: 2)
-        sut.host.itemsByPath[pagePath] = page(id: 3)
-        var operation: NSCollectionView.DropOperation = .before
-
-        let resolvedCases: [(IndexPath, DragController.HoverLocation)] = [
-            (groupPath, .overIcon(targetId: 1)),
-            (appPath, .empty),
-            (pagePath, .empty),
-            (IndexPath(item: 99, section: 0), .empty),
-        ]
-        for (path, expectedHover) in resolvedCases {
-            sut.host.resolvedPath = path
-            #expect(sut.coordinator.resolveHoverLocation(at: .zero) == expectedHover)
-            #expect(validate(
-                sut.coordinator,
-                collectionView: sut.collectionView,
-                location: NSPoint(x: 400, y: 100),
-                dropOperation: &operation
-            ) == .move)
-        }
-        sut.host.resolvedPath = nil
-        #expect(sut.coordinator.resolveHoverLocation(at: .zero) == .empty)
-        #expect(validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 400, y: 100),
-            dropOperation: &operation
-        ) == .move)
-        #expect(sut.dragController.state == .idle)
-        sut.dragController.handleDragStart()
-        sut.host.resolvedPath = groupPath
-        _ = validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 400, y: 100),
-            dropOperation: &operation
-        )
-        #expect(sut.dragController.draggingSubstate == .overIcon(targetId: 1))
-        for x in [CGFloat(10), CGFloat(790)] {
-            #expect(validate(
-                sut.coordinator,
-                collectionView: sut.collectionView,
-                location: NSPoint(x: x, y: 100),
-                dropOperation: &operation
-            ) == .generic)
-        }
-    }
-
-    @Test func validation_edgePreservesDropOperationSentinel() {
-        let sut = makeSUT()
-        for x in [CGFloat(10), CGFloat(790)] {
-            var operation: NSCollectionView.DropOperation = .before
-            #expect(validate(
-                sut.coordinator,
-                collectionView: sut.collectionView,
-                location: NSPoint(x: x, y: 100),
-                dropOperation: &operation
-            ) == .generic)
-            #expect(operation == .before)
-        }
-    }
-
-    @Test func acceptance_allSourceAndTargetBranches() {
-        let source = app(id: 1)
-        let ordinary = app(id: 2)
-        let folder = group(id: 3)
+    @Test func extractSession_unknownUUIDStaleSourceAndMismatchedActiveSessionReturnNil() {
         var value: String?
         let sut = makeSUT(reader: { _ in value })
-        sut.host.itemsByUUID[source.uuid] = source
-        sut.host.itemsByPath[IndexPath(item: 0, section: 0)] = ordinary
-        sut.host.itemsByPath[IndexPath(item: 1, section: 0)] = folder
-        let info = CoordinatorDraggingInfo()
-
-        value = nil
-        #expect(!sut.coordinator.collectionView(
-            sut.collectionView, acceptDrop: info,
-            indexPath: IndexPath(item: 0, section: 0), dropOperation: .on
-        ))
-        for invalid in ["malformed", "unknown-source"] {
-            value = invalid
-            #expect(!sut.coordinator.collectionView(
-                sut.collectionView, acceptDrop: info,
-                indexPath: IndexPath(item: 0, section: 0), dropOperation: .on
-            ))
-        }
+        let source = makeApp(id: 1)
+        let other = makeApp(id: 2)
+        let info = MockDraggingInfo()
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        value = "bad"
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
         value = source.uuid
-        #expect(!sut.coordinator.collectionView(
-            sut.collectionView, acceptDrop: info,
-            indexPath: IndexPath(item: 99, section: 0), dropOperation: .on
-        ))
-        #expect(sut.coordinator.collectionView(
-            sut.collectionView, acceptDrop: info,
-            indexPath: IndexPath(item: 1, section: 0), dropOperation: .on
-        ))
-        #expect(sut.coordinator.collectionView(
-            sut.collectionView, acceptDrop: info,
-            indexPath: IndexPath(item: 0, section: 0), dropOperation: .on
-        ))
-        let absentSource = app(id: 10)
-        let absentTarget = app(id: 11)
-        #expect(sut.coordinator.performDrop(
-            draggedItem: absentSource,
-            targetItem: absentTarget
-        ))
-        #expect(!sut.host.snapshotMoves.contains {
-            $0.0.id == absentSource.id && $0.1.id == absentTarget.id
-        })
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        sut.dragController.beginDrag(session(for: source, kind: .folderChild))
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        sut.dragController.beginDrag(session(for: other))
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        sut.dragController.beginDrag(session(for: source))
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        sut.host.itemsByID[source.id] = makeApp(id: source.id, uuid: other.uuid)
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
+        sut.host.itemsByID[source.id] = source
+        #expect(sut.coordinator.extractActiveSession(from: info) == session(for: source))
+        sut.coordinator.isDragEnabled = false
+        #expect(sut.coordinator.extractActiveSession(from: info) == nil)
     }
 
-    @Test func dragImage_emptyMissingAndValid() {
+    @Test func validateDrop_leftEdgeFirstPageAndRightEdgeLastPageReject() {
+        let source = makeApp(id: 1)
         let sut = makeSUT()
-        var offset = NSPoint.zero
-        let empty = sut.coordinator.collectionView(
-            sut.collectionView,
-            draggingImageForItemsAt: [],
-            with: NSEvent(), offset: &offset
-        )
-        let missing = sut.coordinator.collectionView(
-            sut.collectionView,
-            draggingImageForItemsAt: [IndexPath(item: 9, section: 0)],
-            with: NSEvent(), offset: &offset
-        )
+        beginValidSession(source, sut: sut)
+        sut.host.emptyPlacementResult = .afterItem(itemID: 9)
+        var operation: NSCollectionView.DropOperation = .before
+        #expect(validate(sut: sut, location: NSPoint(x: 1, y: 100), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+        sut.host.visualPageCount = 3
+        sut.host.currentVisualPageIndex = 2
+        #expect(validate(sut: sut, location: NSPoint(x: 799, y: 100), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+    }
+
+    @Test func validateDrop_leftEdgeMiddlePageArmsBackward() {
+        let source = makeApp(id: 1)
+        let sut = makeSUT()
+        beginValidSession(source, sut: sut)
+        sut.host.visualPageCount = 3
+        sut.host.currentVisualPageIndex = 1
+        sut.host.interactionVisibleRect = NSRect(x: 700, y: 0, width: 700, height: 500)
+        var operation: NSCollectionView.DropOperation = .before
+        #expect(validate(sut: sut, location: NSPoint(x: 701, y: 100), operation: &operation) == .generic)
+        #expect(sut.dragController.session?.hoverDestination == .edge(.backward))
+        #expect(operation == .before)
+    }
+
+    @Test func validateDrop_rightEdgeMiddlePageArmsForward() {
+        let source = makeApp(id: 1)
+        let sut = makeSUT()
+        beginValidSession(source, sut: sut)
+        sut.host.visualPageCount = 3
+        sut.host.currentVisualPageIndex = 1
+        sut.host.interactionVisibleRect = NSRect(x: 700, y: 0, width: 700, height: 500)
+        var operation: NSCollectionView.DropOperation = .before
+        #expect(validate(sut: sut, location: NSPoint(x: 1399, y: 100), operation: &operation) == .generic)
+        #expect(sut.dragController.session?.hoverDestination == .edge(.forward))
+        #expect(operation == .before)
+    }
+
+    @Test func resolveDestination_beforeAfterAndEmptyUseStableIDs() {
+        let sut = makeSUT()
+        let target = makeApp(id: 20)
         let path = IndexPath(item: 0, section: 0)
-        let expected = NSImage(size: NSSize(width: 64, height: 64))
-        sut.host.renderedImages[path] = expected
-        let valid = sut.coordinator.collectionView(
+        sut.host.install(target, at: path, frame: NSRect(x: 100, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = path
+        #expect(sut.coordinator.resolveGridDestination(at: NSPoint(x: 101, y: 101)) == .placement(.beforeItem(itemID: 20)))
+        #expect(sut.coordinator.resolveGridDestination(at: NSPoint(x: 199, y: 101)) == .placement(.afterItem(itemID: 20)))
+        sut.host.resolvedPath = nil
+        sut.host.emptyPlacementResult = .afterItem(itemID: 30)
+        #expect(sut.coordinator.resolveGridDestination(at: .zero) == .placement(.afterItem(itemID: 30)))
+        sut.host.emptyPlacementResult = nil
+        #expect(sut.coordinator.resolveGridDestination(at: .zero) == nil)
+    }
+
+    @Test func resolveDestination_appOnAppAndAppOnGroupAreOnItem() {
+        let sut = makeSUT()
+        for target in [makeApp(id: 2), makeGroup(id: 3)] {
+            let path = IndexPath(item: Int(target.id), section: 0)
+            sut.host.install(target, at: path, frame: NSRect(x: 100, y: 100, width: 100, height: 100))
+            sut.host.resolvedPath = path
+            #expect(sut.coordinator.resolveGridDestination(at: NSPoint(x: 150, y: 150)) == .onItem(itemID: target.id, itemType: target.type))
+        }
+    }
+
+    @Test func resolveDestination_groupOnAppGroupAndSelfReject() {
+        let sut = makeSUT()
+        let group = makeGroup(id: 1)
+        let app = makeApp(id: 2)
+        for target in [app, makeGroup(id: 3), group] {
+            #expect(!sut.coordinator.allows(session: session(for: group), destination: .onItem(itemID: target.id, itemType: target.type)))
+        }
+        #expect(!sut.coordinator.allows(session: session(for: app), destination: .onItem(itemID: app.id, itemType: .app)))
+        #expect(!sut.coordinator.allows(session: session(for: app), destination: .onItem(itemID: 9, itemType: .page)))
+        #expect(!sut.coordinator.allows(session: session(for: app), destination: .placement(.afterItem(itemID: app.id))))
+    }
+
+    @Test func resolveDestination_staleTargetRejects() {
+        let sut = makeSUT()
+        sut.host.resolvedPath = IndexPath(item: 9, section: 0)
+        #expect(sut.coordinator.resolveGridDestination(at: .zero) == nil)
+        let item = makeApp(id: 9)
+        sut.host.itemsByPath[sut.host.resolvedPath!] = item
+        #expect(sut.coordinator.resolveGridDestination(at: .zero) == nil)
+    }
+
+    @Test func topLevelPlacement_coversPlacementOnItemAndNil() {
+        let sut = makeSUT()
+        sut.host.emptyPlacementResult = .afterItem(itemID: 8)
+        #expect(sut.coordinator.topLevelPlacement(atLocalPoint: .zero) == .afterItem(itemID: 8))
+        let item = makeApp(id: 2)
+        let path = IndexPath(item: 0, section: 0)
+        sut.host.install(item, at: path, frame: NSRect(x: 100, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = path
+        #expect(sut.coordinator.topLevelPlacement(atLocalPoint: NSPoint(x: 125, y: 150)) == .beforeItem(itemID: 2))
+        #expect(sut.coordinator.topLevelPlacement(atLocalPoint: NSPoint(x: 175, y: 150)) == .afterItem(itemID: 2))
+        sut.host.pathsByID.removeAll()
+        #expect(sut.coordinator.topLevelPlacement(atLocalPoint: NSPoint(x: 150, y: 150)) == nil)
+    }
+
+    @Test func acceptDrop_callbackFailureKeepsSnapshotUnchanged() throws {
+        try verifyNativeDropScenario(.callbackFalse, hoverState: .pendingTimer)
+        try verifyNativeDropScenario(.callbackFalse, hoverState: .visiblePreview)
+    }
+
+    @Test func validateDrop_destinationPolicyMatrixUsesModernHover() {
+        let source = makeApp(id: 1)
+        let appTarget = makeApp(id: 2)
+        let groupTarget = makeGroup(id: 3)
+        let pageTarget = makePage(id: 4)
+        let sut = makeSUT()
+        beginValidSession(source, sut: sut)
+        var operation: NSCollectionView.DropOperation = .before
+
+        sut.host.resolvedPath = nil
+        sut.host.emptyPlacementResult = nil
+        #expect(validate(sut: sut, location: NSPoint(x: 400, y: 300), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+
+        let sourcePath = IndexPath(item: 0, section: 0)
+        sut.host.install(source, at: sourcePath, frame: NSRect(x: 100, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = sourcePath
+        #expect(validate(sut: sut, location: NSPoint(x: 101, y: 101), operation: &operation).isEmpty)
+        #expect(validate(sut: sut, location: NSPoint(x: 150, y: 150), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+
+        let appPath = IndexPath(item: 1, section: 0)
+        sut.host.install(appTarget, at: appPath, frame: NSRect(x: 200, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = appPath
+        #expect(validate(sut: sut, location: NSPoint(x: 201, y: 101), operation: &operation) == .move)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+        #expect(validate(sut: sut, location: NSPoint(x: 299, y: 101), operation: &operation) == .move)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+        #expect(validate(sut: sut, location: NSPoint(x: 250, y: 150), operation: &operation) == .move)
+        #expect(sut.dragController.session?.hoverDestination == .item(itemID: 2, itemType: .app))
+
+        let groupPath = IndexPath(item: 2, section: 0)
+        sut.host.install(groupTarget, at: groupPath, frame: NSRect(x: 300, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = groupPath
+        #expect(validate(sut: sut, location: NSPoint(x: 350, y: 150), operation: &operation) == .move)
+        #expect(sut.dragController.session?.hoverDestination == .item(itemID: 3, itemType: .group))
+
+        let pagePath = IndexPath(item: 3, section: 0)
+        sut.host.install(pageTarget, at: pagePath, frame: NSRect(x: 400, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = pagePath
+        #expect(validate(sut: sut, location: NSPoint(x: 450, y: 150), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+        sut.host.resolvedPath = IndexPath(item: 99, section: 0)
+        #expect(validate(sut: sut, location: NSPoint(x: 400, y: 300), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+
+        sut.coordinator.pasteboardUUIDReader = { _ in nil }
+        #expect(validate(sut: sut, location: NSPoint(x: 400, y: 300), operation: &operation).isEmpty)
+        #expect(sut.dragController.session?.hoverDestination == .empty)
+    }
+
+    @Test func acceptDrop_rejectionsWaitForNativeEndedWithoutCallback() throws {
+        for scenario in [
+            NativeDropScenario.extractionReject,
+            .destinationReject,
+            .allowsReject,
+        ] {
+            try verifyNativeDropScenario(scenario, hoverState: .pendingTimer)
+            try verifyNativeDropScenario(scenario, hoverState: .visiblePreview)
+        }
+    }
+
+    @Test func validateDropConvertsWindowPointForNonZeroViewOrigin() throws {
+        let source = makeApp(id: 1)
+        let target = makeApp(id: 2)
+        let sut = makeSUT()
+        beginValidSession(source, sut: sut)
+        let path = IndexPath(item: 1, section: 0)
+        sut.host.install(target, at: path, frame: NSRect(x: 200, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = path
+        let window = attachToWindow(sut.collectionView, origin: NSPoint(x: 120, y: 80))
+        _ = window
+        let localPoint = NSPoint(x: 250, y: 150)
+        let info = MockDraggingInfo(location: sut.collectionView.convert(localPoint, to: nil))
+        var proposed = NSIndexPath(forItem: 1, inSection: 0)
+        var operation: NSCollectionView.DropOperation = .before
+        let result = withUnsafeMutablePointer(to: &operation) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                sut.coordinator.collectionView(
+                    sut.collectionView, validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(proposedPointer),
+                    dropOperation: operationPointer
+                )
+            }
+        }
+        let resolved = try #require(sut.host.resolvedPoints.last)
+        #expect(abs(resolved.x - localPoint.x) <= 0.001)
+        #expect(abs(resolved.y - localPoint.y) <= 0.001)
+        #expect(result == .move)
+        #expect(operation == .on)
+        #expect(sut.dragController.session?.hoverDestination == .item(itemID: 2, itemType: .app))
+    }
+
+    @Test func acceptDropConvertsWindowPointForNonZeroViewOrigin() throws {
+        let source = makeApp(id: 1)
+        let target = makeApp(id: 2)
+        let sut = makeSUT()
+        beginValidSession(source, sut: sut)
+        let path = IndexPath(item: 1, section: 0)
+        sut.host.install(target, at: path, frame: NSRect(x: 200, y: 100, width: 100, height: 100))
+        sut.host.resolvedPath = path
+        sut.coordinator.onDropRequested = { _, _ in true }
+        let window = attachToWindow(sut.collectionView, origin: NSPoint(x: 120, y: 80))
+        _ = window
+        let localPoint = NSPoint(x: 250, y: 150)
+        let accepted = sut.coordinator.collectionView(
             sut.collectionView,
-            draggingImageForItemsAt: [path],
-            with: NSEvent(), offset: &offset
+            acceptDrop: MockDraggingInfo(location: sut.collectionView.convert(localPoint, to: nil)),
+            indexPath: path,
+            dropOperation: .on
         )
-        #expect(empty.size == .zero)
-        #expect(missing.size == .zero)
-        #expect(valid === expected)
+        let resolved = try #require(sut.host.resolvedPoints.last)
+        #expect(abs(resolved.x - localPoint.x) <= 0.001)
+        #expect(abs(resolved.y - localPoint.y) <= 0.001)
+        #expect(accepted)
+        #expect(sut.dragController.session != nil)
     }
 
-    @Test func attach_isIdempotentAndMovesFromAToB() {
+    @Test func acceptDrop_callbackNilWaitsForNativeEnded() throws {
+        try verifyNativeDropScenario(.callbackNil)
+    }
+
+    @Test func draggingSessionEndClearsSessionTimerAndPreview() throws {
+        try verifyNativeDropScenario(.callbackTrue, hoverState: .pendingTimer)
+        try verifyNativeDropScenario(.callbackTrue, hoverState: .visiblePreview)
+    }
+
+    @Test func lifecycle_attachDetachAndReattachOwnPreviewBinding() {
         let sut = makeSUT()
-        #expect(sut.collectionView.delegate === sut.coordinator)
-        #expect(sut.collectionView.delegate !== sut.collectionView)
-        sut.coordinator.attach(to: sut.host)
-        #expect(sut.collectionView.delegate === sut.coordinator)
+        let source = makeApp(id: 1)
+        sut.dragController.beginDrag(session(for: source))
+        sut.dragController.updateDragHover(.item(itemID: 2, itemType: .app))
+        let scheduler = MockScheduler()
+        let controller = DragController(scheduler: scheduler)
+        let coordinator = AppGridInteractionCoordinator(dragController: controller, pasteboardUUIDReader: { _ in nil })
+        let first = InteractionHost()
         let second = InteractionHost()
-        sut.coordinator.attach(to: second)
-        #expect(sut.collectionView.delegate == nil)
-        #expect(second.collectionViewForDelegateInstallation.delegate === sut.coordinator)
+        coordinator.attach(to: first)
+        coordinator.attach(to: first)
+        coordinator.attach(to: second)
+        #expect(first.collectionViewForDelegateInstallation.delegate == nil)
+        controller.beginDrag(session(for: source))
+        controller.updateDragHover(.item(itemID: 2, itemType: .app))
+        scheduler.advance(by: 0.8)
+        #expect(first.previewCalls.count == 2)
+        #expect(first.previewCalls.last! == nil)
+        #expect(second.previewCalls.last == 2)
+        coordinator.detach()
+        #expect(second.previewCalls.last! == nil)
+        controller.updateDragHover(.empty)
+        #expect(second.previewCalls.last! == nil)
     }
 
-    @Test func detach_preservesExternalDelegateAndIsIdempotent() {
+    @Test func detach_preservesExternalDelegateAndHostDeallocationIsSafe() {
         final class ExternalDelegate: NSObject, NSCollectionViewDelegate {}
-        let sut = makeSUT()
+        var host: InteractionHost? = InteractionHost()
+        let grid = host!.collectionViewForDelegateInstallation
+        let coordinator = AppGridInteractionCoordinator(dragController: DragController(scheduler: MockScheduler()), pasteboardUUIDReader: { _ in nil })
+        coordinator.attach(to: host!)
         let external = ExternalDelegate()
-        sut.collectionView.delegate = external
-        sut.coordinator.detach()
-        sut.coordinator.detach()
-        #expect(sut.collectionView.delegate === external)
-        #expect(sut.coordinator.host == nil)
+        grid.delegate = external
+        coordinator.detach()
+        #expect(grid.delegate === external)
+        coordinator.attach(to: host!)
+        host = nil
+        #expect(coordinator.host == nil)
+        #expect(coordinator.collectionView(grid, pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)) == nil)
+    }
+
+    @Test func selectionAndDragImageDelegateBranches() throws {
+        let sut = makeSUT()
+        let item = makeApp(id: 1)
+        let path = IndexPath(item: 0, section: 0)
+        sut.host.install(item, at: path)
+        var events: [String] = []
+        sut.coordinator.onSelectionChanged = { events.append("changed:\($0.id)") }
+        sut.coordinator.onItemActivated = { events.append("activated:\($0.id)") }
+        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [])
+        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [IndexPath(item: 9, section: 0)])
+        sut.coordinator.collectionView(sut.collectionView, didSelectItemsAt: [path])
+        #expect(events == ["changed:1", "activated:1"])
+        var offset = NSPoint.zero
+        #expect(sut.coordinator.collectionView(sut.collectionView, draggingImageForItemsAt: [], with: NSEvent(), offset: &offset).size == .zero)
+        sut.host.renderedImages[path] = NSImage(size: NSSize(width: 64, height: 64))
+        #expect(sut.coordinator.collectionView(sut.collectionView, draggingImageForItemsAt: [path], with: NSEvent(), offset: &offset).size.width == 64)
     }
 
     @Test func weakHostAndOwnerGraphReleaseWithoutCycle() {
@@ -636,79 +734,10 @@ struct AppGridInteractionCoordinatorTests {
         #expect(weakCoordinator == nil)
     }
 
-    @Test func hostReleaseMakesAllFiveEntrypointsSafe() {
-        var host: InteractionHost? = InteractionHost()
-        let collectionView = host!.collectionViewForDelegateInstallation
-        collectionView.frame = NSRect(x: 0, y: 0, width: 800, height: 620)
-        let coordinator = AppGridInteractionCoordinator(
-            dragController: DragController(scheduler: MockScheduler()),
-            pasteboardUUIDReader: { _ in nil }
-        )
-        coordinator.attach(to: host!)
-        host = nil
-        var events = 0
-        coordinator.onSelectionChanged = { _ in events += 1 }
-        coordinator.onItemActivated = { _ in events += 1 }
-        coordinator.collectionView(
-            collectionView,
-            didSelectItemsAt: [IndexPath(item: 0, section: 0)]
-        )
-        #expect(coordinator.collectionView(
-            collectionView,
-            pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
-        ) == nil)
-        var operation: NSCollectionView.DropOperation = .before
-        #expect(validate(
-            coordinator,
-            collectionView: collectionView,
-            location: NSPoint(x: 400, y: 100),
-            dropOperation: &operation
-        ).isEmpty)
-        #expect(!coordinator.collectionView(
-            collectionView,
-            acceptDrop: CoordinatorDraggingInfo(),
-            indexPath: IndexPath(item: 0, section: 0),
-            dropOperation: .on
-        ))
-        var offset = NSPoint.zero
-        #expect(coordinator.collectionView(
-            collectionView,
-            draggingImageForItemsAt: [IndexPath(item: 0, section: 0)],
-            with: NSEvent(), offset: &offset
-        ).size == .zero)
-        #expect(events == 0)
-    }
-
-    @Test func delegateWiringSelectionAndDragAreReal() throws {
-        let sut = makeSUT()
-        let item = app(id: 1)
-        let path = IndexPath(item: 0, section: 0)
-        sut.host.itemsByPath[path] = item
-        sut.dragController.handleDragStart()
-        var selected: Int64?
-        sut.coordinator.onItemActivated = { selected = $0.id }
-        let delegate = try #require(sut.collectionView.delegate)
-        #expect(delegate === sut.coordinator)
-        #expect(delegate !== sut.collectionView)
-        delegate.collectionView?(sut.collectionView, didSelectItemsAt: [path])
-        let writer = delegate.collectionView?(
-            sut.collectionView,
-            pasteboardWriterForItemAt: path
-        )
-        var operation: NSCollectionView.DropOperation = .before
-        let validation = validate(
-            sut.coordinator,
-            collectionView: sut.collectionView,
-            location: NSPoint(x: 400, y: 100),
-            dropOperation: &operation
-        )
-        #expect(selected == item.id)
-        #expect(writer != nil)
-        #expect(validation == .move)
-    }
-
     @Test func programmaticSelectionNeverEmitsBusinessOutput() throws {
-        let grid = AppGridCollectionView(frame: NSRect(x: 0, y: 0, width: 800, height: 620))
+        let grid = AppGridCollectionView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 620)
+        )
         let coordinator = AppGridInteractionCoordinator(
             dragController: DragController(scheduler: MockScheduler()),
             pasteboardUUIDReader: { _ in nil }
@@ -716,7 +745,7 @@ struct AppGridInteractionCoordinatorTests {
         coordinator.attach(to: grid)
         #expect(grid.delegate === coordinator)
         #expect(grid.delegate !== grid)
-        let items = [app(id: 1), app(id: 2)]
+        let items = [makeApp(id: 1), makeApp(id: 2)]
         grid.reload(
             pages: [items], searchResults: nil, searchQuery: nil,
             animatingDifferences: false, animateEntrance: false
@@ -755,12 +784,8 @@ struct AppGridInteractionCoordinatorTests {
             window.orderOut(nil)
         }
 
-        let app = TestDataFactory.makePageItem(id: 1, type: .app)
-        let folder = TestDataFactory.makePageItem(
-            id: 2,
-            type: .group,
-            group: TestDataFactory.makeGroupInfo(id: 2)
-        )
+        let app = makeApp(id: 1)
+        let folder = makeGroup(id: 2)
         grid.applyGridMetrics(GridLayoutCalculator.calculate(
             viewportSize: CGSize(width: 800, height: 620)
         ))
@@ -782,7 +807,8 @@ struct AppGridInteractionCoordinatorTests {
         )
         #expect(appCell.configuredIconSize == updatedMetrics.iconSize)
         #expect(folderCell.configuredIconSize == updatedMetrics.iconSize)
-        grid.delegate?.collectionView?(
+        let delegate = try #require(grid.delegate)
+        delegate.collectionView?(
             grid,
             didSelectItemsAt: [IndexPath(item: 0, section: 0)]
         )
@@ -792,7 +818,7 @@ struct AppGridInteractionCoordinatorTests {
             animatingDifferences: false, animateEntrance: false
         )
         grid.layoutSubtreeIfNeeded()
-        grid.delegate?.collectionView?(
+        delegate.collectionView?(
             grid,
             didSelectItemsAt: [IndexPath(item: 1, section: 0)]
         )

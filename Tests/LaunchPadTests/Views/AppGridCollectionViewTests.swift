@@ -980,5 +980,129 @@ extension AppGridCollectionViewTests {
         #expect(collectionView.accessibilityRows()?.isEmpty == true)
     }
 
+    @Test("空白落点使用当前视觉页最后一个稳定 ID，真空页拒绝")
+    func emptyDropUsesLastVisibleStableIDAndRejectsEmptyPage() {
+        let grid = makeSUT().collectionView
+        let items = TestDataFactory.makeAppItems(count: 3)
+        grid.reload(
+            pages: [items, []], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        #expect(grid.emptyPlacement(inVisualPage: 0) == .afterItem(itemID: items[2].id))
+        #expect(grid.emptyPlacement(inVisualPage: 1) == nil)
+        #expect(grid.emptyPlacement(inVisualPage: 2) == nil)
+    }
+
+    @Test("视觉页 setter 夹紧空、非空和缩页 snapshot")
+    func visualPageSetterClampsAcrossReloads() {
+        let grid = makeSUT().collectionView
+        grid.reload(
+            pages: [[], [], []], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        grid.setCurrentVisualPageIndex(2)
+        #expect(grid.currentVisualPageIndex == 2)
+        grid.setCurrentVisualPageIndex(9)
+        #expect(grid.currentVisualPageIndex == 2)
+        grid.setCurrentVisualPageIndex(-1)
+        #expect(grid.currentVisualPageIndex == 0)
+        grid.setCurrentVisualPageIndex(2)
+        grid.reload(
+            pages: [[]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, reconfigureItems: true,
+            animateEntrance: false
+        )
+        #expect(grid.currentVisualPageIndex == 0)
+        grid.reload(
+            pages: [], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        #expect(grid.currentVisualPageIndex == 0)
+    }
+
+    @Test("search sections 不计入视觉页且 snapshot 查询全部边界安全")
+    func hostSnapshotQueriesUseStableIDsAndSafeBounds() throws {
+        let grid = makeSUT().collectionView
+        let item = TestDataFactory.makePageItem(id: 42, uuid: UUID().uuidString)
+        grid.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 900)
+        ))
+        grid.reload(
+            pages: [[item]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        grid.collectionViewLayout?.prepare()
+        #expect(grid.visualPageCount == 1)
+        #expect(grid.section(at: 0) == .page(0))
+        #expect(grid.section(at: -1) == nil)
+        #expect(grid.section(at: 1) == nil)
+        #expect(grid.pageItem(id: 42)?.id == 42)
+        #expect(grid.pageItem(id: 999) == nil)
+        #expect(grid.indexPath(forItemID: 42) == IndexPath(item: 0, section: 0))
+        #expect(grid.visualIndex(of: item) == 0)
+        let attributes = try #require(grid.collectionViewLayout?
+            .layoutAttributesForItem(at: IndexPath(item: 0, section: 0)))
+        #expect(grid.layoutFrame(at: IndexPath(item: 0, section: 0)) == attributes.frame)
+        #expect(grid.layoutFrame(at: IndexPath(item: 99, section: 0)) == nil)
+        grid.reload(
+            pages: [], searchResults: [item], searchQuery: "a",
+            animatingDifferences: false, animateEntrance: false
+        )
+        #expect(grid.visualPageCount == 0)
+        #expect(grid.section(at: 0) == .search)
+        grid.reload(
+            pages: [], searchResults: [item], searchQuery: "a",
+            searchResultPages: [[item]],
+            animatingDifferences: false, animateEntrance: false
+        )
+        #expect(grid.visualPageCount == 0)
+        #expect(grid.section(at: 0) == .searchPage(0))
+    }
+
+    @Test("folder preview 清理旧目标并忽略非 app、缺失目标和 reload")
+    func folderPreviewLifecycleUsesOnlyVisibleAppCells() {
+        let grid = makeSUT().collectionView
+        let first = TestDataFactory.makePageItem(id: 1, type: .app)
+        let second = TestDataFactory.makePageItem(id: 2, type: .app)
+        let group = TestDataFactory.makePageItem(id: 3, type: .group)
+        grid.reload(
+            pages: [[first, second, group]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        let firstCell = AppIconCell(); _ = firstCell.view
+        let secondCell = AppIconCell(); _ = secondCell.view
+        grid.visibleCellProvider = { path in
+            switch path.item {
+            case 0: firstCell
+            case 1: secondCell
+            default: nil
+            }
+        }
+        grid.setFolderCreationPreview(targetItemID: 1)
+        #expect(firstCell.isFolderCreationPreviewVisible)
+        grid.setFolderCreationPreview(targetItemID: 2)
+        #expect(!firstCell.isFolderCreationPreviewVisible)
+        #expect(secondCell.isFolderCreationPreviewVisible)
+        grid.setFolderCreationPreview(targetItemID: 3)
+        #expect(!secondCell.isFolderCreationPreviewVisible)
+        grid.setFolderCreationPreview(targetItemID: 999)
+        grid.setFolderCreationPreview(targetItemID: 1)
+        #expect(firstCell.isFolderCreationPreviewVisible)
+        grid.reload(
+            pages: [[first, second, group]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, reconfigureItems: false,
+            animateEntrance: false
+        )
+        #expect(!firstCell.isFolderCreationPreviewVisible)
+        grid.setFolderCreationPreview(targetItemID: 1)
+        #expect(firstCell.isFolderCreationPreviewVisible)
+        grid.reload(
+            pages: [[first]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, reconfigureItems: true,
+            animateEntrance: false
+        )
+        #expect(!firstCell.isFolderCreationPreviewVisible)
+    }
+
 }
 #endif

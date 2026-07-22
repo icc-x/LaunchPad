@@ -265,6 +265,7 @@ public class LaunchPadViewController: NSViewController {
         scrollView.onPageChanged = { [weak self] page in
             guard let self else { return }
             pageControlViewModel.currentPage = page
+            collectionView.setCurrentVisualPageIndex(page)
             pageControl.update()
         }
 
@@ -423,6 +424,7 @@ public class LaunchPadViewController: NSViewController {
         let clampedPage = min(max(previousPage, 0), max(visualPages.count - 1, 0))
         pageControlViewModel.configure(totalPages: visualPages.count)
         pageControlViewModel.currentPage = clampedPage
+        collectionView.setCurrentVisualPageIndex(clampedPage)
         pageControlViewModel.isSearchActive = isSearchActive
         pageControl.update()
         scrollView.configurePaging(
@@ -441,6 +443,7 @@ public class LaunchPadViewController: NSViewController {
               page >= 0,
               page < visualPages.count else { return }
         pageControlViewModel.currentPage = page
+        collectionView.setCurrentVisualPageIndex(page)
         pageControl.update()
         scrollView.scrollToPage(page, animated: animated)
     }

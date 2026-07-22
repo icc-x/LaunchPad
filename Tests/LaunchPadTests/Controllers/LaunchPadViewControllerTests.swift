@@ -957,19 +957,27 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("resize clamp 旧页并按稳定 ID 恢复选择")
-    func resizeClampsPreviousPageAndRestoresSelectionByID() {
+    func resizeClampsPreviousPageAndRestoresSelectionByID() throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
         loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
+        let grid = try #require(extractCollectionView(from: sut))
+        let scrollView = try #require(extractScrollView(from: sut))
         sut.navigateToPage(2)
         _ = sut.selectItem(id: 60)
+        #expect(grid.currentVisualPageIndex == 2)
 
         sut.viewportSizeProvider = { CGSize(width: 1729, height: 496) }
+        sut.view.frame = NSRect(x: 0, y: 0, width: 1729, height: 620)
+        sut.view.layoutSubtreeIfNeeded()
         sut.viewDidLayout()
+        sut.view.layoutSubtreeIfNeeded()
 
         #expect(sut.currentVisualPage == 1)
         #expect(sut.pagingPageCount == 2)
+        #expect(grid.currentVisualPageIndex == 1)
+        #expect(scrollView.contentView.bounds.origin.x == scrollView.pagingPageWidth)
         #expect(sut.selectedItemID == 60)
         #expect(sut.selectedItemIndexPath?.section == 1)
     }
@@ -1773,6 +1781,37 @@ struct LaunchPadViewControllerTests {
         _ = sut.handleKeyEvent(.tab)
 
         #expect(sut.selectedItemID == apps.last?.id)
+    }
+
+    @Test("主网格视觉页在 reload、scroll、导航、dot、edge 与 selection 原语同步")
+    func gridVisualPageSynchronizesAtPrimitiveBoundaries() throws {
+        let (sut, dragController, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let grid = try #require(extractCollectionView(from: sut))
+        let scrollView = try #require(extractScrollView(from: sut))
+        #expect(grid.currentVisualPageIndex == 0)
+
+        sut.navigateToPage(1)
+        #expect(grid.currentVisualPageIndex == 1)
+        sut.navigateToPage(99)
+        #expect(grid.currentVisualPageIndex == 1)
+
+        scrollView.onPageChanged?(2)
+        #expect(grid.currentVisualPageIndex == 2)
+        sut.pageControl.onDotSelected?(1)
+        #expect(grid.currentVisualPageIndex == 1)
+        dragController.onPageChange?(.forward)
+        #expect(grid.currentVisualPageIndex == 2)
+        dragController.onPageChange?(.backward)
+        #expect(grid.currentVisualPageIndex == 1)
+
+        let target = try #require(sut.gridSnapshot.itemIdentifiers.first(where: {
+            sut.gridSnapshot.indexOfItem($0).map { $0 >= 28 } ?? false
+        }))
+        _ = sut.selectItem(id: target.id)
+        #expect(grid.currentVisualPageIndex == sut.selectedItemIndexPath?.section)
     }
 }
 #endif

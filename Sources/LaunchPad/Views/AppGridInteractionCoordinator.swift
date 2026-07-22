@@ -1,26 +1,46 @@
 import AppKit
 import LaunchPadProtocols
 
-/// 网格交互宿主向协调器暴露的最小能力集合。
+public enum GridDropDestination: Sendable, Equatable {
+    case placement(ItemPlacement)
+    case onItem(itemID: Int64, itemType: ItemType)
+}
+
+/// Read-only grid surface used to resolve native drag source and destination state.
 @MainActor
 protocol AppGridInteractionHosting: AnyObject {
     var collectionViewForDelegateInstallation: NSCollectionView { get }
+    var interactionVisibleRect: NSRect { get }
+    var visualPageCount: Int { get }
+    var currentVisualPageIndex: Int { get }
+
+    func section(at index: Int) -> Section?
     func pageItem(at indexPath: IndexPath) -> PageItem?
-    func pageItem(uuid: String) -> PageItem?
+    func pageItem(id: Int64) -> PageItem?
+    /// Returns the item's snapshot section, which is its visual page index.
+    func visualIndex(of item: PageItem) -> Int?
+    func indexPath(forItemID itemID: Int64) -> IndexPath?
     func resolvedIndexPath(at point: NSPoint) -> IndexPath?
+    func layoutFrame(at indexPath: IndexPath) -> NSRect?
+    func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement?
     func dragImage(at indexPath: IndexPath) -> NSImage?
-    func moveSnapshotItem(_ item: PageItem, before target: PageItem)
+    func setFolderCreationPreview(targetItemID: Int64?)
 }
 
-/// 外部拥有主网格的选择及拖放 delegate 交互。
 @MainActor
 final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     private(set) weak var host: (any AppGridInteractionHosting)?
     private weak var collectionView: NSCollectionView?
     let dragController: DragController
 
+    var isDragEnabled = true {
+        didSet {
+            if !isDragEnabled { dragController.cancelDrag() }
+        }
+    }
     var onSelectionChanged: ((PageItem) -> Void)?
     var onItemActivated: ((PageItem) -> Void)?
+    var onDropRequested: ((DragSession, GridDropDestination) -> Bool)?
     var pasteboardUUIDReader: (NSPasteboard) -> String?
 
     init(
@@ -37,9 +57,14 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
         self.host = host
         self.collectionView = collectionView
         collectionView.delegate = self
+        dragController.onFolderCreationPreviewChanged = { [weak self] targetID in
+            self?.host?.setFolderCreationPreview(targetItemID: targetID)
+        }
     }
 
     func detach() {
+        host?.setFolderCreationPreview(targetItemID: nil)
+        dragController.onFolderCreationPreviewChanged = nil
         if collectionView?.delegate === self {
             collectionView?.delegate = nil
         }
@@ -61,11 +86,94 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
         _ collectionView: NSCollectionView,
         pasteboardWriterForItemAt indexPath: IndexPath
     ) -> NSPasteboardWriting? {
-        guard let item = host?.pageItem(at: indexPath),
-              item.type != .page else { return nil }
+        guard isDragEnabled,
+              let host,
+              case .page = host.section(at: indexPath.section),
+              let item = host.pageItem(at: indexPath),
+              item.type != .page,
+              let parentID = item.parentId,
+              UUID(uuidString: item.uuid) != nil,
+              let visualIndex = host.visualIndex(of: item) else { return nil }
+
+        dragController.beginDrag(DragSession(
+            itemID: item.id,
+            itemUUID: item.uuid,
+            itemType: item.type,
+            sourceKind: .topLevel,
+            sourceParentID: parentID,
+            sourceVisualIndex: visualIndex
+        ))
         let pasteboardItem = NSPasteboardItem()
         pasteboardItem.setString(item.uuid, forType: .string)
         return pasteboardItem
+    }
+
+    func extractActiveSession(from draggingInfo: NSDraggingInfo) -> DragSession? {
+        guard isDragEnabled,
+              let value = pasteboardUUIDReader(draggingInfo.draggingPasteboard),
+              UUID(uuidString: value) != nil,
+              let session = dragController.session,
+              session.sourceKind == .topLevel,
+              session.itemUUID == value,
+              let source = host?.pageItem(id: session.itemID),
+              source.uuid == value else { return nil }
+        return session
+    }
+
+    func canHoverEdge(_ direction: DragPageDirection) -> Bool {
+        guard let host else { return false }
+        switch direction {
+        case .backward:
+            return host.currentVisualPageIndex > 0
+        case .forward:
+            return host.currentVisualPageIndex + 1 < host.visualPageCount
+        }
+    }
+
+    func resolveGridDestination(at location: NSPoint) -> GridDropDestination? {
+        guard let host else { return nil }
+        guard let indexPath = host.resolvedIndexPath(at: location) else {
+            return host.emptyPlacement(inVisualPage: host.currentVisualPageIndex).map {
+                .placement($0)
+            }
+        }
+        guard let item = host.pageItem(at: indexPath),
+              let frame = host.layoutFrame(at: indexPath) else { return nil }
+        let onFrame = frame.insetBy(dx: frame.width * 0.25, dy: frame.height * 0.20)
+        if onFrame.contains(location) {
+            return .onItem(itemID: item.id, itemType: item.type)
+        }
+        return .placement(
+            location.x < frame.midX
+                ? .beforeItem(itemID: item.id)
+                : .afterItem(itemID: item.id)
+        )
+    }
+
+    func topLevelPlacement(atLocalPoint location: NSPoint) -> ItemPlacement? {
+        switch resolveGridDestination(at: location) {
+        case .placement(let placement):
+            return placement
+        case .onItem(let itemID, _):
+            guard let indexPath = host?.indexPath(forItemID: itemID),
+                  let frame = host?.layoutFrame(at: indexPath) else { return nil }
+            return location.x < frame.midX
+                ? .beforeItem(itemID: itemID)
+                : .afterItem(itemID: itemID)
+        case nil:
+            return nil
+        }
+    }
+
+    func allows(session: DragSession, destination: GridDropDestination) -> Bool {
+        switch destination {
+        case .placement(let placement):
+            return placement.anchorItemID != session.itemID
+        case .onItem(let targetID, .app), .onItem(let targetID, .group):
+            return session.itemType == .app && targetID != session.itemID
+        case .onItem:
+            return false
+        }
     }
 
     func collectionView(
@@ -74,24 +182,42 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
         proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
         dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
     ) -> NSDragOperation {
-        guard host != nil else { return [] }
-        let location = draggingInfo.draggingLocation
+        let localPoint = collectionView.convert(draggingInfo.draggingLocation, from: nil)
+        guard let session = extractActiveSession(from: draggingInfo) else {
+            dragController.updateDragHover(.empty)
+            return []
+        }
         let edgeWidth: CGFloat = 40
-        if location.x < edgeWidth
-            || location.x > collectionView.bounds.width - edgeWidth {
-            dragController.updateDragHover(location: .screenEdge)
+        let visibleBounds = host?.interactionVisibleRect ?? .zero
+        if localPoint.x < visibleBounds.minX + edgeWidth {
+            guard canHoverEdge(.backward) else {
+                dragController.updateDragHover(.empty)
+                return []
+            }
+            dragController.updateDragHover(.edge(.backward))
             return .generic
         }
-        dragController.updateDragHover(location: resolveHoverLocation(at: location))
+        if localPoint.x > visibleBounds.maxX - edgeWidth {
+            guard canHoverEdge(.forward) else {
+                dragController.updateDragHover(.empty)
+                return []
+            }
+            dragController.updateDragHover(.edge(.forward))
+            return .generic
+        }
+        guard let destination = resolveGridDestination(at: localPoint),
+              allows(session: session, destination: destination) else {
+            dragController.updateDragHover(.empty)
+            return []
+        }
+        switch destination {
+        case .placement:
+            dragController.updateDragHover(.empty)
+        case .onItem(let itemID, let itemType):
+            dragController.updateDragHover(.item(itemID: itemID, itemType: itemType))
+        }
         dropOperation.pointee = .on
         return .move
-    }
-
-    func resolveHoverLocation(at location: NSPoint) -> DragController.HoverLocation {
-        guard let indexPath = host?.resolvedIndexPath(at: location),
-              let item = host?.pageItem(at: indexPath),
-              item.type == .group else { return .empty }
-        return .overIcon(targetId: item.id)
     }
 
     func collectionView(
@@ -100,23 +226,30 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
         indexPath: IndexPath,
         dropOperation: NSCollectionView.DropOperation
     ) -> Bool {
-        guard let source = extractDraggedItem(from: draggingInfo),
-              let target = host?.pageItem(at: indexPath) else { return false }
-        return performDrop(draggedItem: source, targetItem: target)
-    }
-
-    func extractDraggedItem(from draggingInfo: NSDraggingInfo) -> PageItem? {
-        guard let uuid = pasteboardUUIDReader(draggingInfo.draggingPasteboard)
-        else { return nil }
-        return host?.pageItem(uuid: uuid)
-    }
-
-    func performDrop(draggedItem: PageItem, targetItem: PageItem) -> Bool {
-        if targetItem.type != .group {
-            host?.moveSnapshotItem(draggedItem, before: targetItem)
+        let localPoint = collectionView.convert(draggingInfo.draggingLocation, from: nil)
+        guard let session = extractActiveSession(from: draggingInfo),
+              let destination = resolveGridDestination(at: localPoint),
+              allows(session: session, destination: destination) else {
+            return false
         }
-        dragController.handleDrop()
-        return host != nil
+        return performDrop(session: session, destination: destination)
+    }
+
+    func performDrop(session: DragSession, destination: GridDropDestination) -> Bool {
+        guard isDragEnabled else {
+            dragController.cancelDrag()
+            return false
+        }
+        return onDropRequested?(session, destination) ?? false
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        draggingSession session: NSDraggingSession,
+        endedAt screenPoint: NSPoint,
+        dragOperation operation: NSDragOperation
+    ) {
+        dragController.finishDrag()
     }
 
     func collectionView(

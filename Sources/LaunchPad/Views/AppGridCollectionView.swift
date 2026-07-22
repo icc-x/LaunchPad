@@ -20,6 +20,8 @@ public class AppGridCollectionView: NSCollectionView {
     private var iconCache: IconCaching?
     private var storage: DataStoring?
     private(set) var gridMetrics: GridMetrics?
+    public private(set) var currentVisualPageIndex = 0
+    private var previewedFolderTargetID: Int64?
 
     // MARK: - Test injection points（可选注入；未注入时回退到真实 collectionView 行为）
 
@@ -109,6 +111,7 @@ public class AppGridCollectionView: NSCollectionView {
         reconfigureItems: Bool = false,
         animateEntrance: Bool = true
     ) {
+        setFolderCreationPreview(targetItemID: nil)
         var snapshot = DiffableDataSourceBuilder.buildSnapshot(
             pages: pages,
             searchResults: searchResults,
@@ -125,9 +128,17 @@ public class AppGridCollectionView: NSCollectionView {
             snapshot,
             animatingDifferences: animatingDifferences
         )
+        setCurrentVisualPageIndex(currentVisualPageIndex)
 
         // 图标入场动画：从左到右依次铺开
         if animateEntrance { self.animateEntrance() }
+    }
+
+    public func setCurrentVisualPageIndex(_ index: Int) {
+        let pageCount = diffableDataSource.snapshot().sectionIdentifiers.reduce(into: 0) {
+            if case .page = $1 { $0 += 1 }
+        }
+        currentVisualPageIndex = max(0, min(index, max(0, pageCount - 1)))
     }
 
     /// 图标入场动画：每个 cell 按列索引延迟 colIndex * 0.02s，从左到右铺开
@@ -378,17 +389,52 @@ public class AppGridCollectionView: NSCollectionView {
 
 extension AppGridCollectionView: AppGridInteractionHosting {
     var collectionViewForDelegateInstallation: NSCollectionView { self }
+    var interactionVisibleRect: NSRect { visibleRect }
+    var visualPageCount: Int {
+        diffableDataSource.snapshot().sectionIdentifiers.reduce(into: 0) {
+            if case .page = $1 { $0 += 1 }
+        }
+    }
+
+    func section(at index: Int) -> Section? {
+        let sections = diffableDataSource.snapshot().sectionIdentifiers
+        guard sections.indices.contains(index) else { return nil }
+        return sections[index]
+    }
 
     func pageItem(at indexPath: IndexPath) -> PageItem? {
         diffableDataSource.itemIdentifier(for: indexPath)
     }
 
-    func pageItem(uuid: String) -> PageItem? {
-        diffableDataSource.snapshot().itemIdentifiers.first { $0.uuid == uuid }
+    func pageItem(id: Int64) -> PageItem? {
+        diffableDataSource.snapshot().itemIdentifiers.first { $0.id == id }
+    }
+
+    func visualIndex(of item: PageItem) -> Int? {
+        diffableDataSource.indexPath(for: item)?.section
+    }
+
+    func indexPath(forItemID itemID: Int64) -> IndexPath? {
+        guard let item = pageItem(id: itemID) else { return nil }
+        return diffableDataSource.indexPath(for: item)
     }
 
     func resolvedIndexPath(at point: NSPoint) -> IndexPath? {
         indexPathResolver?(point) ?? indexPathForItem(at: point)
+    }
+
+    func layoutFrame(at indexPath: IndexPath) -> NSRect? {
+        collectionViewLayout?.layoutAttributesForItem(at: indexPath)?.frame
+    }
+
+    func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement? {
+        let snapshot = diffableDataSource.snapshot()
+        let section = Section.page(pageIndex)
+        guard snapshot.sectionIdentifiers.contains(section),
+              let last = snapshot.itemIdentifiers(inSection: section).last else {
+            return nil
+        }
+        return .afterItem(itemID: last.id)
     }
 
     func dragImage(at indexPath: IndexPath) -> NSImage? {
@@ -397,14 +443,26 @@ extension AppGridCollectionView: AppGridInteractionHosting {
         return makeDragImage(from: cell.view)
     }
 
-    func moveSnapshotItem(_ item: PageItem, before target: PageItem) {
-        var snapshot = diffableDataSource.snapshot()
-        guard snapshot.sectionIdentifier(containingItem: item) != nil
-                || snapshot.sectionIdentifier(containingItem: target) != nil
-        else { return }
-        snapshot.deleteItems([item])
-        snapshot.insertItems([item], beforeItem: target)
-        diffableDataSource.apply(snapshot, animatingDifferences: true)
+    func setFolderCreationPreview(targetItemID: Int64?) {
+        if let oldID = previewedFolderTargetID,
+           let oldItem = diffableDataSource.snapshot().itemIdentifiers.first(where: {
+               $0.id == oldID
+           }),
+           let oldPath = diffableDataSource.indexPath(for: oldItem),
+           let oldCell = (visibleCellProvider?(oldPath) ?? item(at: oldPath)) as? AppIconCell {
+            oldCell.setFolderCreationPreviewVisible(false)
+        }
+
+        previewedFolderTargetID = targetItemID
+        guard let targetItemID,
+              let item = diffableDataSource.snapshot().itemIdentifiers.first(where: {
+                  $0.id == targetItemID && $0.type == .app
+              }),
+              let path = diffableDataSource.indexPath(for: item),
+              let cell = (visibleCellProvider?(path) ?? self.item(at: path)) as? AppIconCell else {
+            return
+        }
+        cell.setFolderCreationPreviewVisible(true)
     }
 
     /// 由 cell view 生成半透明 64×64 拖拽预览图（抽出便于同步测试绘制逻辑）
