@@ -467,8 +467,15 @@ struct AppGridInteractionCoordinatorTests {
         sut.host.itemsByPath[pagePath] = page(id: 3)
         var operation: NSCollectionView.DropOperation = .before
 
-        for path in [groupPath, appPath, pagePath, IndexPath(item: 99, section: 0)] {
+        let resolvedCases: [(IndexPath, DragController.HoverLocation)] = [
+            (groupPath, .overIcon(targetId: 1)),
+            (appPath, .empty),
+            (pagePath, .empty),
+            (IndexPath(item: 99, section: 0), .empty),
+        ]
+        for (path, expectedHover) in resolvedCases {
             sut.host.resolvedPath = path
+            #expect(sut.coordinator.resolveHoverLocation(at: .zero) == expectedHover)
             #expect(validate(
                 sut.coordinator,
                 collectionView: sut.collectionView,
@@ -477,6 +484,7 @@ struct AppGridInteractionCoordinatorTests {
             ) == .move)
         }
         sut.host.resolvedPath = nil
+        #expect(sut.coordinator.resolveHoverLocation(at: .zero) == .empty)
         #expect(validate(
             sut.coordinator,
             collectionView: sut.collectionView,
