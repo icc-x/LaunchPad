@@ -1,4 +1,4 @@
-import XCTest
+import Testing
 @testable import LaunchPad
 @testable import LaunchPadProtocols
 
@@ -6,9 +6,9 @@ import XCTest
 import AppKit
 
 /// Tests for AnimationRunner utility (0% → target 100%)
-final class AnimationRunnerTests: XCTestCase {
+@MainActor @Suite("AnimationRunner") struct AnimationRunnerTests {
 
-    func testAnimate_reduceMotion_callsReduced() {
+    @Test func animate_reduceMotion_callsReduced() {
         let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         var normalCalled = false
         var reducedCalled = false
@@ -20,11 +20,11 @@ final class AnimationRunnerTests: XCTestCase {
             reduced: { reducedCalled = true }
         )
 
-        XCTAssertTrue(reducedCalled)
-        XCTAssertFalse(normalCalled)
+        #expect(reducedCalled)
+        #expect(!normalCalled)
     }
 
-    func testAnimate_normalMotion_callsNormal() {
+    @Test func animate_normalMotion_callsNormal() {
         let settings = AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false)
         var normalCalled = false
         var reducedCalled = false
@@ -36,11 +36,11 @@ final class AnimationRunnerTests: XCTestCase {
             reduced: { reducedCalled = true }
         )
 
-        XCTAssertTrue(normalCalled)
-        XCTAssertFalse(reducedCalled)
+        #expect(normalCalled)
+        #expect(!reducedCalled)
     }
 
-    func testRun_reduceMotion_skipsBlock() {
+    @Test func run_reduceMotion_skipsBlock() {
         let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         var blockCalled = false
 
@@ -52,10 +52,10 @@ final class AnimationRunnerTests: XCTestCase {
         )
 
         // run() with .instant fallback calls block directly
-        XCTAssertTrue(blockCalled)
+        #expect(blockCalled)
     }
 
-    func testRun_normalMotion_callsBlock() {
+    @Test func run_normalMotion_callsBlock() {
         let settings = AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false)
         var blockCalled = false
 
@@ -65,12 +65,12 @@ final class AnimationRunnerTests: XCTestCase {
             block: { blockCalled = true }
         )
 
-        XCTAssertTrue(blockCalled)
+        #expect(blockCalled)
     }
 
     // MARK: - run() Reduce Motion fallback branches
 
-    func testRun_reduceMotion_fadeFallback_callsBlock() {
+    @Test func run_reduceMotion_fadeFallback_callsBlock() {
         let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         var blockCalled = false
 
@@ -81,10 +81,10 @@ final class AnimationRunnerTests: XCTestCase {
             block: { blockCalled = true }
         )
 
-        XCTAssertTrue(blockCalled)
+        #expect(blockCalled)
     }
 
-    func testRun_reduceMotion_scalePulseFallback_callsBlock() {
+    @Test func run_reduceMotion_scalePulseFallback_callsBlock() {
         let settings = AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         var blockCalled = false
 
@@ -95,24 +95,24 @@ final class AnimationRunnerTests: XCTestCase {
             block: { blockCalled = true }
         )
 
-        XCTAssertTrue(blockCalled)
+        #expect(blockCalled)
     }
 }
 
 /// Tests for LayoutPersistence (0% → target 100%)
-final class LayoutPersistenceTests: XCTestCase {
+@Suite("LayoutPersistence") struct LayoutPersistenceTests {
 
-    func testLoadLayout_emptyStorage_returnsEmptyLayout() throws {
+    @Test func loadLayout_emptyStorage_returnsEmptyLayout() throws {
         let reader = MockItemReader()
         reader.items = []
 
         let layout = try LayoutPersistence.loadLayout(reader: reader)
 
-        XCTAssertTrue(layout.pages.isEmpty)
-        XCTAssertTrue(layout.itemsByPage.isEmpty)
+        #expect(layout.pages.isEmpty)
+        #expect(layout.itemsByPage.isEmpty)
     }
 
-    func testLoadLayout_withPages_returnsCorrectStructure() throws {
+    @Test func loadLayout_withPages_returnsCorrectStructure() throws {
         let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let page2 = TestDataFactory.makePageItem(id: 2, type: .page, ordering: 1)
         let app1 = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1)
@@ -130,14 +130,14 @@ final class LayoutPersistenceTests: XCTestCase {
 
         let layout = try LayoutPersistence.loadLayout(reader: reader)
 
-        XCTAssertEqual(layout.pages.count, 2)
-        XCTAssertEqual(layout.pages[0].id, 1)
-        XCTAssertEqual(layout.pages[1].id, 2)
-        XCTAssertEqual(layout.itemsByPage[1]?.count, 2)
-        XCTAssertEqual(layout.itemsByPage[2]?.count, 1)
+        #expect(layout.pages.count == 2)
+        #expect(layout.pages[0].id == 1)
+        #expect(layout.pages[1].id == 2)
+        #expect(layout.itemsByPage[1]?.count == 2)
+        #expect(layout.itemsByPage[2]?.count == 1)
     }
 
-    func testSaveLayout_callsUpdateForEachItem() throws {
+    @Test func saveLayout_callsUpdateForEachItem() throws {
         let writer = MockItemWriter()
         let items = [
             TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0),
@@ -146,82 +146,90 @@ final class LayoutPersistenceTests: XCTestCase {
         ]
         try LayoutPersistence.saveLayout(items: items, writer: writer)
 
-        XCTAssertEqual(writer.updatedItems.count, 3)
-        XCTAssertEqual(writer.updatedItems.map { $0.id }, [1, 2, 3])
+        #expect(writer.updatedItems.count == 3)
+        #expect(writer.updatedItems.map { $0.id } == [1, 2, 3])
     }
 
-    func testSaveLayout_emptyList_doesNotCallUpdate() throws {
+    @Test func saveLayout_emptyList_doesNotCallUpdate() throws {
         let writer = MockItemWriter()
         try LayoutPersistence.saveLayout(items: [], writer: writer)
-        XCTAssertTrue(writer.updatedItems.isEmpty)
+        #expect(writer.updatedItems.isEmpty)
     }
 
-    func testSaveLayout_propagatesError() throws {
+    @Test func saveLayout_propagatesError() {
         let writer = MockItemWriter()
         writer.updateError = TestError.generic
         let items = [TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0)]
 
-        XCTAssertThrowsError(try LayoutPersistence.saveLayout(items: items, writer: writer))
-        XCTAssertEqual(writer.updatedItems.count, 0)
+        #expect(throws: TestError.self) {
+            try LayoutPersistence.saveLayout(items: items, writer: writer)
+        }
+        #expect(writer.updatedItems.isEmpty)
     }
 }
 
 /// Tests for EmptyStateView (0% → basic instantiation)
-final class EmptyStateViewTests: XCTestCase {
+@MainActor @Suite("EmptyStateView") struct EmptyStateViewTests {
 
-    func testEmptyStateView_init_doesNotCrash() {
+    @Test func emptyStateView_init_doesNotCrash() {
         let view = EmptyStateView()
-        XCTAssertNotNil(view)
-        XCTAssertTrue(view.isHidden)
+        #expect(view.isHidden)
     }
 
-    func testEmptyStateView_show_unhides() {
+    @Test func emptyStateView_show_unhides() {
         let view = EmptyStateView()
         view.show(animated: false)
-        XCTAssertFalse(view.isHidden)
+        #expect(!view.isHidden)
     }
 
-    func testEmptyStateView_hide_hides() {
+    @Test func emptyStateView_hide_hides() {
         let view = EmptyStateView()
         view.show(animated: false)
         view.hide(animated: false)
-        XCTAssertTrue(view.isHidden)
+        #expect(view.isHidden)
     }
 
-    func testEmptyStateView_show_animated_doesNotCrash() {
+    @Test func emptyStateView_show_animated_doesNotCrash() {
         let view = EmptyStateView()
         view.show(animated: true)
-        XCTAssertFalse(view.isHidden)
+        #expect(!view.isHidden)
     }
 
-    func testEmptyStateView_hide_animated_doesNotCrash() {
+    @Test func emptyStateView_hide_animated_doesNotCrash() {
         let view = EmptyStateView()
         view.show(animated: false)
-        view.hide(animated: true)
-    }
-
-    @MainActor
-    func testEmptyStateView_hide_animated_completionHidesView() {
-        let view = EmptyStateView()
-        view.show(animated: false)
-        // 注入同步 completion runner，确定性触发 hide 完成闭包（覆盖 64-67 行）
         view.hideCompletionRunner = { $0() }
         view.hide(animated: true)
-        XCTAssertTrue(view.isHidden)
+        #expect(view.isHidden)
     }
 
-    func testEmptyStateView_show_hide_multipleTimes() {
+    @Test func emptyStateView_hide_animated_completionHidesView() {
+        let view = EmptyStateView()
+        view.show(animated: false)
+        var completionRan = false
+        view.hideCompletionRunner = { completion in
+            completionRan = true
+            completion()
+        }
+
+        view.hide(animated: true)
+
+        #expect(completionRan)
+        #expect(view.isHidden)
+    }
+
+    @Test func emptyStateView_show_hide_multipleTimes() {
         let view = EmptyStateView()
         view.show(animated: false)
         view.hide(animated: false)
         view.show(animated: false)
         view.hide(animated: false)
-        XCTAssertTrue(view.isHidden)
+        #expect(view.isHidden)
     }
 
     // MARK: - init?(coder:)
 
-    func testEmptyStateView_initCoder_producesValidInstance() throws {
+    @Test func emptyStateView_initCoder_producesValidInstance() throws {
         let original = EmptyStateView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
         let archiver = NSKeyedArchiver()
         archiver.requiresSecureCoding = false
@@ -230,93 +238,93 @@ final class EmptyStateViewTests: XCTestCase {
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
         unarchiver.requiresSecureCoding = false
-        let view = unarchiver.decodeObject(forKey: "root") as? EmptyStateView
-        XCTAssertNotNil(view)
-        XCTAssertTrue(view!.isHidden)
+        let view = try #require(unarchiver.decodeObject(forKey: "root") as? EmptyStateView)
+        #expect(view.isHidden)
     }
 }
 
 /// Tests for SearchBar (0% → basic instantiation)
-final class SearchBarTests: XCTestCase {
+@MainActor @Suite("SearchBar") struct SearchBarTests {
 
-    func testSearchBar_init_doesNotCrash() {
+    @Test func searchBar_init_doesNotCrash() {
         let bar = SearchBar()
-        XCTAssertNotNil(bar)
-        XCTAssertTrue(bar.isHidden)
+        #expect(bar.isHidden)
     }
 
-    func testSearchBar_show_unhides() {
+    @Test func searchBar_show_unhides() {
         let bar = SearchBar()
         bar.show(animated: false)
-        XCTAssertFalse(bar.isHidden)
+        #expect(!bar.isHidden)
     }
 
-    func testSearchBar_hide_hides() {
+    @Test func searchBar_hide_hides() {
         let bar = SearchBar()
         bar.show(animated: false)
         bar.hide(animated: false)
-        XCTAssertTrue(bar.isHidden)
+        #expect(bar.isHidden)
     }
 
-    func testSearchBar_clearAndFocus_resetsStringValue() {
+    @Test func searchBar_clearAndFocus_resetsStringValue() {
         let bar = SearchBar()
         bar.show(animated: false)
         bar.stringValue = "test"
         bar.clearAndFocus()
-        XCTAssertEqual(bar.stringValue, "")
+        #expect(bar.stringValue == "")
     }
 
-    func testSearchBar_onQueryChanged_callback() {
+    @Test func searchBar_onQueryChanged_callback() {
         let bar = SearchBar()
         var receivedQuery: String?
         bar.onQueryChanged = { query in receivedQuery = query }
         bar.clearAndFocus()
-        XCTAssertEqual(receivedQuery, "")
+        #expect(receivedQuery == "")
     }
 
     // MARK: - Delegate methods
 
-    func testSearchBar_controlTextDidChange_callsCallback() {
+    @Test func searchBar_controlTextDidChange_callsCallback() {
         let bar = SearchBar()
         var receivedQuery: String?
         bar.onQueryChanged = { query in receivedQuery = query }
         bar.stringValue = "test"
         bar.controlTextDidChange(Notification(name: NSTextField.textDidChangeNotification))
-        XCTAssertEqual(receivedQuery, "test")
+        #expect(receivedQuery == "test")
     }
 
-    func testSearchBar_searchFieldDidStartSearching_callsCallback() {
+    @Test func searchBar_searchFieldDidStartSearching_callsCallback() {
         let bar = SearchBar()
         var receivedQuery: String?
         bar.onQueryChanged = { query in receivedQuery = query }
         bar.stringValue = "hello"
         bar.searchFieldDidStartSearching(bar)
-        XCTAssertEqual(receivedQuery, "hello")
+        #expect(receivedQuery == "hello")
     }
 
-    func testSearchBar_searchFieldDidEndSearching_callsCallback() {
+    @Test func searchBar_searchFieldDidEndSearching_callsCallback() {
         let bar = SearchBar()
         var receivedQuery: String?
         bar.onQueryChanged = { query in receivedQuery = query }
         bar.searchFieldDidEndSearching(bar)
-        XCTAssertEqual(receivedQuery, "")
+        #expect(receivedQuery == "")
     }
 
-    func testSearchBar_show_animated_doesNotCrash() {
+    @Test func searchBar_show_animated_doesNotCrash() {
         let bar = SearchBar()
         bar.show(animated: true)
-        XCTAssertFalse(bar.isHidden)
+        #expect(!bar.isHidden)
     }
 
-    func testSearchBar_hide_animated_doesNotCrash() {
+    @Test func searchBar_hide_animated_doesNotCrash() {
         let bar = SearchBar()
         bar.show(animated: false)
+        bar.hideCompletionRunner = { $0() }
         bar.hide(animated: true)
+        #expect(bar.isHidden)
     }
 
     // MARK: - init?(coder:)
 
-    func testSearchBar_initCoder_producesValidInstance() throws {
+    @Test func searchBar_initCoder_producesValidInstance() throws {
         let original = SearchBar(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
         let archiver = NSKeyedArchiver()
         archiver.requiresSecureCoding = false
@@ -325,30 +333,29 @@ final class SearchBarTests: XCTestCase {
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
         unarchiver.requiresSecureCoding = false
-        let bar = unarchiver.decodeObject(forKey: "root") as? SearchBar
-        XCTAssertNotNil(bar)
+        _ = try #require(unarchiver.decodeObject(forKey: "root") as? SearchBar)
     }
 
     // MARK: - Guard branches
 
-    func testSearchBar_show_calledTwice_secondCallIsNoOp() {
+    @Test func searchBar_show_calledTwice_secondCallIsNoOp() {
         let bar = SearchBar()
         bar.show(animated: false)
-        XCTAssertEqual(bar.alphaValue, 1)
+        #expect(bar.alphaValue == 1)
         // Second call should be no-op (guard !isShown)
         bar.show(animated: false)
-        XCTAssertEqual(bar.alphaValue, 1)
+        #expect(bar.alphaValue == 1)
     }
 
-    func testSearchBar_hide_withoutShow_isNoOp() {
+    @Test func searchBar_hide_withoutShow_isNoOp() {
         let bar = SearchBar()
         // hide without show should be no-op (guard isShown)
         bar.hide(animated: false)
-        XCTAssertTrue(bar.isHidden)
-        XCTAssertEqual(bar.alphaValue, 0)
+        #expect(bar.isHidden)
+        #expect(bar.alphaValue == 0)
     }
 
-    func testSearchBar_hide_animated_completionHidesView() {
+    @Test func searchBar_hide_animated_completionHidesView() {
         let bar = SearchBar()
         bar.show(animated: false)
         var completionRan = false
@@ -359,8 +366,8 @@ final class SearchBarTests: XCTestCase {
 
         bar.hide(animated: true)
 
-        XCTAssertTrue(completionRan)
-        XCTAssertTrue(bar.isHidden)
+        #expect(completionRan)
+        #expect(bar.isHidden)
     }
 }
 
@@ -426,34 +433,36 @@ private func makeGridFixture(
     return (window, scrollView, collectionView, layout, dataSource, metrics)
 }
 
-private func assertRowMajor(
+@MainActor
+private func expectRowMajor(
     attributes: [NSCollectionViewLayoutAttributes],
     columns: Int,
-    expectedRows: Int,
-    file: StaticString = #filePath,
-    line: UInt = #line
-) {
-    let sorted = attributes.sorted { $0.indexPath!.item < $1.indexPath!.item }
-    let rowOrigins = Set(sorted.map { $0.frame.minY.rounded() })
-    XCTAssertEqual(rowOrigins.count, expectedRows, file: file, line: line)
-    for (index, attribute) in sorted.enumerated() {
-        let expectedRow = index / columns
-        let expectedColumn = index % columns
-        XCTAssertEqual(attribute.indexPath?.item, index, file: file, line: line)
-        if expectedColumn > 0 {
-            XCTAssertEqual(
-                attribute.frame.minY,
-                sorted[expectedRow * columns].frame.minY,
-                accuracy: 0.5, file: file, line: line
-            )
+    expectedRows: Int
+) throws {
+    let indexed = try attributes.map { attribute in
+        (
+            item: try #require(attribute.indexPath).item,
+            attributes: attribute
+        )
+    }
+    let sorted = indexed.sorted { $0.item < $1.item }
+    #expect(Set(sorted.map { $0.attributes.frame.minY.rounded() }).count == expectedRows)
+    for (index, entry) in sorted.enumerated() {
+        let row = index / columns
+        let column = index % columns
+        #expect(entry.item == index)
+        if column > 0 {
+            #expect(abs(
+                entry.attributes.frame.minY
+                    - sorted[row * columns].attributes.frame.minY
+            ) <= 0.5)
         }
     }
 }
 
-@MainActor
-final class AppGridFlowLayoutTests: XCTestCase {
+@MainActor @Suite("显式 row-major 分页网格") struct AppGridFlowLayoutTests {
 
-    func testRowMajorAttributesUseTwoThreeAndFiveRowsWithoutOverlap() {
+    @Test func rowMajorAttributesUseTwoThreeAndFiveRowsWithoutOverlap() throws {
         for (height, itemCount, expectedRows) in [(248.0, 14, 2), (372.0, 21, 3), (620.0, 35, 5)] {
             let fixture = makeGridFixture(
                 itemCounts: [itemCount],
@@ -462,20 +471,20 @@ final class AppGridFlowLayoutTests: XCTestCase {
             let attributes = (0..<itemCount).compactMap {
                 fixture.layout.layoutAttributesForItem(at: IndexPath(item: $0, section: 0))
             }
-            assertRowMajor(
+            try expectRowMajor(
                 attributes: attributes,
                 columns: fixture.metrics.columns,
                 expectedRows: expectedRows
             )
             for left in attributes.indices {
                 for right in attributes.indices where right > left {
-                    XCTAssertFalse(attributes[left].frame.intersects(attributes[right].frame))
+                    #expect(!attributes[left].frame.intersects(attributes[right].frame))
                 }
             }
         }
     }
 
-    func testTwoAndThreeSectionOriginsDifferByPageWidth() {
+    @Test func twoAndThreeSectionOriginsDifferByPageWidth() {
         for count in [2, 3] {
             let fixture = makeGridFixture(
                 itemCounts: Array(repeating: 1, count: count),
@@ -486,50 +495,51 @@ final class AppGridFlowLayoutTests: XCTestCase {
                     at: IndexPath(item: 0, section: $0)
                 )?.frame.minX
             }
-            XCTAssertEqual(origins.count, count)
+            #expect(origins.count == count)
             for section in 1..<count {
-                XCTAssertEqual(
-                    origins[section] - origins[section - 1],
-                    fixture.metrics.pageWidth,
-                    accuracy: 0.5
+                #expect(
+                    abs(
+                        origins[section] - origins[section - 1]
+                            - fixture.metrics.pageWidth
+                    ) <= 0.5
                 )
             }
-            XCTAssertEqual(
-                fixture.layout.collectionViewContentSize.width,
-                CGFloat(count) * fixture.metrics.pageWidth,
-                accuracy: 0.5
+            #expect(
+                abs(
+                    fixture.layout.collectionViewContentSize.width
+                        - CGFloat(count) * fixture.metrics.pageWidth
+                ) <= 0.5
             )
         }
     }
 
-    func testPartialLastPageStartsAtTopLeftSlot() {
+    @Test func partialLastPageStartsAtTopLeftSlot() throws {
         let fixture = makeGridFixture(
             itemCounts: [35, 3],
             viewportSize: CGSize(width: 1440, height: 620)
         )
-        let first = fixture.layout.layoutAttributesForItem(
+        let first = try #require(fixture.layout.layoutAttributesForItem(
             at: IndexPath(item: 0, section: 1)
-        )!
-        XCTAssertEqual(
-            first.frame.origin,
-            NSPoint(
+        ))
+        #expect(
+            first.frame.origin == NSPoint(
                 x: fixture.metrics.pageWidth + fixture.metrics.sectionInsets.left,
                 y: fixture.metrics.sectionInsets.top
             )
         )
     }
 
-    func testSupplementaryRequestIsNotRepositionedAsAnItem() {
+    @Test func supplementaryRequestIsNotRepositionedAsAnItem() {
         let fixture = makeGridFixture(
             itemCounts: [1], viewportSize: CGSize(width: 1440, height: 620)
         )
-        XCTAssertNil(fixture.layout.layoutAttributesForSupplementaryView(
+        #expect(fixture.layout.layoutAttributesForSupplementaryView(
             ofKind: NSCollectionView.elementKindSectionHeader,
             at: IndexPath(item: 0, section: 0)
-        ))
+        ) == nil)
     }
 
-    func testSnapUsesRealSectionCountAndConfiguredPageWidth() {
+    @Test func snapUsesRealSectionCountAndConfiguredPageWidth() {
         let fixture = makeGridFixture(
             itemCounts: [1, 1, 1], viewportSize: CGSize(width: 300, height: 248)
         )
@@ -538,31 +548,27 @@ final class AppGridFlowLayoutTests: XCTestCase {
             forProposedContentOffset: NSPoint(x: 610, y: 17),
             withScrollingVelocity: .zero
         )
-        XCTAssertEqual(target, NSPoint(x: 600, y: 0))
+        #expect(target == NSPoint(x: 600, y: 0))
     }
 
-    func testDocumentFrameTracksPagedContentWidthAndCanShrink() {
+    @Test func documentFrameTracksPagedContentWidthAndCanShrink() {
         let fixture = makeGridFixture(
             itemCounts: [1, 1, 1], viewportSize: CGSize(width: 300, height: 248)
         )
         fixture.window.contentView?.layoutSubtreeIfNeeded()
-        XCTAssertEqual(fixture.collectionView.frame.width, 900, accuracy: 0.5)
-        XCTAssertEqual(
-            fixture.scrollView.contentView.documentRect.width, 900, accuracy: 0.5
-        )
+        #expect(abs(fixture.collectionView.frame.width - 900) <= 0.5)
+        #expect(abs(fixture.scrollView.contentView.documentRect.width - 900) <= 0.5)
 
         fixture.dataSource.itemCounts = [1, 1]
         fixture.collectionView.reloadData()
         fixture.layout.invalidateLayout()
         fixture.window.contentView?.layoutSubtreeIfNeeded()
 
-        XCTAssertEqual(fixture.collectionView.frame.width, 600, accuracy: 0.5)
-        XCTAssertEqual(
-            fixture.scrollView.contentView.documentRect.width, 600, accuracy: 0.5
-        )
+        #expect(abs(fixture.collectionView.frame.width - 600) <= 0.5)
+        #expect(abs(fixture.scrollView.contentView.documentRect.width - 600) <= 0.5)
     }
 
-    func testCompatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
+    @Test func compatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
         let viewportSize = CGSize(width: 300, height: 248)
         let fixture = makeGridFixture(
             itemCounts: [1, 1, 1], viewportSize: viewportSize
@@ -579,13 +585,13 @@ final class AppGridFlowLayoutTests: XCTestCase {
             fixture.layout.applyGridParameters(parameters)
             fixture.layout.prepare()
 
-            XCTAssertEqual(
-                fixture.layout.collectionViewContentSize.width, 900, accuracy: 0.5
+            #expect(
+                abs(fixture.layout.collectionViewContentSize.width - 900) <= 0.5
             )
-            XCTAssertEqual(
-                fixture.layout.collectionViewContentSize.height,
-                expectedContentHeight,
-                accuracy: 0.5
+            #expect(
+                abs(
+                    fixture.layout.collectionViewContentSize.height - expectedContentHeight
+                ) <= 0.5
             )
             fixture.window.contentView?.layoutSubtreeIfNeeded()
         }
@@ -593,61 +599,59 @@ final class AppGridFlowLayoutTests: XCTestCase {
 }
 
 /// Tests for PageControlView (0% → basic interaction)
-@MainActor
-final class PageControlViewTests: XCTestCase {
+@MainActor @Suite("PageControlView") struct PageControlViewTests {
 
-    func testPageControlView_init_doesNotCrash() {
+    @Test func pageControlView_init_doesNotCrash() {
         let viewModel = PageControlViewModel()
-        let view = PageControlView(viewModel: viewModel)
-        XCTAssertNotNil(view)
+        _ = PageControlView(viewModel: viewModel)
     }
 
-    func testPageControlView_update_withMultiplePages_isVisible() {
+    @Test func pageControlView_update_withMultiplePages_isVisible() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
         view.update()
-        XCTAssertFalse(view.isHidden)
+        #expect(!view.isHidden)
     }
 
-    func testPageControlView_update_withSinglePage_isHidden() {
+    @Test func pageControlView_update_withSinglePage_isHidden() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 1)
         let view = PageControlView(viewModel: viewModel)
         view.update()
-        XCTAssertTrue(view.isHidden)
+        #expect(view.isHidden)
     }
 
-    func testPageControlView_intrinsicContentSize_multiplePages() {
+    @Test func pageControlView_intrinsicContentSize_multiplePages() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
         let size = view.intrinsicContentSize
-        XCTAssertEqual(size.width, 40)
-        XCTAssertEqual(size.height, 8)
+        #expect(size.width == 40)
+        #expect(size.height == 8)
     }
 
-    func testPageControlView_intrinsicContentSize_zeroPages() {
+    @Test func pageControlView_intrinsicContentSize_zeroPages() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 0)
         let view = PageControlView(viewModel: viewModel)
         let size = view.intrinsicContentSize
-        XCTAssertEqual(size.width, 0)
-        XCTAssertEqual(size.height, 8)
+        #expect(size.width == 0)
+        #expect(size.height == 8)
     }
 
-    func testPageControlView_intrinsicContentSize_singlePage() {
+    @Test func pageControlView_intrinsicContentSize_singlePage() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 1)
         let view = PageControlView(viewModel: viewModel)
         let size = view.intrinsicContentSize
-        XCTAssertEqual(size.width, 8) // 1 dot * 8pt
-        XCTAssertEqual(size.height, 8)
+        #expect(size.width == 8) // 1 dot * 8pt
+        #expect(size.height == 8)
     }
 
     // MARK: - Draw
 
-    func testPageControlView_draw_withPages_doesNotCrash() {
+    @Test func pageControlView_draw_withPages_doesNotCrash() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
@@ -655,7 +659,7 @@ final class PageControlViewTests: XCTestCase {
         view.draw(view.bounds)
     }
 
-    func testPageControlView_draw_zeroPages_doesNotCrash() {
+    @Test func pageControlView_draw_zeroPages_doesNotCrash() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 0)
         let view = PageControlView(viewModel: viewModel)
@@ -663,7 +667,7 @@ final class PageControlViewTests: XCTestCase {
         view.draw(view.bounds)
     }
 
-    func testPageControlView_draw_withActiveDot_doesNotCrash() {
+    @Test func pageControlView_draw_withActiveDot_doesNotCrash() {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 4)
         viewModel.currentPage = 2
@@ -674,7 +678,7 @@ final class PageControlViewTests: XCTestCase {
 
     // MARK: - Mouse
 
-    func testPageControlView_mouseDown_onDot_selectsPage() {
+    @Test func pageControlView_mouseDown_onDot_selectsPage() throws {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
@@ -684,7 +688,7 @@ final class PageControlViewTests: XCTestCase {
         view.onDotSelected = { dot in selectedDot = dot }
 
         // Click on the first dot area
-        let event = NSEvent.mouseEvent(
+        let event = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown,
             location: NSPoint(x: 50, y: 10), // center of view
             modifierFlags: [],
@@ -694,15 +698,13 @@ final class PageControlViewTests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 0
-        )
-        if let event {
-            view.mouseDown(with: event)
-        }
-        // Should select a dot (exact index depends on layout calculation)
-        XCTAssertNotNil(selectedDot)
+        ))
+        view.mouseDown(with: event)
+
+        #expect(selectedDot == 1)
     }
 
-    func testPageControlView_mouseDown_outsideDots_doesNotSelect() {
+    @Test func pageControlView_mouseDown_outsideDots_doesNotSelect() throws {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 3)
         let view = PageControlView(viewModel: viewModel)
@@ -712,7 +714,7 @@ final class PageControlViewTests: XCTestCase {
         view.onDotSelected = { dot in selectedDot = dot }
 
         // Click far outside dot area
-        let event = NSEvent.mouseEvent(
+        let event = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown,
             location: NSPoint(x: 5, y: 10),
             modifierFlags: [],
@@ -722,20 +724,21 @@ final class PageControlViewTests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 0
-        )
-        if let event {
-            view.mouseDown(with: event)
-        }
-        XCTAssertNil(selectedDot)
+        ))
+        view.mouseDown(with: event)
+
+        #expect(selectedDot == nil)
     }
 
-    func testPageControlView_mouseDown_zeroPages_doesNotCrash() {
+    @Test func pageControlView_mouseDown_zeroPages_doesNotCrash() throws {
         let viewModel = PageControlViewModel()
         viewModel.configure(totalPages: 0)
         let view = PageControlView(viewModel: viewModel)
         view.frame = NSRect(x: 0, y: 0, width: 100, height: 20)
+        var callbackCount = 0
+        view.onDotSelected = { _ in callbackCount += 1 }
 
-        let event = NSEvent.mouseEvent(
+        let event = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown,
             location: NSPoint(x: 50, y: 10),
             modifierFlags: [],
@@ -745,38 +748,38 @@ final class PageControlViewTests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 0
-        )
-        if let event {
-            view.mouseDown(with: event)
-        }
+        ))
+        view.mouseDown(with: event)
+
+        #expect(callbackCount == 0)
     }
 
     // MARK: - Accessibility
 
-    func testPageControlView_accessibilityRole_isGroup() {
+    @Test func pageControlView_accessibilityRole_isGroup() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
-        XCTAssertEqual(view.accessibilityRole(), .group)
+        #expect(view.accessibilityRole() == .group)
     }
 
-    func testPageControlView_accessibilityLabel_isPageIndicator() {
+    @Test func pageControlView_accessibilityLabel_isPageIndicator() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
-        XCTAssertEqual(view.accessibilityLabel(), "Page indicator")
+        #expect(view.accessibilityLabel() == "Page indicator")
     }
 
     // MARK: - onDotSelected callback
 
-    func testPageControlView_onDotSelected_isSettable() {
+    @Test func pageControlView_onDotSelected_isSettable() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
         view.onDotSelected = { _ in }
-        XCTAssertNotNil(view.onDotSelected)
+        #expect(view.onDotSelected != nil)
     }
 
     // MARK: - init?(coder:)
 
-    func testPageControlView_initCoder_producesValidInstance() throws {
+    @Test func pageControlView_initCoder_producesValidInstance() throws {
         let original = PageControlView(viewModel: PageControlViewModel())
         let archiver = NSKeyedArchiver()
         archiver.requiresSecureCoding = false
@@ -785,8 +788,7 @@ final class PageControlViewTests: XCTestCase {
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
         unarchiver.requiresSecureCoding = false
-        let view = unarchiver.decodeObject(forKey: "root") as? PageControlView
-        XCTAssertNotNil(view)
+        _ = try #require(unarchiver.decodeObject(forKey: "root") as? PageControlView)
     }
 }
 
