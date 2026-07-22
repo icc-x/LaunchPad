@@ -833,3 +833,32 @@ the approved plan or task-specific test reports.
   `db71bc7` contains exactly the two authorized Swift files. Independent formal
   review reported spec compliant, Task quality Approved, and
   Critical/Important/Minor `0/0/0`.
+
+## Decision 038: Reconstruct Task 16 final gates from named ownership boundaries
+
+- Status: adopted and verified during Task 16 review closure.
+- Evidence: the first Task 16 report retained an adjacent result of
+  `216 tests / 6 suites` but not the command that produced it. Treating that
+  number as a target would require guessing a substring filter and could silently
+  execute a different test set. The current Swift Testing declarations identify
+  the six adjacent owners explicitly: `LaunchPadViewControllerTests`,
+  `PageScrollViewTests`, `PageControlTests`, `DragControllerTests`,
+  `CollectionViewDragTests`, and `AppGridInteractionCoordinatorTests`. Task 15's
+  report separately preserves the exact original seven-suite Window-inclusive
+  filter.
+- Decision: final evidence is bound to explicit suite identities and saved
+  commands, never to a historical count alone. Run the six named adjacent suites
+  and reuse Task 15's exact Window-inclusive filter. Before the latter, repeat the
+  Decision 037 static database-isolation scan. Do not add a skip, retry, alternate
+  timeout, or reduced test set to force a matching count.
+- Impact: the release record proves which behaviors executed and remains
+  reproducible after tests are added. Restoring three coordinator regressions
+  legitimately changes the adjacent count from 216 to 219 without weakening the
+  gate, while the original Window baseline remains directly comparable.
+- Verification: the fresh adjacent command passed `219 tests / 6 suites / 0
+  issues`. The database safety scan found direct `FileManager` removal only in
+  the injected production default, no test call to `databasePath()`, and no
+  unsafe application path literal. The exact original Window-inclusive command
+  completed `225 tests / 7 suites / 4 issues`; all four issues remained confined
+  to the registered three Window tests with distribution `2/1/1`, and the
+  AppDelegate suite passed.
