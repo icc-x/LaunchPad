@@ -342,3 +342,22 @@ the approved plan or task-specific test reports.
   cleanup for success and every failure; concurrent stop/deinit is idempotent;
   static scans reject the override and real system calls outside the backend and
   single host test.
+
+## Decision 018: Resolve review findings from complete branch evidence
+
+- Status: adopted during Task 6 review
+- Evidence: the initial reviewer classified the lack of a mode assertion in
+  `search_esc_clearSearch` as Important, but the same test file already contains
+  `search_escTwice_closeWindow`, which asserts the first ESC returns
+  `.clearSearch`, immediately changes the mode to `.idle`, and makes the second
+  ESC return `.closeWindow`.
+- Decision: do not add a duplicate ESC state assertion merely to satisfy an
+  incomplete diff-context reading. Present the existing exact branch evidence
+  to the same reviewer and require a corrected full verdict. Treat a review
+  finding as a hypothesis until it is reconciled with all relevant branches.
+- Impact: Task 6 remains limited to its approved character, Delete, and empty
+  input behavior while retaining explicit regression coverage for the unchanged
+  ESC transition.
+- Verification: the reviewer re-read the focused range, withdrew the Important
+  finding, and approved Task 6 with Critical/Important/Minor counts of `0/0/0`;
+  the controller independently ran the focused suite with `21/21` tests passing.
