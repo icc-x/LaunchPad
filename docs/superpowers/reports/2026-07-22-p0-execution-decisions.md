@@ -170,3 +170,175 @@ the approved plan or task-specific test reports.
 - Verification: the follow-up diff passes `git diff --check`, its staged file
   list contains only this decision log, and subsequent task commit reports must
   include the fail-closed gate result.
+
+## Decision 009: Enforce reviewed linear prerequisites through Task 16
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: Tasks 14, 15, and 16 consume types and behavior introduced by their
+  immediate predecessors; the current committed tree does not yet contain the
+  Task 10-13 domain/transaction types or the Task 15 drag-session type.
+- Decision: execute and review Tasks 10 through 16 linearly. A later task may
+  start only from the clean, reviewed GREEN commit of its immediate predecessor;
+  uncommitted shared-worktree content never constitutes an interface contract.
+- Impact: no behavior change; compile and review ranges remain attributable to
+  one task and cannot accidentally consume partial upstream work.
+- Verification: prerequisite types exist in `HEAD`, the previous task's focused
+  gate and review are clean, and the next RED fails only on its own missing
+  behavior.
+
+## Decision 010: Remove Task 16 coordinate and optimistic-snapshot shortcuts atomically
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: the current coordinator compares AppKit window coordinates directly
+  with collection bounds and forwards them directly to the local resolver. Its
+  acceptance path also trusts a proposed index path and invokes
+  `moveSnapshotItem`, mutating the visual snapshot before persistence commits.
+- Decision: Task 16 lands exact window-to-local conversion, stable-ID destination
+  resolution, callback-only acceptance, preview lifecycle, and contraction of
+  the old host/snapshot API in one compileable reviewed slice. Strengthen the
+  approved tests so every validate, accept, and drag-ended branch compares
+  before/after snapshot identifiers, not only representative cases.
+- Impact: hover remains preview-only and release remains the unique commit seam;
+  no validation or preview path writes visual or persistent state.
+- Verification: non-zero-origin tests prove exactly one coordinate conversion;
+  stable-ID negative branches reject; all delegate branches preserve snapshot
+  identifiers; static scans find no optimistic move API or old host shortcut.
+
+## Decision 011: Expand Task 14 transaction-fault coverage to every destructive write family
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: the approved Task 14 matrix heavily exercises folder insert and
+  item-update failures, while folder deletion and page delete/insert statements
+  are equally capable of violating all-or-nothing layout persistence.
+- Decision: retain the approved folder mutation matrix and add deterministic
+  fault injection for folder delete plus page delete/insert paths. Every injected
+  failure must roll back the complete layout, and a rollback failure must
+  invalidate the connection before reopen verification.
+- Impact: production transaction semantics are unchanged; release confidence in
+  destructive and repagination branches increases.
+- Verification: each new fault case checks the full pre-transaction snapshot,
+  transaction status, connection invalidation when applicable, and state after a
+  fresh database reopen.
+
+## Decision 012: Strengthen Tasks 11-13 domain and storage boundary evidence
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: the minimum Task 11 matrix does not directly cover every invalid
+  state/type/generated-ID/anchor branch; Task 12 needs evidence that one queue
+  serializes concurrent reads and writes and that an already-autocommit primary
+  failure is not hidden by a synthetic rollback; Task 13's minimum cases do not
+  directly cover corrupted persisted topology or all five future-owned intents.
+- Decision: add parameterized negative cases for every Task 11 validation and
+  stable-anchor branch. Add a bounded Task 12 concurrent read/write test and
+  direct autocommit-after-error evidence using existing driver/transaction
+  injection; do not add a production-only seam solely for that test. Add Task 13
+  corrupted-snapshot cases, a parameterized five-unsupported-intent zero-write
+  matrix, and page-order bind/changes fault cases. Keep the Task 12 one-queue
+  rewrite atomic and Task 13 behavior limited to top-level moves.
+- Impact: task scope grows only in deterministic tests and required atomic
+  implementation boundaries; future folder semantics remain owned by Task 14.
+- Verification: every pure-state rejection preserves full value equality; every
+  storage fault compares the complete persisted snapshot; concurrent operations
+  finish under the watchdog without nested-queue deadlock; unsupported intents
+  perform zero SQL writes.
+
+## Decision 013: Scope Task 5 metrics no-op behavior to the current grid instance
+
+- Status: adopted after Task 5 review
+- Evidence: `LaunchPadViewController` caches `gridMetrics` across `loadView()`
+  rebuilds. A replacement `AppGridCollectionView` begins with nil metrics, but a
+  controller-only equality guard treats an unchanged viewport as a no-op and can
+  permanently skip metrics application and layout projection for the new grid.
+  Existing page-navigation tests also used empty persisted pages, which collapse
+  to one visual page, and contained no behavioral assertions.
+- Decision: the same-metrics early return requires both the controller and the
+  current grid instance to already hold the calculated metrics. Add a rebuild
+  regression that establishes metrics and data before replacing the view. Build
+  navigation tests from enough real items to create multiple visual pages and
+  assert exact right, left, drag, and dot destinations plus boundary no-ops.
+  Add a loaded-but-nil-metrics keyboard matrix proving Up, Down, and Tab preserve
+  stable selection state.
+- Impact: rebuilding the view at the same viewport rehydrates the new grid while
+  ordinary repeated layout remains a no-op; page and keyboard contracts gain
+  real branch evidence without changing their approved behavior.
+- Verification: the rebuild test proves the new grid receives metrics, snapshot
+  sections, restored stable selection, and no storage writes; navigation tests
+  prove actual multi-page transitions; keyboard nil-metrics tests inspect both
+  stable ID and grid selection before and after every action.
+
+## Decision 014: Keep one commit-time layout writer for every drop and folder mutation
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: the pre-Task-16 code can optimistically mutate a diffable snapshot,
+  the legacy drag controller can persist reorder state, and `FolderController`
+  performs multi-call folder CRUD. Retaining any of those after the intent-based
+  transaction path would create duplicate or partially committed writers.
+- Decision: grid and folder drag, reorder, drag-out, folder creation, and safe
+  folder deletion only map a stable-ID intent and call
+  `LaunchPadViewController.applyDropIntent` once on release. Success reloads
+  after COMMIT; failure reloads the unchanged persisted state, reports the fixed
+  accessible error, and returns false for AppKit snapback. Rename and ordinary
+  app deletion retain only their explicitly approved dedicated paths.
+- Impact: hover is preview-only, release is the unique mutation boundary, and no
+  legacy CRUD or optimistic UI route can race the transaction writer.
+- Verification: each branch records exactly one apply attempt, failures record
+  zero success, snapshots stay unchanged before reload, and static scans find no
+  old snapshot/reorder/folder-layout writer APIs.
+
+## Decision 015: Treat overlay closure as a drag-session lifecycle exit
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: closing a folder removes the visual and coordinate context needed to
+  resolve a folder-child drag, while Task 15's cancel operation is idempotent and
+  performs no write. Leaving the session alive after an outside click would
+  retain a timer or preview with no legal destination.
+- Decision: every folder close path, including outside click, ESC, search,
+  editing exit, window close, and hidden transition, cancels the active drag
+  before removing overlay observers or content.
+- Impact: closing a folder cannot leave a stale session, timer, preview, or
+  observer. Native drag-ended cleanup remains idempotent and does not commit.
+- Verification: each close trigger directly asserts nil session, cancelled
+  scheduled work, cleared preview, removed observer token, and zero writer calls.
+
+## Decision 016: Canonicalize scan corruption atomically and refresh active search
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: Task 20 requires malformed and duplicate persisted apps to be
+  successful cases, while its example loops skip malformed rows and preserve
+  duplicates whose bundle still exists. The current loaded-view refresh also
+  retains stale `currentSearchResults` when a query is active.
+- Decision: the scan transaction reads the complete persisted snapshot, orders
+  existing apps stably, retains the first canonical row per bundle, deletes
+  duplicate rows and app rows lacking `AppInfo`, then applies scanned first-wins
+  insert/update/delete behavior and normalizes pages. After a successful batch,
+  a loaded controller keeps its active query and re-executes it against the new
+  item snapshot through the existing injectable search path; stale-query guards,
+  selection restoration, and page clamp remain in force.
+- Impact: old scan corruption is repaired rather than silently retained or
+  causing a partial batch; loaded normal and search UIs both reflect committed
+  scan state.
+- Verification: malformed/duplicate fixtures reopen with one canonical row per
+  installed bundle and no malformed apps; every fault rolls the full repair back;
+  active-search tests cover added, removed, and renamed matches without changing
+  the query or displaying stale results.
+
+## Decision 017: Serialize system-resource ownership and keep one real FSEvents host test
+
+- Status: adopted under the user's autonomous-execution authorization
+- Evidence: Task 21's proposed `SystemFileEventStream` stores mutable raw stream,
+  callback-context, and started state behind `@unchecked Sendable` without an
+  explicit serialization mechanism. Removing the old stream override also
+  affects production and test factories atomically, while Tasks 20 and 21 would
+  otherwise create duplicate real FSEvents coverage.
+- Decision: implement one locked cleanup state machine for backend start, stop,
+  start-failure, callback, and deinit ownership. Add the shared mock/backend
+  initializer and remove the legacy override plus every call site in the same
+  compileable commit. Keep routine Task 20 watcher evidence injected; retain one
+  UUID-scoped real FSEvents host test only in Task 21's final host gate.
+- Impact: raw resources are released exactly once under concurrent lifecycle
+  calls, no compatibility side door survives, and host integration remains
+  covered without making focused suites environment-dependent.
+- Verification: function-table tests count stop/invalidate/release/context
+  cleanup for success and every failure; concurrent stop/deinit is idempotent;
+  static scans reject the override and real system calls outside the backend and
+  single host test.
