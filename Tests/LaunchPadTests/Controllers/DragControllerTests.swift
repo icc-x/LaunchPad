@@ -379,6 +379,45 @@ struct DragControllerTests {
         #expect(scheduler.scheduledActions.isEmpty)
     }
 
+    @Test("native session 的 legacy hover 三分支完全无副作用")
+    func nativeSessionLegacyHoverIsNoOp() throws {
+        let scheduler = MockScheduler()
+        let sut = DragController(scheduler: scheduler)
+        var directions: [DragPageDirection] = []
+        var previews: [Int64?] = []
+        sut.onPageChange = { directions.append($0) }
+        sut.onFolderCreationPreviewChanged = { previews.append($0) }
+        sut.beginDrag(makeSession())
+        sut.updateDragHover(.item(itemID: 22, itemType: .app))
+        scheduler.advance(by: 0.8)
+
+        let expectedSession = try #require(sut.session)
+        let expectedState = sut.state
+        let expectedSubstate = sut.draggingSubstate
+        let expectedPendingIntervals = scheduler.scheduledActions.map(\.interval)
+        let expectedCancelCount = scheduler.cancelCallCount
+        let expectedDirectionCount = directions.count
+        let expectedPreviewCount = previews.count
+        #expect(expectedSession.folderCreationPreviewTargetID == 22)
+        #expect(previews == [22])
+
+        for location in [
+            DragController.HoverLocation.screenEdge,
+            .overIcon(targetId: 33),
+            .empty,
+        ] {
+            sut.updateDragHover(location: location)
+
+            #expect(sut.session == expectedSession)
+            #expect(sut.state == expectedState)
+            #expect(sut.draggingSubstate == expectedSubstate)
+            #expect(scheduler.scheduledActions.map(\.interval) == expectedPendingIntervals)
+            #expect(scheduler.cancelCallCount == expectedCancelCount)
+            #expect(directions.count == expectedDirectionCount)
+            #expect(previews.count == expectedPreviewCount)
+        }
+    }
+
     @Test("handleCancel 是幂等无写入兼容入口")
     func handleCancelIsIdempotentCompatibilityAlias() {
         let scheduler = MockScheduler()

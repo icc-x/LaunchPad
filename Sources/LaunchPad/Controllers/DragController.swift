@@ -153,27 +153,16 @@ public final class DragController {
         }
     }
 
+    /// Updates gesture-only compatibility state; native sessions ignore this legacy API.
     public func updateDragHover(location: HoverLocation) {
-        guard state == .dragging else { return }
-        guard session != nil else {
-            switch location {
-            case .screenEdge:
-                legacyDraggingSubstate = .none
-            case .overIcon(let targetID):
-                legacyDraggingSubstate = .overIcon(targetId: targetID)
-            case .empty:
-                legacyDraggingSubstate = .none
-            }
-            return
-        }
+        guard state == .dragging, session == nil else { return }
         switch location {
         case .screenEdge:
-            // The legacy location has no direction; Task 16 supplies one.
-            updateDragHover(.empty)
+            legacyDraggingSubstate = .none
         case .overIcon(let targetID):
-            updateDragHover(.item(itemID: targetID, itemType: .group))
+            legacyDraggingSubstate = .overIcon(targetId: targetID)
         case .empty:
-            updateDragHover(.empty)
+            legacyDraggingSubstate = .none
         }
     }
 
