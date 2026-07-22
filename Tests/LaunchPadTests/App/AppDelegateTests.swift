@@ -44,9 +44,24 @@ struct AppDelegateTests {
 
     // MARK: - Helpers
 
+    private func makeIsolatedHotkeyManager(
+        accessibilityTrusted: Bool = false,
+        tapResult: CFMachPort? = nil
+    ) -> HotkeyManager {
+        let manager = HotkeyManager()
+        let localMonitorToken = NSObject()
+        manager.accessibilityChecker = { accessibilityTrusted }
+        manager.tapProvider = { tapResult }
+        manager.eventTapCreator = { _, _, _ in nil }
+        manager.localMonitorInstaller = { _ in localMonitorToken }
+        manager.localMonitorRemover = { _ in }
+        return manager
+    }
+
     /// 创建一个所有危险系统调用都被替换为安全实现的 AppDelegate
     private func makeDelegate() -> AppDelegate {
         let sut = AppDelegate()
+        let hotkeyManager = makeIsolatedHotkeyManager()
         sut.activationPolicySetter = { _ in }
         sut.appTerminator = {}
         sut.runningInstanceChecker = { false }
@@ -57,8 +72,13 @@ struct AppDelegateTests {
         sut.loginItemStatusProvider = { .notRegistered }
         sut.loginItemUnregister = {}
         sut.loginItemRegister = {}
-        sut.statusItemFactory = { NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength) }
+        sut.statusItemFactory = { NSStatusItem() }
         sut.fileWatcherFactory = { FileWatcher(debounceInterval: 2.0, streamCreationOverride: { nil }) }
+        sut.hotkeyManagerFactory = { hotkeyManager }
+        sut.workspaceURLOpener = { _ in }
+        sut.hotkeyToggleRunner = { action in
+            MainActor.assumeIsolated { action() }
+        }
         sut.storageFactory = { _ in try StorageManager(dbPath: ":memory:") }
         return sut
     }
@@ -295,51 +315,69 @@ struct AppDelegateTests {
     @Test("setupHotkey：快捷键冲突时弹出占用提示")
     func setupHotkey_conflict() {
         let sut = makeDelegate()
-        let hm = HotkeyManager()
-        hm.accessibilityChecker = { true }
-        hm.tapProvider = { nil }
+        let hm = makeIsolatedHotkeyManager(accessibilityTrusted: true)
         sut.hotkeyManager = hm
-        var alertShown = false
-        sut.alertRunner = { _ in alertShown = true; return .alertFirstButtonReturn }
+        var alertMessages: [String] = []
+        var openedURLs: [URL] = []
+        sut.alertRunner = { alert in
+            alertMessages.append(alert.messageText)
+            return .alertFirstButtonReturn
+        }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
 
         sut.setupHotkey()
 
-        #expect(alertShown)
+        #expect(alertMessages == ["Option+Space 快捷键已被占用"])
+        #expect(openedURLs.isEmpty)
     }
 
     @Test("setupHotkey：无权限时弹出授权提示并打开系统设置")
     func setupHotkey_permission() {
         let sut = makeDelegate()
-        let hm = HotkeyManager()
-        hm.accessibilityChecker = { false }
-        sut.hotkeyManager = hm
-        var alertShown = false
-        sut.alertRunner = { _ in alertShown = true; return .alertFirstButtonReturn }
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
+        var openedURLs: [URL] = []
+        sut.alertRunner = { _ in .alertFirstButtonReturn }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
 
         sut.setupHotkey()
 
-        #expect(alertShown)
+        #expect(openedURLs == [
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!,
+        ])
+    }
+
+    @Test("setupHotkey：无权限时选择稍后设置不会打开系统设置")
+    func setupHotkey_permission_secondButtonDoesNotOpenSettings() {
+        let sut = makeDelegate()
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
+        var openedURLs: [URL] = []
+        sut.alertRunner = { _ in .alertSecondButtonReturn }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
+
+        sut.setupHotkey()
+
+        #expect(openedURLs.isEmpty)
     }
 
     // MARK: - onToggle / onKeyDown 回调
 
     @Test("onToggle 回调切换窗口")
-    func onToggle_togglesWindow() async {
+    func onToggle_togglesWindow() throws {
         let sut = makeDelegate()
-        let hm = HotkeyManager()
+        let hm = makeIsolatedHotkeyManager()
         sut.hotkeyManager = hm
-        sut.windowController = LaunchPadWindowController(lifecycle: WindowLifecycle(), viewController: try! makeViewController())
+        let lifecycle = WindowLifecycle()
+        sut.windowController = LaunchPadWindowController(lifecycle: lifecycle, viewController: try makeViewController())
         sut.setupHotkey()
 
         sut.hotkeyManager.onToggle?()
-        try? await Task.sleep(nanoseconds: 50_000_000)
-        #expect(true)
+        #expect(lifecycle.state == .opening)
     }
 
     @Test("onKeyDown：窗口不可见时直接返回事件")
     func onKeyDown_notVisible() throws {
         let sut = makeDelegate()
-        sut.hotkeyManager = HotkeyManager()
+        sut.hotkeyManager = makeIsolatedHotkeyManager()
         sut.setupHotkey()
         sut.lifecycle = WindowLifecycle() // 默认 hidden
         sut.viewController = try makeViewController()
@@ -351,7 +389,7 @@ struct AppDelegateTests {
     @Test("onKeyDown：窗口可见时覆盖所有按键分支")
     func onKeyDown_visible_allKeys() throws {
         let sut = makeDelegate()
-        sut.hotkeyManager = HotkeyManager()
+        sut.hotkeyManager = makeIsolatedHotkeyManager()
         sut.setupHotkey()
 
         let lifecycle = WindowLifecycle()
@@ -571,7 +609,7 @@ struct AppDelegateTests {
     func setupHotkey_onToggle_weakSelfNil_guardElse() {
         // 触发 AppDelegate.setupHotkey 中 onToggle 闭包内 `guard let self else { return }` 的 else 分支
         var sut: AppDelegate? = makeDelegate()
-        let hm = HotkeyManager()
+        let hm = makeIsolatedHotkeyManager()
         sut?.hotkeyManager = hm
         sut?.setupHotkey()
         // 释放 sut
@@ -587,7 +625,7 @@ struct AppDelegateTests {
         // 触发 AppDelegate.setupHotkey 中 onKeyDown 闭包内 `guard let self else { return event }` 的 else 分支
         // 策略：让 AppDelegate 在测试中能被释放，然后调用捕获的 onKeyDown
         var sut: AppDelegate? = makeDelegate()
-        let hm = HotkeyManager()
+        let hm = makeIsolatedHotkeyManager()
         sut?.hotkeyManager = hm
         sut?.setupHotkey()
         // 释放 sut

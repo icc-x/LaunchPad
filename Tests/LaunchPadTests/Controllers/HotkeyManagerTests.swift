@@ -16,11 +16,25 @@ struct HotkeyManagerTests {
 
     #if canImport(AppKit)
 
+    private func makeIsolatedManager(
+        accessibilityTrusted: Bool = false,
+        tapResult: CFMachPort? = nil
+    ) -> HotkeyManager {
+        let manager = HotkeyManager()
+        let localMonitorToken = NSObject()
+        manager.accessibilityChecker = { accessibilityTrusted }
+        manager.tapProvider = { tapResult }
+        manager.eventTapCreator = { _, _, _ in nil }
+        manager.localMonitorInstaller = { _ in localMonitorToken }
+        manager.localMonitorRemover = { _ in }
+        return manager
+    }
+
     // MARK: - onToggle callback
 
     @Test("onToggle callback can be triggered via simulateToggle")
     func simulateToggle_invokesOnToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -31,14 +45,14 @@ struct HotkeyManagerTests {
 
     @Test("simulateToggle without onToggle set does not crash")
     func simulateToggle_noCallback_noCrash() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.simulateToggle()
     }
 
     @Test("simulateToggle only callbacks on main thread")
     @MainActor
     func simulateToggle_callsOnMainThread() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = {
             counter.flag = Thread.isMainThread
@@ -53,20 +67,20 @@ struct HotkeyManagerTests {
 
     @Test("Test environment without accessibility permission -> registerGlobalHotkey returns false")
     func registerGlobalHotkey_noAccessibilityPermission_returnsFalse() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let result = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         #expect(result == false)
     }
 
     @Test("Unregistering unregistered global hotkey does not crash")
     func unregisterGlobalHotkey_withoutRegistration_noCrash() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.unregisterGlobalHotkey()
     }
 
     @Test("Register then unregister global hotkey does not crash")
     func registerThenUnregister_noCrash() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         manager.unregisterGlobalHotkey()
     }
@@ -95,7 +109,7 @@ struct HotkeyManagerTests {
 
     @Test("After registering local monitor, onKeyDown callback is settable")
     func localMonitor_onKeyDown_settable() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.onKeyDown = { event in
             _ = event.keyCode
             return event
@@ -106,7 +120,7 @@ struct HotkeyManagerTests {
 
     @Test("Unregistering local monitor then unregistering again does not crash")
     func unregisterLocalMonitor_doubleCall_noCrash() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.registerLocalMonitor()
         manager.unregisterLocalMonitor()
         manager.unregisterLocalMonitor()
@@ -114,7 +128,7 @@ struct HotkeyManagerTests {
 
     @Test("deinit automatically cleans up all monitors")
     func deinit_cleansUp_allMonitors() {
-        var manager: HotkeyManager? = HotkeyManager()
+        var manager: HotkeyManager? = makeIsolatedManager()
         manager?.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         manager?.registerLocalMonitor()
         manager = nil
@@ -124,7 +138,7 @@ struct HotkeyManagerTests {
 
     @Test("Option+Space combination triggers onToggle")
     func optionSpace_combination_triggersToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -136,7 +150,7 @@ struct HotkeyManagerTests {
 
     @Test("Only Option pressed does not trigger onToggle")
     func optionOnly_noToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -147,7 +161,7 @@ struct HotkeyManagerTests {
 
     @Test("Only Space pressed (no Option) does not trigger onToggle")
     func spaceOnly_noToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -158,7 +172,7 @@ struct HotkeyManagerTests {
 
     @Test("Option released then Space pressed does not trigger onToggle")
     func optionReleased_thenSpace_noToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -173,7 +187,7 @@ struct HotkeyManagerTests {
 
     @Test("After unregistering global hotkey no longer responds")
     func unregister_removesGlobalHotkey() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         manager.unregisterGlobalHotkey()
         manager.simulateOptionKeyDown()
@@ -184,7 +198,7 @@ struct HotkeyManagerTests {
 
     @Test("hasConflict is initially false")
     func hasConflict_initialFalse() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         #expect(manager.hasConflict == false)
     }
 
@@ -192,7 +206,7 @@ struct HotkeyManagerTests {
     func registerFailure_keepsHasConflictFalse() {
         // 无 Accessibility 权限时在权限检查即返回 false，
         // 不会到达 tapCreate 失败分支，故 hasConflict 保持 false
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         _ = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         #expect(manager.hasConflict == false)
     }
@@ -201,7 +215,7 @@ struct HotkeyManagerTests {
 
     @Test("isAccessibilityTrusted returns a Bool without crashing")
     func isAccessibilityTrusted_returnsBool() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         // 仅验证属性可读取，不假定具体值（测试环境通常为 false）
         _ = manager.isAccessibilityTrusted
     }
@@ -218,7 +232,7 @@ struct HotkeyManagerTests {
 
     @Test("onKeyDown callback is settable and invocable")
     func onKeyDown_settable() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onKeyDown = { event in
             counter.flag = true
@@ -250,7 +264,7 @@ struct HotkeyManagerTests {
 
     @Test("simulateToggle from background thread dispatches to main")
     func simulateToggle_fromBackgroundThread_dispatchesToMain() async {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -262,8 +276,6 @@ struct HotkeyManagerTests {
             }
         }
 
-        // 等待主线程执行完成
-        try? await Task.sleep(nanoseconds: 100_000_000)
         #expect(counter.count == 1)
     }
 
@@ -271,7 +283,7 @@ struct HotkeyManagerTests {
 
     @Test("registerGlobalHotkey with different keyCode still returns false without permission")
     func registerGlobalHotkey_differentKeyCode_returnsFalse() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let result = manager.registerGlobalHotkey(keyCode: 36, modifiers: [.command, .shift])
         #expect(result == false)
     }
@@ -280,7 +292,7 @@ struct HotkeyManagerTests {
 
     @Test("Option down then up resets state so Space does not trigger")
     func optionDown_thenUp_resetsState() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -296,7 +308,7 @@ struct HotkeyManagerTests {
 
     @Test("simulateToggle called multiple times increments counter each time")
     func simulateToggle_multipleTimes_increments() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
 
@@ -316,7 +328,6 @@ struct HotkeyManagerTests {
 
     @Test("tapCallbackEntry with nil refcon returns event unchanged")
     func tapCallbackEntry_nilRefcon_returnsEvent() {
-        let manager = HotkeyManager()
         let event = makeCGKeyEvent(keyCode: 49)
         let result = HotkeyManager.tapCallback(CGEventTapProxy(bitPattern: 1)!, .keyDown, event, nil)
         #expect(result != nil)
@@ -324,7 +335,7 @@ struct HotkeyManagerTests {
 
     @Test("tapCallbackEntry with valid refcon dispatches to handleGlobalEvent")
     func tapCallbackEntry_validRefcon_dispatches() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let event = makeCGKeyEvent(keyCode: 49)
         let refcon = Unmanaged.passRetained(manager).toOpaque()
         let result = HotkeyManager.tapCallback(CGEventTapProxy(bitPattern: 1)!, .flagsChanged, event, refcon)
@@ -335,7 +346,7 @@ struct HotkeyManagerTests {
 
     @Test("handleGlobalEvent flagsChanged updates isOptionHeld (true)")
     func handleGlobalEvent_flagsChanged_setsOptionHeldTrue() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         let event = makeCGKeyEvent(keyCode: 49)
@@ -348,7 +359,7 @@ struct HotkeyManagerTests {
 
     @Test("handleGlobalEvent flagsChanged updates isOptionHeld (false)")
     func handleGlobalEvent_flagsChanged_setsOptionHeldFalse() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyDown() // isOptionHeld = true
@@ -362,7 +373,7 @@ struct HotkeyManagerTests {
 
     @Test("handleGlobalEvent keyDown with Option+Space triggers onToggle")
     func handleGlobalEvent_keyDown_optionSpace_triggersToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyDown() // isOptionHeld = true
@@ -373,7 +384,7 @@ struct HotkeyManagerTests {
 
     @Test("handleGlobalEvent keyDown without Option does not trigger onToggle")
     func handleGlobalEvent_keyDown_withoutOption_noToggle() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyUp() // isOptionHeld = false
@@ -384,7 +395,7 @@ struct HotkeyManagerTests {
 
     @Test("handleGlobalEvent default type does nothing")
     func handleGlobalEvent_defaultType_noOp() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let event = makeCGKeyEvent(keyCode: 49)
         // 不应崩溃
         manager.handleGlobalEvent(type: .scrollWheel, event: event)
@@ -394,7 +405,7 @@ struct HotkeyManagerTests {
 
     @Test("registerGlobalHotkey success path installs tap, enables, and unregisters")
     func registerGlobalHotkey_success_installsAndUnregisters() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.accessibilityChecker = { true }
         let port = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
         manager.tapProvider = { port }
@@ -407,12 +418,56 @@ struct HotkeyManagerTests {
 
     @Test("registerGlobalHotkey hasConflict when tapCreate fails despite permission")
     func registerGlobalHotkey_hasConflict_whenTapFails() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.accessibilityChecker = { true }
         manager.tapProvider = { nil } // 模拟 tapCreate 返回 nil
         let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         #expect(registered == false)
         #expect(manager.hasConflict == true)
+    }
+
+    @Test("nil tap override is authoritative")
+    func nilTapOverrideIsAuthoritative() {
+        let manager = makeIsolatedManager()
+        var creatorCalls = 0
+        manager.accessibilityChecker = { true }
+        manager.tapProvider = { nil }
+        manager.eventTapCreator = { _, _, _ in
+            creatorCalls += 1
+            return nil
+        }
+
+        let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
+
+        #expect(registered == false)
+        #expect(manager.hasConflict == true)
+        #expect(creatorCalls == 0)
+    }
+
+    @Test("local monitor lifecycle uses injected boundary")
+    func localMonitorLifecycleUsesInjectedBoundary() {
+        let manager = makeIsolatedManager()
+        let token = NSObject()
+        var installCount = 0
+        var removeCount = 0
+        var removedToken: AnyObject?
+        manager.localMonitorInstaller = { _ in
+            installCount += 1
+            return token
+        }
+        manager.localMonitorRemover = { monitor in
+            removeCount += 1
+            removedToken = monitor as AnyObject
+        }
+
+        manager.registerLocalMonitor()
+        manager.registerLocalMonitor()
+        manager.unregisterLocalMonitor()
+        manager.unregisterLocalMonitor()
+
+        #expect(installCount == 1)
+        #expect(removeCount == 1)
+        #expect(removedToken === token)
     }
 
     // MARK: - handleLocalMonitorEvent
@@ -427,7 +482,7 @@ struct HotkeyManagerTests {
 
     @Test("handleLocalMonitorEvent flagsChanged forwards to onKeyDown")
     func handleLocalMonitorEvent_flagsChanged_forwards() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onKeyDown = { event in counter.flag = true; return event }
         _ = manager.handleLocalMonitorEvent(makeNSKeyEvent(type: .flagsChanged, keyCode: 0))
@@ -436,7 +491,7 @@ struct HotkeyManagerTests {
 
     @Test("handleLocalMonitorEvent ESC/arrow/enter keys return event unchanged")
     func handleLocalMonitorEvent_specialKeys_returnEvent() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.onKeyDown = { event in
             Issue.record("onKeyDown should not fire for special keys")
             return event
@@ -451,7 +506,7 @@ struct HotkeyManagerTests {
 
     @Test("handleLocalMonitorEvent other key forwards to onKeyDown")
     func handleLocalMonitorEvent_otherKey_forwards() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onKeyDown = { event in counter.flag = true; return event }
         _ = manager.handleLocalMonitorEvent(makeNSKeyEvent(type: .keyDown, keyCode: 0))
@@ -460,7 +515,7 @@ struct HotkeyManagerTests {
 
     @Test("localMonitorHandler 直接调用转发到 handleLocalMonitorEvent")
     func localMonitorHandler_directCall_forwards() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onKeyDown = { event in counter.flag = true; return event }
         let event = makeNSKeyEvent(type: .keyDown, keyCode: 0)
@@ -470,7 +525,7 @@ struct HotkeyManagerTests {
 
     @Test("handleLocalMonitorEvent flagsChanged 无 onKeyDown 时返回原事件")
     func handleLocalMonitorEvent_flagsChanged_noOnKeyDown_returnsEvent() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let event = makeNSKeyEvent(type: .flagsChanged, keyCode: 0)
         let result = manager.handleLocalMonitorEvent(event)
         #expect(result === event)
@@ -478,7 +533,7 @@ struct HotkeyManagerTests {
 
     @Test("handleLocalMonitorEvent 常规按键无 onKeyDown 时返回原事件")
     func handleLocalMonitorEvent_regularKey_noOnKeyDown_returnsEvent() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         let event = makeNSKeyEvent(type: .keyDown, keyCode: 0)
         let result = manager.handleLocalMonitorEvent(event)
         #expect(result === event)
@@ -486,7 +541,7 @@ struct HotkeyManagerTests {
 
     @Test("localMonitorHandler closure forwards to handleLocalMonitorEvent")
     func localMonitorHandler_forwards() {
-        let manager = HotkeyManager()
+        let manager = makeIsolatedManager()
         manager.registerLocalMonitor()
         let counter = SendableCounter()
         manager.onKeyDown = { event in counter.flag = true; return event }

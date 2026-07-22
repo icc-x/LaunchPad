@@ -4,6 +4,12 @@ import LaunchPadProtocols
 import AppKit
 import Carbon.HIToolbox
 
+typealias EventTapCreator = (
+    CGEventMask,
+    CGEventTapCallBack,
+    UnsafeMutableRawPointer?
+) -> CFMachPort?
+
 /// Global hotkey manager
 /// - CGEventTap two-step state machine detecting Option+Space
 /// - NSEvent local monitor for in-app keyboard events
@@ -47,8 +53,32 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     /// 事件 tap 创建器（默认走真实 CGEvent.tapCreate；测试可注入以模拟成功/失败）
     var tapProvider: (() -> CFMachPort?)?
 
+    /// 事件 tap 系统边界（测试可注入，避免触及真实事件 tap）
+    var eventTapCreator: EventTapCreator = { mask, callback, context in
+        CGEvent.tapCreate(
+            tap: .cgSessionEventTap,
+            place: .headInsertEventTap,
+            options: .defaultTap,
+            eventsOfInterest: mask,
+            callback: callback,
+            userInfo: context
+        )
+    }
+
     /// 本地键盘监视器闭包（抽出为属性，便于测试直接调用）
-    var localMonitorHandler: ((NSEvent) -> NSEvent)?
+    var localMonitorHandler: ((NSEvent) -> NSEvent?)?
+
+    /// 本地键盘监视器安装边界（测试可注入）
+    var localMonitorInstaller: (@escaping (NSEvent) -> NSEvent?) -> Any? = {
+        handler in
+        NSEvent.addLocalMonitorForEvents(
+            matching: [.keyDown, .flagsChanged],
+            handler: handler
+        )
+    }
+
+    /// 本地键盘监视器移除边界（测试可注入）
+    var localMonitorRemover: (Any) -> Void = { NSEvent.removeMonitor($0) }
 
     public init() {
         accessibilityChecker = HotkeyManager.defaultAccessibilityCheck
@@ -84,14 +114,12 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         // Use passRetained to prevent use-after-free — the callback holds a strong reference
         let selfPtr = Unmanaged.passRetained(self).toOpaque()
 
-        let tap: CFMachPort? = tapProvider?() ?? CGEvent.tapCreate(
-            tap: .cgSessionEventTap,
-            place: .headInsertEventTap,
-            options: .defaultTap,
-            eventsOfInterest: mask,
-            callback: HotkeyManager.tapCallback,
-            userInfo: selfPtr
-        )
+        let tap: CFMachPort?
+        if let tapProvider {
+            tap = tapProvider()
+        } else {
+            tap = eventTapCreator(mask, HotkeyManager.tapCallback, selfPtr)
+        }
         eventTap = tap
 
         guard let tap else {
@@ -161,7 +189,8 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     // MARK: - In-app keyboard monitoring
 
     public func registerLocalMonitor() {
-        localMonitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown, .flagsChanged], handler: localMonitorHandler!)
+        guard localMonitor == nil, let localMonitorHandler else { return }
+        localMonitor = localMonitorInstaller(localMonitorHandler)
     }
 
     /// 本地键盘监视器事件处理（抽出便于测试）。
@@ -176,10 +205,9 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     }
 
     public func unregisterLocalMonitor() {
-        if let monitor = localMonitor {
-            NSEvent.removeMonitor(monitor)
-            localMonitor = nil
-        }
+        guard let localMonitor else { return }
+        localMonitorRemover(localMonitor)
+        self.localMonitor = nil
     }
 
     // MARK: - Test helpers

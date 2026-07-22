@@ -75,6 +75,21 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 文件监控器工厂（默认创建真实 FileWatcher，测试注入安全检查版本避免真实 FSEvent 监听）
     var fileWatcherFactory: () -> FileWatcher = { FileWatcher(debounceInterval: 2.0) }
 
+    /// 热键管理器工厂（测试注入隔离系统边界）
+    var hotkeyManagerFactory: () -> HotkeyManager = { HotkeyManager() }
+
+    /// 系统设置 URL 打开边界（测试可注入）
+    var workspaceURLOpener: (URL) -> Void = {
+        _ = NSWorkspace.shared.open($0)
+    }
+
+    /// 热键切换交付器（测试可同步执行）
+    var hotkeyToggleRunner:
+        @Sendable (@escaping @MainActor @Sendable () -> Void) -> Void = {
+        action in
+        Task { @MainActor in action() }
+    }
+
     /// 监控目录（默认系统应用目录，测试注入临时目录以确定性触发变更）
     var watchedPaths: [String] = [
         "/Applications",
@@ -137,7 +152,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         searchEngine = SearchEngine()
 
         // Hotkey
-        hotkeyManager = HotkeyManager()
+        hotkeyManager = hotkeyManagerFactory()
     }
 
     func setupControllers() {
@@ -220,11 +235,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hotkey
 
     func setupHotkey() {
-        hotkeyManager.onToggle = { [weak self] in
-            guard let self else { return }
-            Task { @MainActor in
-                self.windowController.toggle()
-            }
+        let runner = hotkeyToggleRunner
+        hotkeyManager.onToggle = { @Sendable [weak self] in
+            runner { [weak self] in self?.windowController.toggle() }
         }
 
         let registered = hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
@@ -250,7 +263,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 if response == .alertFirstButtonReturn {
                     // 打开 Input Monitoring 设置页面
                     if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-                        NSWorkspace.shared.open(url)
+                        self.workspaceURLOpener(url)
                     }
                 }
             }
