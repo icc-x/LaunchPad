@@ -11,18 +11,17 @@ public final class SearchDebouncer {
 
     private let debounceInterval: TimeInterval
     private let scheduler: Scheduler
-    @preconcurrency private let searchHandler: (String) -> Void
+    private let searchHandler: @MainActor @Sendable (String) -> Void
     private var lastQuery: String = ""
 
     /// - Parameters:
     ///   - debounceInterval: 防抖间隔，默认 0.1s
     ///   - scheduler: 调度器（可注入 MockScheduler 测试）
     ///   - searchHandler: 搜索回调（保证在 MainActor 上调用）
-    @preconcurrency
     public init(
         debounceInterval: TimeInterval = 0.1,
         scheduler: Scheduler,
-        searchHandler: @escaping (String) -> Void
+        searchHandler: @escaping @MainActor @Sendable (String) -> Void
     ) {
         self.debounceInterval = debounceInterval
         self.scheduler = scheduler
@@ -52,14 +51,8 @@ public final class SearchDebouncer {
         lastQuery = query
         scheduler.cancelPending()
         let handler = searchHandler
-        nonisolated(unsafe) let unsafeHandler = handler
-        let unsafeQuery = query
         scheduler.schedule(after: debounceInterval) {
-            // DispatchQueueScheduler 在主线程调用此闭包
-            // MockScheduler.fireLatest() 也在测试主线程调用
-            MainActor.assumeIsolated {
-                unsafeHandler(unsafeQuery)
-            }
+            handler(query)
         }
     }
 

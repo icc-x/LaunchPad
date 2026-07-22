@@ -1,8 +1,10 @@
 import Testing
+import Dispatch
 @testable import LaunchPad
 import LaunchPadProtocols
 
 @Suite("DI 协议定义验证")
+@MainActor
 struct ProtocolTests {
 
     @Test("MockItemReader 遵循 ItemReading")
@@ -48,5 +50,45 @@ struct ProtocolTests {
     func mockScheduler_conformsToScheduler() {
         let s: Scheduler = MockScheduler()
         #expect(s is Scheduler)
+    }
+
+    @Test("真实 scheduler 的延迟 action 在 MainActor 执行")
+    func dispatchQueueSchedulerRunsActionOnMainActor() async {
+        let (stream, continuation) = AsyncStream.makeStream(of: String.self)
+        let scheduler = DispatchQueueScheduler()
+        scheduler.schedule(after: 0) {
+            MainActor.preconditionIsolated()
+            continuation.yield("safari")
+            continuation.finish()
+        }
+        var iterator = stream.makeAsyncIterator()
+        #expect(await iterator.next() == "safari")
+    }
+
+    @Test("替换、显式取消与释放均取消 exact work item")
+    func dispatchQueueSchedulerCancelsOwnedWorkItems() {
+        var first: DispatchWorkItem?
+        var second: DispatchWorkItem?
+        var third: DispatchWorkItem?
+        weak var weakScheduler: DispatchQueueScheduler?
+        do {
+            let scheduler = DispatchQueueScheduler()
+            weakScheduler = scheduler
+            scheduler.workItemObserver = { item in
+                if first == nil { first = item }
+                else if second == nil { second = item }
+                else { third = item }
+            }
+            scheduler.schedule(after: 60) {}
+            scheduler.schedule(after: 60) {}
+            #expect(first?.isCancelled == true)
+            #expect(second?.isCancelled == false)
+            scheduler.cancelPending()
+            #expect(second?.isCancelled == true)
+            scheduler.schedule(after: 60) {}
+            #expect(third?.isCancelled == false)
+        }
+        #expect(weakScheduler == nil)
+        #expect(third?.isCancelled == true)
     }
 }

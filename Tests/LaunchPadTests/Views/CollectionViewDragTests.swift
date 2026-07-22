@@ -3,6 +3,7 @@ import Testing
 import LaunchPadProtocols
 @testable import LaunchPad
 
+@MainActor
 @Suite("NSCollectionView 拖拽 Delegate")
 struct CollectionViewDragTests {
 

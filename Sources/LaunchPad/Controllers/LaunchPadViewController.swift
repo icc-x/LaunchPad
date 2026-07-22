@@ -67,6 +67,22 @@ public class LaunchPadViewController: NSViewController {
     private var searchDebouncer: SearchDebouncer!
     private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
 
+    typealias SearchRunner = @MainActor @Sendable (
+        [PageItem],
+        String,
+        @escaping @MainActor @Sendable ([PageItem]) -> Void
+    ) -> Void
+
+    lazy var searchRunner: SearchRunner = {
+        [searchQueue, searchEngine] items, query, completion in
+        searchQueue.async {
+            let results = searchEngine.cachedSearch(items: items, query: query)
+            DispatchQueue.main.async {
+                MainActor.assumeIsolated { completion(results) }
+            }
+        }
+    }
+
     // MARK: - Init
 
     public init(
@@ -329,12 +345,12 @@ public class LaunchPadViewController: NSViewController {
             }.flatMap { $0 }
             let capturedQuery = query
             let capturedSearchQuery = currentSearchQuery
-            // 后台线程执行搜索，避免阻塞 UI
-            searchQueue.async { [searchEngine, weak self] in
-                let results = self?.executeSearch(items: allItems, query: capturedQuery) ?? []
-                DispatchQueue.main.async {
-                    self?.applySearchResults(results, query: capturedQuery, expectedQuery: capturedSearchQuery)
-                }
+            searchRunner(allItems, capturedQuery) { [weak self] results in
+                self?.applySearchResults(
+                    results,
+                    query: capturedQuery,
+                    expectedQuery: capturedSearchQuery
+                )
             }
         }
     }

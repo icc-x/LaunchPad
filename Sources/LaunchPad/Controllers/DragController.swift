@@ -3,7 +3,8 @@ import CoreGraphics
 import LaunchPadProtocols
 
 /// 拖拽状态机，管理从 idle → jiggling → dragging → idle 的完整生命周期
-public final class DragController: @unchecked Sendable {
+@MainActor
+public final class DragController {
 
     // MARK: - 状态定义
 
@@ -226,26 +227,46 @@ public final class DragController: @unchecked Sendable {
 }
 
 /// 生产环境调度器
-public final class DispatchQueueScheduler: Scheduler, @unchecked Sendable {
-    private let queue = DispatchQueue(label: "com.launchpad.scheduler", qos: .userInitiated)
-    private var currentWorkItem: DispatchWorkItem?
-    private let lock = NSLock()
+@MainActor
+public final class DispatchQueueScheduler: Scheduler {
+    private final class PendingWork: @unchecked Sendable {
+        private var item: DispatchWorkItem?
+
+        func replace(with newItem: DispatchWorkItem) {
+            item?.cancel()
+            item = newItem
+        }
+
+        func cancel() {
+            item?.cancel()
+            item = nil
+        }
+
+        deinit { item?.cancel() }
+    }
+
+    private let pendingWork = PendingWork()
+    var workItemObserver: ((DispatchWorkItem) -> Void)?
 
     public init() {}
 
-    public func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
-        lock.lock()
-        currentWorkItem?.cancel()
-        let workItem = DispatchWorkItem(block: action)
-        currentWorkItem = workItem
-        lock.unlock()
-        queue.asyncAfter(deadline: .now() + interval, execute: workItem)
+    public func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        cancelPending()
+        let item = DispatchWorkItem {
+            MainActor.assumeIsolated { action() }
+        }
+        pendingWork.replace(with: item)
+        workItemObserver?(item)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + interval,
+            execute: item
+        )
     }
 
     public func cancelPending() {
-        lock.lock()
-        currentWorkItem?.cancel()
-        currentWorkItem = nil
-        lock.unlock()
+        pendingWork.cancel()
     }
 }

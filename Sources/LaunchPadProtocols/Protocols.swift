@@ -92,7 +92,11 @@ public protocol HotkeyManaging: Sendable {
 // MARK: - 调度器协议
 
 /// 测试时可精确控制时间，避免 flaky test
+@MainActor
 public protocol Scheduler: Sendable {
-    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void)
+    func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor @Sendable () -> Void
+    )
     func cancelPending()
 }

@@ -710,15 +710,47 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - handleSearch 非空查询
 
-    @Test("handleSearch 非空查询调度后台搜索不崩溃")
-    func handleSearch_nonEmptyQuery_schedulesBackgroundSearch() {
+    @Test("handleSearch 非空查询执行一次注入搜索")
+    func handleSearch_nonEmptyQuery_runsInjectedSearchOnce() {
         let searchScheduler = MockScheduler()
-        let (sut, _, _) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
+        let (sut, _, storage) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let safari = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: 1,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "Safari")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [1: [safari]]
         _ = sut.view
-        // 空数据：后台搜索在空集合上执行，UI 更新为空结果，避免跨线程竞态
-        sut.keyboardNavigator.mode = .search(query: "x")
-        _ = sut.handleCharacterInput("y") // appendToQuery → debouncer.search("y")
-        searchScheduler.advance(by: 0.1)   // 触发 handleSearch("y") 非空分支
+        sut.loadData()
+
+        var searchCalls: [(ids: [Int64], query: String)] = []
+        sut.searchRunner = { items, query, completion in
+            searchCalls.append((ids: items.map(\.id), query: query))
+            completion(items.filter { $0.app?.title.localizedCaseInsensitiveContains(query) == true })
+        }
+
+        sut.keyboardNavigator.mode = .search(query: "s")
+        sut.searchBar.stringValue = "s"
+        _ = sut.handleCharacterInput("a")
+        searchScheduler.advance(by: 0.099)
+        #expect(searchCalls.isEmpty)
+
+        searchScheduler.advance(by: 0.001)
+        #expect(searchCalls.count == 1)
+        #expect(searchCalls.first?.ids == [10])
+        #expect(searchCalls.first?.query == "sa")
+        #expect(sut.resultCountLabel.stringValue == "1 results")
+        #expect(sut.resultCountLabel.isHidden == false)
+        guard let collectionView = extractCollectionView(from: sut) else {
+            Issue.record("collectionView not accessible via reflection")
+            return
+        }
+        #expect(collectionView.diffableDataSource.snapshot().itemIdentifiers.map(\.id) == [10])
+        #expect(searchScheduler.scheduledActions.isEmpty)
     }
 
     // MARK: - 编辑模式删除 / 文件夹重命名（通过 collectionView 回调）

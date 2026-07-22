@@ -149,12 +149,16 @@ final class MockHotkeyManager: HotkeyManaging, @unchecked Sendable {
 
 // MARK: - MockScheduler
 
-final class MockScheduler: Scheduler, @unchecked Sendable {
-    var scheduledActions: [(interval: TimeInterval, action: @Sendable () -> Void)] = []
+@MainActor
+final class MockScheduler: Scheduler {
+    var scheduledActions: [(interval: TimeInterval, action: @MainActor @Sendable () -> Void)] = []
     private(set) var cancelCallCount = 0
     private var currentTime: TimeInterval = 0
 
-    func schedule(after interval: TimeInterval, action: @escaping @Sendable () -> Void) {
+    func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
         scheduledActions.append((currentTime + interval, action))
     }
 
@@ -171,6 +175,8 @@ final class MockScheduler: Scheduler, @unchecked Sendable {
     }
 
     func fireLatest() {
-        scheduledActions.last?.action()
+        let action = scheduledActions.last?.action
+        scheduledActions.removeAll()
+        action?()
     }
 }

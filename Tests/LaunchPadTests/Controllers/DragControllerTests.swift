@@ -13,6 +13,7 @@ private final class SendableState: @unchecked Sendable {
 
 // MARK: - State Machine Tests
 
+@MainActor
 @Suite("DragController state machine")
 struct DragControllerTests {
 
@@ -254,6 +255,7 @@ struct DragControllerTests {
 
 // MARK: - Long Press Detection Tests
 
+@MainActor
 @Suite("DragController long press detection")
 struct DragControllerLongPressTests {
 
@@ -357,6 +359,7 @@ struct DragControllerLongPressTests {
 
 // MARK: - Hover Timer Tests
 
+@MainActor
 @Suite("DragController hover timers")
 struct DragControllerHoverTimerTests {
 
@@ -538,6 +541,7 @@ struct DragControllerHoverTimerTests {
 
 // MARK: - Drop + Reorder Tests
 
+@MainActor
 @Suite("DragController Drop + Reorder")
 struct DragControllerDropTests {
 
