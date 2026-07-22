@@ -482,3 +482,54 @@ the approved plan or task-specific test reports.
 - Verification: the empty event preserves exact object identity in the focused
   and aggregate gates; the reviewer confirmed the shared guard makes this an
   acceptable boundary rather than a coverage downgrade.
+
+## Decision 025: Commit pure layout mutations through a validated candidate
+
+- Status: adopted during Task 11 implementation and independent review
+- Evidence: every public layout intent must leave the in-memory state unchanged
+  on failure. Mutating `self` before a later helper or postcondition throws would
+  expose a partially applied order even though persistence is expected to roll
+  back. The Task 11 reviewer also found that the initial tests missed the
+  two-item-folder owning-anchor branch and exact/zero-existing page boundaries.
+- Decision: `apply` validates the original state, applies the intent to a local
+  candidate, validates the resulting candidate, and assigns back to `self` only
+  after both stages succeed. Keep `applyValidated` as the narrow internal path
+  for already validated persistence work. Add exact regression coverage for
+  owning-folder before/after dissolution and all page-count relations. Prove the
+  new assertions with temporary production mutations, then restore production
+  before committing the test-only review fix. Do not add a production test seam
+  solely to force an otherwise unreachable post-validation throw.
+- Impact: public mutations provide strong exception safety without widening the
+  domain API; folder dissolution and page reconstruction now have branch-complete
+  behavioral evidence. The remaining testability limitation stays visible as a
+  review Minor instead of becoming permanent production complexity.
+- Verification: the initial `19/19` suite passed; three temporary mutations
+  produced `2`, `1`, and `2` issues respectively; the restored cumulative suite
+  passed `21/21`, and the review fix commit changed only
+  `LayoutDomainStateTests.swift`.
+
+## Decision 026: Make SQLite success explicit and test the transaction machine
+
+- Status: adopted before Task 12 implementation
+- Evidence: the current storage layer shares one SQLite connection across two
+  queues, ignores BEGIN/COMMIT/ROLLBACK and bind return codes, treats terminal
+  query errors as normal end-of-data, and accepts writes that affect zero rows.
+  The Task 12 preflight also showed that the plan's four proposed tests do not
+  exercise driver prepare/bind/step/changes injection, immediate mode, or the
+  autocommit branch after SQLite has already rolled back a transaction.
+- Decision: serialize every public read, write, close, and transaction on one
+  non-reentrant `databaseQueue`; transaction bodies may call only private helpers
+  that receive the local nonoptional connection. Require exactly one affected
+  row for update/delete/reorder and successful insert/upsert statements, so a
+  stale ID is an explicit error. Test every driver fault family, both transaction
+  modes, terminal query errors, rollback failure invalidation, and the
+  already-autocommit path. Run every RED and GREEN command through the shared
+  watchdog rather than the plan's unwrapped command examples.
+- Impact: missing records cannot masquerade as successful persistence, concurrent
+  access cannot race one connection, and rollback ambiguity has one documented
+  invalidation boundary. The stricter stale-ID behavior is intentional and will
+  be consumed by the atomic layout writer instead of being hidden by legacy CRUD.
+- Verification: Task 12 must include exact stale-ID assertions, fault-injection
+  assertions for each SQLite operation family, immediate/deferred transaction
+  evidence, all existing null-field suites, and a static scan proving no old
+  read/write queue or public-method transaction reentry remains.
