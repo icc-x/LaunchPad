@@ -533,3 +533,49 @@ the approved plan or task-specific test reports.
   assertions for each SQLite operation family, immediate/deferred transaction
   evidence, all existing null-field suites, and a static scan proving no old
   read/write queue or public-method transaction reentry remains.
+
+## Decision 027: Assert persisted values, not incidental SQLite row order
+
+- Status: adopted during Task 12 formal review
+- Evidence: the initial stale-reorder test compared only fetched item IDs. If the
+  transaction wrapper were removed, the first update could set the second row's
+  ordering to zero before a later stale ID failed. Both rows would then share an
+  ordering value, and SQLite could still return them in rowid order, making the
+  ID-only assertion pass despite a missing rollback. The bind fault test likewise
+  checked the returned error but not whether its autoclosure was evaluated.
+- Decision: after a failed reorder, locate both rows by stable ID and assert each
+  exact persisted ordering. Test driver bind directly with a side-effect counter
+  and require that a fault-injected result leaves the counter at zero. Prove both
+  assertions with temporary production mutations, restore production, and commit
+  only the test changes.
+- Impact: rollback and lazy fault injection are tested as observable state
+  contracts rather than inferred from nondeterministic row order or error type.
+- Verification: removing the reorder transaction produced the exact failure
+  `second.ordering 0 != 1`; making bind eager produced `evaluationCount 1 != 0`.
+  Restored production passed the controller's `55/55` StorageManager gate, and
+  formal re-review reported Critical/Important/Minor counts of `0/0/0`.
+
+## Decision 028: Expand Task 13 around the real eighth storage entry point
+
+- Status: adopted from Task 13 preflight under autonomous execution authority
+- Evidence: Task 13 adds public `apply`, invalidating Task 12's test claim that all
+  seven public storage APIs enter `databaseQueue`. The generated brief also omits
+  Decision 012's corrupt-topology, five unsupported-intent zero-write, and
+  `updatePageOrdering` bind/changes cases, and its example commands bypass the
+  mandatory shared watchdog.
+- Decision: add `StorageManagerTests.swift` to the Task 13 commit whitelist and
+  upgrade the queue observer to cover exactly eight public APIs, including one
+  successful move apply. Treat the corrupt persisted topology matrix, all five
+  non-move intents with zero layout SQL writes and unchanged full snapshots, and
+  page-ordering bind/changes faults as binding Task 13 requirements. Assert exact
+  domain errors for stale source, stale anchor, self drop, and invalid capacity.
+  Wrap every focused command with `scripts/run-with-timeout.sh 120 --`.
+- Impact: Task 13 cannot add an unobserved queue entry, reject unsupported work
+  after touching SQLite, or leave a page-ordering statement fault untested. The
+  scope expands by one existing test file but does not move Task 14 folder writes
+  or UI integration forward.
+- Verification: the Task 13 cumulative review must show only
+  `StorageManager.swift`, `StorageManagerLayoutMutationTests.swift`, and
+  `StorageManagerTests.swift`; the focused run must dynamically cover the eighth
+  queue entry, exact zero-write counters for all unsupported intents, complete
+  before/after snapshots, and each added fault branch.
