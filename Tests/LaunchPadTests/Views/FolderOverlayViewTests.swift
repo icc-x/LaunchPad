@@ -177,17 +177,26 @@ final class FolderOverlayViewTests: XCTestCase {
 
     // MARK: - Mouse Down Outside
 
-    func testMouseDown_outsidePanel_closesFolder() {
+    func testMouseDown_outsidePanel_closesFolder() throws {
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
         )
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
+        overlay.layoutSubtreeIfNeeded()
+        let panel = try XCTUnwrap(findView(NSVisualEffectView.self, in: overlay))
+        let outsidePoint = NSPoint(
+            x: panel.frame.minX - 1,
+            y: panel.frame.midY
+        )
+        XCTAssertFalse(panel.frame.contains(outsidePoint))
+        overlay.closeFolderCompletionRunner = { $0() }
+        var closeCount = 0
+        overlay.onClosed = { closeCount += 1 }
 
-        // Simulate mouse down outside the panel
-        let event = NSEvent.mouseEvent(
+        let event = try XCTUnwrap(NSEvent.mouseEvent(
             with: .leftMouseDown,
-            location: NSPoint(x: 10, y: 10), // Far from center panel
+            location: outsidePoint,
             modifierFlags: [],
             timestamp: 0,
             windowNumber: 0,
@@ -195,18 +204,12 @@ final class FolderOverlayViewTests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 0
-        )
-        if let event {
-            overlay.mouseDown(with: event)
-        }
+        ))
 
-        // Should trigger closeFolder
-        let expectation = XCTestExpectation(description: "Close on outside click")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) {
-            XCTAssertTrue(self.overlay.isHidden)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 1.0)
+        overlay.mouseDown(with: event)
+
+        XCTAssertTrue(overlay.isHidden)
+        XCTAssertEqual(closeCount, 1)
     }
 
     // MARK: - Open with many items (pagination)
