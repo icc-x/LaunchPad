@@ -721,5 +721,75 @@ struct AppGridInteractionCoordinatorTests {
         _ = grid.selectItem(id: 999)
         #expect(events.isEmpty)
     }
+
+    @Test("macOS 26 reload display metrics selection cycle converges under one second")
+    func appKitReloadDisplaySelectionCycleConverges() throws {
+        let clock = ContinuousClock()
+        let start = clock.now
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 800, height: 620),
+            styleMask: [.borderless],
+            backing: .buffered,
+            defer: false
+        )
+        let scrollView = NSScrollView(frame: window.contentView!.bounds)
+        let grid = AppGridCollectionView(frame: scrollView.contentView.bounds)
+        let coordinator = AppGridInteractionCoordinator(
+            dragController: DragController(scheduler: MockScheduler()),
+            pasteboardUUIDReader: { _ in nil }
+        )
+        coordinator.attach(to: grid)
+        scrollView.documentView = grid
+        window.contentView = scrollView
+        window.orderFront(nil)
+        defer {
+            coordinator.detach()
+            window.orderOut(nil)
+        }
+
+        let app = TestDataFactory.makePageItem(id: 1, type: .app)
+        let folder = TestDataFactory.makePageItem(
+            id: 2,
+            type: .group,
+            group: TestDataFactory.makeGroupInfo(id: 2)
+        )
+        grid.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 620)
+        ))
+        grid.reload(
+            pages: [[app, folder]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        grid.layoutSubtreeIfNeeded()
+        let updatedMetrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 800, height: 496)
+        )
+        grid.applyGridMetrics(updatedMetrics)
+        grid.layoutSubtreeIfNeeded()
+        let appCell = try #require(
+            grid.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+        )
+        let folderCell = try #require(
+            grid.item(at: IndexPath(item: 1, section: 0)) as? FolderCell
+        )
+        #expect(appCell.configuredIconSize == updatedMetrics.iconSize)
+        #expect(folderCell.configuredIconSize == updatedMetrics.iconSize)
+        grid.delegate?.collectionView?(
+            grid,
+            didSelectItemsAt: [IndexPath(item: 0, section: 0)]
+        )
+        _ = grid.selectItem(id: nil)
+        grid.reload(
+            pages: [[app, folder]], searchResults: nil, searchQuery: nil,
+            animatingDifferences: false, animateEntrance: false
+        )
+        grid.layoutSubtreeIfNeeded()
+        grid.delegate?.collectionView?(
+            grid,
+            didSelectItemsAt: [IndexPath(item: 1, section: 0)]
+        )
+
+        #expect(clock.now - start < .seconds(1))
+    }
 }
 #endif
