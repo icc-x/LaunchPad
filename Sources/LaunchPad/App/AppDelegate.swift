@@ -271,12 +271,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in
             guard let self else { return event }
+            guard event.type == .keyDown else { return event }
+
             // 提取非 Sendable NSEvent 的数据，避免跨 actor 边界发送
             let keyCode = event.keyCode
             let characters = event.characters
             // 本地事件监视器在主线程运行，此处通过 MainActor.assumeIsolated 安全访问 @MainActor 状态
-            let suppress = MainActor.assumeIsolated { () -> Bool in
-                guard self.lifecycle.state == .visible else { return false }
+            let handled = MainActor.assumeIsolated { () -> Bool in
+                guard self.lifecycle.state == .visible,
+                      let viewController = self.viewController,
+                      viewController.isViewLoaded else {
+                    return false
+                }
 
                 let key: KeyboardNavigator.Key? = switch keyCode {
                 case 53:  .escape
@@ -291,13 +297,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 }
 
                 if let key {
-                    _ = self.viewController?.handleKeyEvent(key)
-                } else if let chars = characters {
-                    _ = self.viewController?.handleCharacterInput(chars)
+                    return viewController.handleKeyEvent(key) != .ignored
                 }
-                return true
+                guard let characters, !characters.isEmpty else { return false }
+                return viewController.handleCharacterInput(characters) != .ignored
             }
-            return suppress ? nil : event
+            return handled ? nil : event
         }
         hotkeyManager.registerLocalMonitor()
     }

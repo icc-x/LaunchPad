@@ -119,6 +119,41 @@ struct AppDelegateTests {
         )!
     }
 
+    private func flagsChangedEvent() -> NSEvent {
+        NSEvent.keyEvent(
+            with: .flagsChanged,
+            location: .zero,
+            modifierFlags: [.option],
+            timestamp: 0,
+            windowNumber: 0,
+            context: nil,
+            characters: "",
+            charactersIgnoringModifiers: "",
+            isARepeat: false,
+            keyCode: 58
+        )!
+    }
+
+    private func visibleLifecycle() -> WindowLifecycle {
+        let lifecycle = WindowLifecycle()
+        lifecycle.handleToggle()
+        lifecycle.openAnimationDidFinish()
+        return lifecycle
+    }
+
+    private func prepareKeyboardMonitor(
+        _ sut: AppDelegate,
+        lifecycle: WindowLifecycle,
+        viewController: LaunchPadViewController?
+    ) -> HotkeyManager {
+        let manager = makeIsolatedHotkeyManager()
+        sut.hotkeyManager = manager
+        sut.lifecycle = lifecycle
+        sut.viewController = viewController
+        sut.setupHotkey()
+        return manager
+    }
+
     private func pageItem() -> PageItem {
         PageItem(
             id: 1,
@@ -419,35 +454,147 @@ struct AppDelegateTests {
         #expect(lifecycle.state == .opening)
     }
 
-    @Test("onKeyDown：窗口不可见时直接返回事件")
-    func onKeyDown_notVisible() throws {
+    @Test("visible idle 的已处理特殊键被吞")
+    func localMonitorVisibleHandledSpecialKeyReturnsNil() throws {
         let sut = makeDelegate()
-        sut.hotkeyManager = makeIsolatedHotkeyManager()
-        sut.setupHotkey()
-        sut.lifecycle = WindowLifecycle() // 默认 hidden
-        sut.viewController = try makeViewController()
+        let viewController = try makeViewController()
+        _ = viewController.view
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
 
-        let result = sut.hotkeyManager.onKeyDown?(keyEvent(keyCode: 53))
-        #expect(result != nil)
+        let handledKeyCodes: [UInt16] = [53, 36, 126, 125, 123, 124, 48]
+        for keyCode in handledKeyCodes {
+            #expect(manager.localMonitorHandler?(keyEvent(keyCode: keyCode)) == nil)
+        }
     }
 
-    @Test("onKeyDown：窗口可见时覆盖所有按键分支")
-    func onKeyDown_visible_allKeys() throws {
+    @Test("visible search 的 ignored 方向键放行原事件")
+    func localMonitorVisibleIgnoredSpecialKeyReturnsOriginal() throws {
         let sut = makeDelegate()
-        sut.hotkeyManager = makeIsolatedHotkeyManager()
-        sut.setupHotkey()
+        let viewController = try makeViewController()
+        _ = viewController.view
+        viewController.keyboardNavigator.mode = .search(query: "sa")
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 123)
 
-        let lifecycle = WindowLifecycle()
-        lifecycle.handleToggle()          // hidden -> opening
-        lifecycle.openAnimationDidFinish() // opening -> visible
-        sut.lifecycle = lifecycle
-        sut.viewController = try makeViewController()
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
 
-        for kc in [53, 36, 126, 125, 123, 124, 48, 51] {
-            _ = sut.hotkeyManager.onKeyDown?(keyEvent(keyCode: UInt16(kc)))
-        }
-        // 默认分支：字符输入
-        _ = sut.hotkeyManager.onKeyDown?(keyEvent(keyCode: 0, characters: "a"))
+    @Test("visible idle 的 ignored Delete 放行原事件")
+    func localMonitorVisibleIdleDeleteReturnsOriginal() throws {
+        let sut = makeDelegate()
+        let viewController = try makeViewController()
+        _ = viewController.view
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 51)
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("visible 连续字符建立查询且两个事件均被吞")
+    func localMonitorVisibleCharactersBuildSearchAndReturnNil() throws {
+        let sut = makeDelegate()
+        let viewController = try makeViewController()
+        _ = viewController.view
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
+
+        #expect(manager.localMonitorHandler?(keyEvent(keyCode: 1, characters: "s")) == nil)
+        #expect(manager.localMonitorHandler?(keyEvent(keyCode: 0, characters: "a")) == nil)
+        #expect(viewController.keyboardNavigator.mode == .search(query: "sa"))
+    }
+
+    @Test("flagsChanged 放行原事件")
+    func localMonitorFlagsChangedReturnsOriginal() throws {
+        let sut = makeDelegate()
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: try makeViewController()
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = flagsChangedEvent()
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("未知且无字符的 keyDown 放行原事件")
+    func localMonitorUnknownEmptyCharacterReturnsOriginal() throws {
+        let sut = makeDelegate()
+        let viewController = try makeViewController()
+        _ = viewController.view
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 110)
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("hidden 生命周期放行原事件")
+    func localMonitorHiddenReturnsOriginal() throws {
+        let sut = makeDelegate()
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: WindowLifecycle(),
+            viewController: try makeViewController()
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 53)
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("缺少 view controller 时放行原事件")
+    func localMonitorMissingViewControllerReturnsOriginal() {
+        let sut = makeDelegate()
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: nil
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 53)
+
+        #expect(manager.localMonitorHandler?(event) === event)
+    }
+
+    @Test("存在但未加载的 view controller 放行且不强制加载")
+    func localMonitorUnloadedViewControllerReturnsOriginal() throws {
+        let sut = makeDelegate()
+        let viewController = try makeViewController()
+        let manager = prepareKeyboardMonitor(
+            sut,
+            lifecycle: visibleLifecycle(),
+            viewController: viewController
+        )
+        defer { manager.unregisterLocalMonitor() }
+        let event = keyEvent(keyCode: 125)
+
+        #expect(viewController.isViewLoaded == false)
+        #expect(manager.localMonitorHandler?(event) === event)
+        #expect(viewController.isViewLoaded == false)
     }
 
     // MARK: - performInitialScan
@@ -638,20 +785,20 @@ struct AppDelegateTests {
 
     @Test("setupHotkey onKeyDown: 闭包内 weak self 已 nil 时 guard else 分支（覆盖 L260）")
     func setupHotkey_onKeyDown_weakSelfNil_guardElse() {
-        // 触发 AppDelegate.setupHotkey 中 onKeyDown 闭包内 `guard let self else { return event }` 的 else 分支
-        // 策略：让 AppDelegate 在测试中能被释放，然后调用捕获的 onKeyDown
+        weak var weakDelegate: AppDelegate?
         var sut: AppDelegate? = makeDelegate()
         let hm = makeIsolatedHotkeyManager()
+        weakDelegate = sut
         sut?.hotkeyManager = hm
         sut?.setupHotkey()
-        // 释放 sut
+        defer { hm.unregisterLocalMonitor() }
+
         sut = nil
-        // 现在 hotkeyManager 的 onKeyDown 闭包中 [weak self] 已为 nil
+        #expect(weakDelegate == nil)
+
         let event = keyEvent(keyCode: 0)
-        let result = hm.onKeyDown?(event)
-        // guard else 分支应返回 event 原值
-        #expect(result != nil)
-        #expect(result === event)
+
+        #expect(hm.localMonitorHandler?(event) === event)
     }
 }
 #endif
