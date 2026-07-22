@@ -856,6 +856,24 @@ struct StorageManagerSQLiteBoundaryTests {
         }
     }
 
+    @Test("driver bind fault 短路底层表达式")
+    func driverBindFaultDoesNotEvaluateOperation() {
+        let script = SQLiteFaultScript()
+        let point = SQLiteFaultPoint.bind(.insertItem, index: 1)
+        script.failNext(point, code: SQLITE_RANGE)
+        let driver = SQLiteDriver(faultInjector: script.result(for:))
+        var evaluationCount = 0
+
+        let code = driver.bind({
+            evaluationCount += 1
+            return SQLITE_OK
+        }(), kind: .insertItem, index: 1)
+
+        #expect(code == SQLITE_RANGE)
+        #expect(evaluationCount == 0)
+        #expect(script.invocationCount(for: point) == 1)
+    }
+
     @Test("metadata helper 故障精确映射并回滚")
     func metadataFaultsMapAndRollback() throws {
         let insertScript = SQLiteFaultScript()
@@ -987,8 +1005,12 @@ struct StorageManagerSQLiteBoundaryTests {
                 orderedIds: [secondID, 999]
             )
         }
-        let storedIDs = try sut.fetchAllItems(parentId: pageID).map(\.id)
-        #expect(storedIDs == [firstID, secondID])
+        let storedItems = try sut.fetchAllItems(parentId: pageID)
+        #expect(storedItems.map(\.id) == [firstID, secondID])
+        let storedFirst = try #require(storedItems.first { $0.id == firstID })
+        let storedSecond = try #require(storedItems.first { $0.id == secondID })
+        #expect(storedFirst.ordering == 0)
+        #expect(storedSecond.ordering == 1)
     }
 
     @Test("全部 7 个 public API 精确进入同一 databaseQueue")
