@@ -99,10 +99,12 @@ private final class ConcurrentStorageAccessRecorder: @unchecked Sendable {
         lock.unlock()
     }
 
-    func recordQueueObservation(_ isOnDatabaseQueue: Bool) {
+    @discardableResult
+    func recordQueueObservation(_ isOnDatabaseQueue: Bool) -> Int {
         lock.lock()
+        defer { lock.unlock() }
         queueObservations.append(isOnDatabaseQueue)
-        lock.unlock()
+        return queueObservations.count
     }
 
     var snapshot: Snapshot {
@@ -1134,6 +1136,105 @@ struct StorageManagerSQLiteBoundaryTests {
         )
         let writeCount = 24
         let readCount = 24
+        let probeRecorder = ConcurrentStorageAccessRecorder()
+        let firstEntry = DispatchSemaphore(value: 0)
+        let releaseFirstEntry = DispatchSemaphore(value: 0)
+        let secondEntry = DispatchSemaphore(value: 0)
+        let releaseSecondEntry = DispatchSemaphore(value: 0)
+        let secondOperationStarted = DispatchSemaphore(value: 0)
+        let firstOperationFinished = DispatchSemaphore(value: 0)
+        let probeFinished = DispatchGroup()
+        let probeQueue = DispatchQueue(
+            label: "com.launchpad.tests.storage-serialization-probe",
+            qos: .userInitiated,
+            attributes: .concurrent
+        )
+        func probeDeadline() -> DispatchTime {
+            DispatchTime.now() + .seconds(5)
+        }
+        sut.databaseAccessObserver = { isOnDatabaseQueue in
+            let ordinal = probeRecorder.recordQueueObservation(isOnDatabaseQueue)
+            switch ordinal {
+            case 1:
+                firstEntry.signal()
+                releaseFirstEntry.wait()
+            case 2:
+                secondEntry.signal()
+                releaseSecondEntry.wait()
+            default:
+                break
+            }
+        }
+
+        probeFinished.enter()
+        probeQueue.async {
+            defer {
+                probeRecorder.recordCompletion()
+                firstOperationFinished.signal()
+                probeFinished.leave()
+            }
+            do {
+                _ = try sut.fetchAllItems(parentId: pageID)
+            } catch {
+                probeRecorder.record(error: error)
+            }
+        }
+
+        let firstEntryResult = firstEntry.wait(timeout: probeDeadline())
+        #expect(firstEntryResult == .success)
+        guard firstEntryResult == .success else {
+            releaseFirstEntry.signal()
+            releaseSecondEntry.signal()
+            _ = probeFinished.wait(timeout: probeDeadline())
+            return
+        }
+
+        probeFinished.enter()
+        probeQueue.async {
+            secondOperationStarted.signal()
+            defer {
+                probeRecorder.recordCompletion()
+                probeFinished.leave()
+            }
+            do {
+                _ = try sut.fetchAllItems(parentId: pageID)
+            } catch {
+                probeRecorder.record(error: error)
+            }
+        }
+
+        let secondOperationStartedResult = secondOperationStarted.wait(
+            timeout: probeDeadline()
+        )
+        #expect(secondOperationStartedResult == .success)
+        guard secondOperationStartedResult == .success else {
+            releaseFirstEntry.signal()
+            releaseSecondEntry.signal()
+            _ = probeFinished.wait(timeout: probeDeadline())
+            return
+        }
+
+        let secondEnteredBeforeRelease = secondEntry.wait(
+            timeout: DispatchTime.now() + .milliseconds(250)
+        ) == .success
+        releaseFirstEntry.signal()
+        let firstOperationFinishedResult = firstOperationFinished.wait(
+            timeout: probeDeadline()
+        )
+        #expect(firstOperationFinishedResult == .success)
+        releaseSecondEntry.signal()
+        let probeFinishedResult = probeFinished.wait(timeout: probeDeadline())
+        #expect(probeFinishedResult == .success)
+        let probeSnapshot = probeRecorder.snapshot
+        #expect(probeSnapshot.completedOperationCount == 2)
+        #expect(probeSnapshot.errors.isEmpty)
+        #expect(probeSnapshot.queueObservations.count == 2)
+        #expect(probeSnapshot.queueObservations.allSatisfy { $0 })
+        #expect(secondEnteredBeforeRelease == false)
+        guard !secondEnteredBeforeRelease else {
+            return
+        }
+
         let items = (0..<writeCount).map { index in
             TestDataFactory.makePageItem(
                 uuid: "concurrency-item-\(index)",
@@ -1151,7 +1252,6 @@ struct StorageManagerSQLiteBoundaryTests {
             recorder.recordQueueObservation($0)
         }
 
-        let ready = DispatchGroup()
         let finished = DispatchGroup()
         let startGate = DispatchSemaphore(value: 0)
         let workerQueue = DispatchQueue(
@@ -1162,10 +1262,8 @@ struct StorageManagerSQLiteBoundaryTests {
         let operationCount = writeCount + readCount
 
         func schedule(_ operation: @escaping @Sendable () throws -> Void) {
-            ready.enter()
             finished.enter()
             workerQueue.async {
-                ready.leave()
                 startGate.wait()
                 defer {
                     recorder.recordCompletion()
@@ -1190,11 +1288,16 @@ struct StorageManagerSQLiteBoundaryTests {
             }
         }
 
-        ready.wait()
         for _ in 0..<operationCount {
             startGate.signal()
         }
-        finished.wait()
+        let workloadFinishedResult = finished.wait(
+            timeout: DispatchTime.now() + .seconds(5)
+        )
+        #expect(workloadFinishedResult == .success)
+        guard workloadFinishedResult == .success else {
+            return
+        }
 
         let concurrencySnapshot = recorder.snapshot
         #expect(concurrencySnapshot.completedOperationCount == operationCount)
