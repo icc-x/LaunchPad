@@ -425,3 +425,60 @@ the approved plan or task-specific test reports.
   `c3ae65d` made both old behavior and a live-manager false positive impossible.
   The controller reran `50/50`, and re-review reported
   Critical/Important/Minor counts of `0/0/0`.
+
+## Decision 022: Prove suppression from every mapped action outcome
+
+- Status: adopted before Task 9 implementation
+- Evidence: `KeyboardNavigator` maps eight key codes, but the resulting action
+  depends on mode. In idle, seven mappings are handled while Delete is
+  `.ignored`; in search, directions and Tab are ignored; in edit, only Escape is
+  handled. The old AppDelegate tests called the callback directly, asserted only
+  non-nil or nothing, and used a partially isolated manager in the proposed new
+  helper.
+- Decision: exercise the real `localMonitorHandler` chain with the existing fully
+  isolated hotkey fixture. Test all seven handled idle mappings as suppressed,
+  and use idle Delete plus search-left as explicit mapped-but-ignored identity
+  cases. Replace the two old weak tests instead of retaining duplicates, and
+  upgrade the released-delegate case to the same monitor chain.
+- Impact: event suppression is verified from semantic action results rather than
+  switch membership, with no accessibility query, event tap, real monitor,
+  workspace open, or System Settings side effect.
+- Verification: the exact entry matrix passed `10/10`; the controller ran the
+  four related suites with `228/228` passing; independent review reconciled the
+  complete key/mode outcome table and reported no findings.
+
+## Decision 023: Reject non-key events before reading key-only AppKit properties
+
+- Status: adopted from Task 9 RED crash evidence
+- Evidence: the approved pseudocode captured `event.characters` before checking
+  `event.type`. A real `.flagsChanged` fixture raised
+  `NSInternalInconsistencyException` with `Invalid message sent to FlagsChanged`
+  in `-[NSEvent characters]` and terminated the test process with signal 6.
+- Decision: after the weak-self guard, inspect only `event.type` and immediately
+  return the original event unless it is `.keyDown`. Read `keyCode` and
+  `characters` only on the keyDown branch, then enter the MainActor lifecycle,
+  controller, and action routing logic. Do not catch the Objective-C exception or
+  emulate flags events with a test seam.
+- Impact: flags changes and any future non-keyDown local events are safe identity
+  pass-throughs; keyDown suppression remains exactly `Action != .ignored`.
+- Verification: the same flagsChanged test passed without a signal after the
+  change; the combined `228/228` gate and independent review confirmed the guard
+  ordering and the monitor's subscribed event types.
+
+## Decision 024: Avoid an unstable nil-characters event fixture
+
+- Status: adopted during Task 9 branch review
+- Evidence: public `NSEvent.keyEvent` construction reliably produces empty and
+  nonempty character strings but does not provide a stable keyDown fixture whose
+  `characters` property is nil. Production handles nil and empty in the same
+  `guard let characters, !characters.isEmpty` branch.
+- Decision: use a loaded-controller, unknown-key event with an empty string as
+  the dynamic guard-branch proof and inspect the nil arm statically. Do not add a
+  production-only injection seam or rely on an undocumented event-construction
+  trick solely to manufacture nil.
+- Impact: the test remains deterministic and exercises the actual AppKit event
+  path without expanding production API surface; both nil and empty still have
+  one implementation branch.
+- Verification: the empty event preserves exact object identity in the focused
+  and aggregate gates; the reviewer confirmed the shared guard makes this an
+  acceptable boundary rather than a coverage downgrade.
