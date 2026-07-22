@@ -56,14 +56,18 @@ public class LaunchPadViewController: NSViewController {
     /// 窗口关闭回调 — 由 AppDelegate/WindowController 注入，ESC 关闭窗口时调用
     public var onClose: (() -> Void)?
 
-    /// 当前键盘选中的图标索引（nil = 未选中）
-    public private(set) var selectedIndex: Int?
+    var viewportSizeProvider: (() -> CGSize)?
+    var projectedLayoutDidReload: (() -> Void)?
 
     // MARK: - State
 
     private var allPages: [PageItem] = []
     private var itemsByPage: [Int64: [PageItem]] = [:]
-    private var currentSearchQuery: String = ""
+    private(set) var gridMetrics: GridMetrics?
+    private(set) var visualPages: [[PageItem]] = [[]]
+    public private(set) var selectedItemID: Int64?
+    private(set) var currentSearchResults: [PageItem] = []
+    private(set) var currentSearchQuery: String = ""
     private var pageControlViewModel = PageControlViewModel()
     private var searchDebouncer: SearchDebouncer!
     private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
@@ -81,6 +85,27 @@ public class LaunchPadViewController: NSViewController {
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { completion(results) }
             }
+        }
+    }
+
+    var currentVisualPage: Int { pageControlViewModel.currentPage }
+    var pagingPageCount: Int { scrollView?.pagingPageCount ?? 1 }
+    var gridSnapshot: AppGridCollectionView.Snapshot {
+        collectionView.diffableDataSource.snapshot()
+    }
+    var selectedItemIndexPath: IndexPath? {
+        guard let selectedItemID,
+              let item = gridSnapshot.itemIdentifiers.first(where: {
+                  $0.id == selectedItemID
+              }) else { return nil }
+        return collectionView.diffableDataSource.indexPath(for: item)
+    }
+
+    @available(*, deprecated, message: "Use selectedItemID")
+    public var selectedIndex: Int? {
+        guard isViewLoaded, let selectedItemID else { return nil }
+        return gridSnapshot.itemIdentifiers.firstIndex {
+            $0.id == selectedItemID
         }
     }
 
@@ -197,8 +222,6 @@ public class LaunchPadViewController: NSViewController {
             folderOverlay.bottomAnchor.constraint(equalTo: view.bottomAnchor),
         ])
 
-        // Configure grid layout
-        collectionView.updateLayout(screenWidth: view.bounds.width > 0 ? view.bounds.width : 1440)
     }
 
     override public func viewDidLoad() {
@@ -210,7 +233,14 @@ public class LaunchPadViewController: NSViewController {
 
     override public func viewDidLayout() {
         super.viewDidLayout()
-        collectionView.updateLayout(screenWidth: view.bounds.width)
+        let size = viewportSizeProvider?() ?? scrollView.contentView.bounds.size
+        guard size.width.isFinite, size.height.isFinite,
+              size.width > 0, size.height > 0 else { return }
+        let metrics = GridLayoutCalculator.calculate(viewportSize: size)
+        guard metrics != gridMetrics else { return }
+        gridMetrics = metrics
+        collectionView.applyGridMetrics(metrics)
+        reloadProjectedLayout(preserving: selectedItemID)
     }
 
     // MARK: - Setup
@@ -225,8 +255,17 @@ public class LaunchPadViewController: NSViewController {
         }
 
         // Collection view activation
+        gridInteractionCoordinator?.onSelectionChanged = { [weak self] item in
+            self?.selectedItemID = item.id
+        }
         gridInteractionCoordinator?.onItemActivated = { [weak self] item in
             self?.handleItemSelection(item)
+        }
+
+        scrollView.onPageChanged = { [weak self] page in
+            guard let self else { return }
+            pageControlViewModel.currentPage = page
+            pageControl.update()
         }
 
         // 编辑模式删除
@@ -312,17 +351,7 @@ public class LaunchPadViewController: NSViewController {
             let layout = try LayoutPersistence.loadLayout(reader: storage)
             allPages = layout.pages
             itemsByPage = layout.itemsByPage
-
-            // 使用显式分支替代 ?? []，避免 LLVM 误报。
-            // 使用 compactMap 替代 if let：LayoutPersistence.loadLayout 保证对 allPages 中每个 page.id
-            // 都填充 key（即使是空数组），因此 compactMap 不会跳过任何 page。
-            let allItems: [[PageItem]] = allPages.compactMap { page in
-                itemsByPage[page.id]
-            }
-
-            pageControlViewModel.configure(totalPages: allPages.count)
-            pageControl.update()
-            collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
+            reloadProjectedLayout(preserving: selectedItemID)
         } catch {
             NSLog("[LaunchPadViewController] Failed to load data: \(error)")
         }
@@ -336,14 +365,8 @@ public class LaunchPadViewController: NSViewController {
         if query.isEmpty {
             emptyStateView.hide()
             resultCountLabel.isHidden = true
-            // 使用 compactMap 替代 if let：LayoutPersistence.loadLayout 保证对 allPages 中每个 page.id
-            // 都填充 key（即使是空数组），因此 compactMap 不会跳过任何 page。
-            let allItems: [[PageItem]] = allPages.compactMap { page in
-                itemsByPage[page.id]
-            }
-            pageControlViewModel.isSearchActive = false
-            pageControl.update()
-            collectionView.reload(pages: allItems, searchResults: nil, searchQuery: nil)
+            currentSearchResults = []
+            reloadProjectedLayout(preserving: selectedItemID)
         } else {
             // 在主线程拷贝数据，避免 @MainActor 属性跨线程访问
             // 同样使用 compactMap（LayoutPersistence 已保证所有 page.id 都有 key）
@@ -370,27 +393,64 @@ public class LaunchPadViewController: NSViewController {
     /// 应用搜索结果到 UI（抽出便于同步测试，覆盖过期守卫与结果展示）
     func applySearchResults(_ results: [PageItem], query: String, expectedQuery: String) {
         guard currentSearchQuery == expectedQuery else { return }
+        currentSearchResults = results
         if results.isEmpty {
             emptyStateView.show()
         } else {
             emptyStateView.hide()
         }
-        pageControlViewModel.isSearchActive = true
-        pageControl.update()
         resultCountLabel.stringValue = "\(results.count) results"
         resultCountLabel.isHidden = false
-        collectionView.reload(pages: [[PageItem]](), searchResults: results, searchQuery: query)
+        reloadProjectedLayout(preserving: selectedItemID)
+    }
+
+    private func reloadProjectedLayout(preserving itemID: Int64?) {
+        guard let metrics = gridMetrics else { return }
+        let isSearchActive = !currentSearchQuery.isEmpty
+        visualPages = isSearchActive
+            ? LayoutProjection.paginate(items: currentSearchResults, metrics: metrics)
+            : LayoutProjection.project(
+                pages: allPages,
+                itemsByPage: itemsByPage,
+                metrics: metrics
+            )
+        let previousPage = pageControlViewModel.currentPage
+        collectionView.reload(
+            pages: isSearchActive ? [] : visualPages,
+            searchResults: isSearchActive ? currentSearchResults : nil,
+            searchQuery: isSearchActive ? currentSearchQuery : nil,
+            searchResultPages: isSearchActive ? visualPages : nil,
+            animatingDifferences: false,
+            reconfigureItems: true,
+            animateEntrance: false
+        )
+        let clampedPage = min(max(previousPage, 0), max(visualPages.count - 1, 0))
+        pageControlViewModel.configure(totalPages: visualPages.count)
+        pageControlViewModel.currentPage = clampedPage
+        pageControlViewModel.isSearchActive = isSearchActive
+        pageControl.update()
+        scrollView.configurePaging(
+            pageWidth: metrics.pageWidth,
+            pageCount: visualPages.count
+        )
+        scrollView.scrollToPage(clampedPage, animated: false)
+        _ = selectItem(id: itemID)
+        projectedLayoutDidReload?()
     }
 
     // MARK: - Navigation
 
-    private func navigateToPage(_ index: Int) {
-        guard index >= 0 && index < allPages.count else { return }
-        // 使用 PageScrollView.scrollToPage 获得 0.35s easeInOut 翻页动画，
-        // 而非 contentView.scrollToVisible（无动画的瞬时跳转）。
-        scrollView.scrollToPage(index)
-        pageControlViewModel.currentPage = index
+    private func synchronizePage(to page: Int, animated: Bool) {
+        guard isViewLoaded,
+              page >= 0,
+              page < visualPages.count else { return }
+        pageControlViewModel.currentPage = page
         pageControl.update()
+        scrollView.scrollToPage(page, animated: animated)
+    }
+
+    func navigateToPage(_ index: Int) {
+        synchronizePage(to: index, animated: true)
     }
 
     private func handlePageChange(_ direction: DragController.PageChangeDirection) {
@@ -407,6 +467,7 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Item Selection
 
     func handleItemSelection(_ item: PageItem) {
+        _ = selectItem(id: item.id)
         switch item.type {
         case .app:
             if let bundleId = item.app?.bundleId {
@@ -417,6 +478,16 @@ public class LaunchPadViewController: NSViewController {
         case .page:
             break
         }
+    }
+
+    @discardableResult
+    func selectItem(id: Int64?) -> IndexPath? {
+        let indexPath = collectionView.selectItem(id: id)
+        selectedItemID = indexPath == nil ? nil : id
+        if let indexPath {
+            synchronizePage(to: indexPath.section, animated: false)
+        }
+        return indexPath
     }
 
     // MARK: - Item Deletion (Edit Mode)
@@ -631,46 +702,30 @@ public class LaunchPadViewController: NSViewController {
 
     /// 方向键/Tab 移动选中位置
     private func moveSelection(_ direction: SelectionDirection) {
-        guard isViewLoaded else { return }
+        guard isViewLoaded,
+              let columns = gridMetrics?.columns,
+              columns > 0 else { return }
         let snapshot = collectionView.diffableDataSource.snapshot()
-        let totalItems = snapshot.numberOfItems
-        guard totalItems > 0 else { return }
-
-        let gridParams = GridLayoutCalculator.calculate(screenWidth: view.bounds.width)
-        let columns = gridParams.columns
-
+        let items = snapshot.itemIdentifiers
+        guard !items.isEmpty else {
+            selectedItemID = nil
+            return
+        }
+        let current = selectedItemID.flatMap { id in
+            items.firstIndex(where: { $0.id == id })
+        }
+        let candidate: Int
         switch direction {
         case .down:
-            // 首次按下选中第一个
-            if selectedIndex == nil {
-                selectedIndex = 0
-                return
-            }
-            // 上面已 guard selectedIndex != nil，因此直接强制解包
-            let next = selectedIndex! + columns
-            if next < totalItems {
-                selectedIndex = next
-            }
+            candidate = current.map { $0 + columns } ?? 0
         case .up:
-            guard let current = selectedIndex else { return }
-            let prev = current - columns
-            if prev >= 0 {
-                selectedIndex = prev
-            }
+            guard let current else { return }
+            candidate = current - columns
         case .next:
-            // Tab: 顺序下一个
-            // selectedIndex 可能是 nil（首次按 Tab），需用默认值 -1
-            let current = selectedIndex ?? -1
-            if current + 1 < totalItems {
-                selectedIndex = current + 1
-            }
+            candidate = (current ?? -1) + 1
         }
-
-        // 同步选中到 collection view
-        if let idx = selectedIndex {
-            let indexPath = IndexPath(item: idx, section: 0)
-            collectionView.selectItems(at: [indexPath], scrollPosition: [])
-        }
+        guard items.indices.contains(candidate) else { return }
+        _ = selectItem(id: items[candidate].id)
     }
 
     private enum SelectionDirection {

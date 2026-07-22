@@ -112,7 +112,9 @@ struct IntegrationTests {
 
     @Test("布局计算 — 网格参数与分页数量一致")
     func layout_gridParamsMatchPagination() {
-        let params = GridLayoutCalculator.calculate(screenWidth: 1440)
+        let params = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 620)
+        )
         #expect(params.columns == 7)
         #expect(params.rows == 5)
         #expect(params.itemsPerPage == 35)

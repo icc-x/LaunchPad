@@ -80,6 +80,31 @@ struct LaunchPadViewControllerTests {
         sut.loadData()
     }
 
+    private func loadViewWithTwoPersistedPages(
+        _ sut: LaunchPadViewController,
+        storage: MockDataStore,
+        apps: [PageItem] = TestDataFactory.makeAppItems(count: 60)
+    ) {
+        let firstPage = TestDataFactory.makePageItem(id: 101, type: .page, ordering: 0)
+        let secondPage = TestDataFactory.makePageItem(id: 102, type: .page, ordering: 1)
+        storage.pages = [firstPage, secondPage]
+        storage.childrenByPage = [
+            firstPage.id: Array(apps.prefix(30)),
+            secondPage.id: Array(apps.dropFirst(30)),
+        ]
+        _ = sut.view
+        sut.loadData()
+    }
+
+    private func layout(
+        _ sut: LaunchPadViewController,
+        viewportSize: CGSize = CGSize(width: 1440, height: 620)
+    ) {
+        sut.viewportSizeProvider = { viewportSize }
+        _ = sut.view
+        sut.viewDidLayout()
+    }
+
     // MARK: - Helpers
 
     private func makeSUT(dragScheduler: Scheduler = DispatchQueueScheduler()) -> (LaunchPadViewController, DragController, MockDataStore) {
@@ -152,25 +177,25 @@ struct LaunchPadViewControllerTests {
     @Test("down 方向键在视图未加载时安全无副作用")
     func idle_downArrow_safeWhenViewNotLoaded() {
         let (sut, _, _) = makeSUT()
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
         _ = sut.handleKeyEvent(.downArrow)
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
     }
 
     @Test("tab 键在视图未加载时安全无副作用")
     func idle_tab_safeWhenViewNotLoaded() {
         let (sut, _, _) = makeSUT()
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
         _ = sut.handleKeyEvent(.tab)
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
     }
 
     @Test("up 方向键在视图未加载时安全无副作用")
     func idle_upArrow_safeWhenViewNotLoaded() {
         let (sut, _, _) = makeSUT()
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
         _ = sut.handleKeyEvent(.upArrow)
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
     }
 
     // MARK: - handleCharacterInput
@@ -257,12 +282,12 @@ struct LaunchPadViewControllerTests {
         #expect(closeCount == 2)
     }
 
-    // MARK: - selectedIndex 初始状态
+    // MARK: - 稳定 ID 选择初始状态
 
-    @Test("selectedIndex 初始为 nil")
-    func selectedIndex_initiallyNil() {
+    @Test("selectedItemID 初始为 nil")
+    func selectedItemIDInitiallyNil() {
         let (sut, _, _) = makeSUT()
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
     }
 
     // MARK: - KeyboardNavigator 集成覆盖
@@ -376,7 +401,7 @@ struct LaunchPadViewControllerTests {
 
         sut.loadData()
 
-        #expect(sut.selectedIndex == nil)
+        #expect(sut.selectedItemID == nil)
     }
 
     @Test("loadData with multiple pages")
@@ -480,6 +505,14 @@ struct LaunchPadViewControllerTests {
         return nil
     }
 
+    private func extractScrollView(from sut: LaunchPadViewController) -> PageScrollView? {
+        let mirror = Mirror(reflecting: sut)
+        for child in mirror.children where child.label == "scrollView" {
+            return child.value as? PageScrollView
+        }
+        return nil
+    }
+
     // MARK: - 视图加载后的 executeAction 分支
 
     @Test("视图加载后 enterSearchMode 执行 searchBar.show 路径")
@@ -553,12 +586,11 @@ struct LaunchPadViewControllerTests {
         let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
+        layout(sut)
 
         _ = sut.handleKeyEvent(.downArrow)
 
-        #expect(sut.selectedIndex == 0)
+        #expect(sut.selectedItemID == sut.gridSnapshot.itemIdentifiers.first?.id)
     }
 
     @Test("视图加载后 tab 键顺序选中下一个图标")
@@ -568,13 +600,13 @@ struct LaunchPadViewControllerTests {
         let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
+        layout(sut)
 
         _ = sut.handleKeyEvent(.downArrow)
-        #expect(sut.selectedIndex == 0)
+        let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
+        #expect(sut.selectedItemID == itemIDs[0])
         _ = sut.handleKeyEvent(.tab)
-        #expect(sut.selectedIndex == 1)
+        #expect(sut.selectedItemID == itemIDs[1])
     }
 
     @Test("视图加载后 up 方向键向上移动选中")
@@ -584,19 +616,17 @@ struct LaunchPadViewControllerTests {
         let apps = TestDataFactory.makeAppItems(count: 10, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
-        sut.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 900)
+        layout(sut)
+        let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
 
         // down 两次：第一次选中 0，第二次跳到下一行（0 + columns）
         _ = sut.handleKeyEvent(.downArrow)
         _ = sut.handleKeyEvent(.downArrow)
-        let afterTwoDowns = sut.selectedIndex
-        #expect(afterTwoDowns != nil && afterTwoDowns! > 0)
+        #expect(sut.selectedItemID == itemIDs[7])
 
         // up 应回到上一行（索引减小）
         _ = sut.handleKeyEvent(.upArrow)
-        #expect(sut.selectedIndex ?? 0 < afterTwoDowns ?? 0)
+        #expect(sut.selectedItemID == itemIDs[0])
     }
 
     // MARK: - 分页导航
@@ -765,8 +795,7 @@ struct LaunchPadViewControllerTests {
         )
         storage.pages = [page]
         storage.childrenByPage = [1: [safari]]
-        _ = sut.view
-        sut.loadData()
+        layout(sut)
 
         var searchCalls: [(ids: [Int64], query: String)] = []
         sut.searchRunner = { items, query, completion in
@@ -849,12 +878,268 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - viewDidLayout
 
-    @Test("viewDidLayout 更新 collectionView 布局不崩溃")
-    func viewDidLayout_updatesLayout() {
+    @Test("viewport resize 只重投影且保持稳定顺序，不写存储")
+    func resizeReprojectsWithoutWritesAndPreservesStableOrder() {
+        let (sut, _, storage) = makeSUT()
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        let insertedBefore = storage.insertedItems
+        let updatedBefore = storage.updatedItems
+        let deletedBefore = storage.deletedIds
+
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        sut.viewDidLayout()
+
+        #expect(storage.insertedItems == insertedBefore)
+        #expect(storage.updatedItems == updatedBefore)
+        #expect(storage.deletedIds == deletedBefore)
+        #expect(sut.gridMetrics?.rows == 4)
+        #expect(sut.visualPages.map(\.count) == [28, 28, 4])
+        #expect(sut.visualPages.flatMap { $0 }.map(\.id) == Array(1...60).map(Int64.init))
+    }
+
+    @Test("resize clamp 旧页并按稳定 ID 恢复选择")
+    func resizeClampsPreviousPageAndRestoresSelectionByID() {
+        let (sut, _, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        sut.navigateToPage(2)
+        _ = sut.selectItem(id: 60)
+
+        sut.viewportSizeProvider = { CGSize(width: 1729, height: 496) }
+        sut.viewDidLayout()
+
+        #expect(sut.currentVisualPage == 1)
+        #expect(sut.pagingPageCount == 2)
+        #expect(sut.selectedItemID == 60)
+        #expect(sut.selectedItemIndexPath?.section == 1)
+    }
+
+    @Test("active search 在 resize 后保持模式并分页结果")
+    func resizeKeepsActiveSearchAndPaginatesResults() throws {
         let (sut, _, _) = makeSUT()
+        layout(sut)
+        let matchingItems = TestDataFactory.makeAppItems(count: 30, titlePrefix: "App")
+        sut.searchRunner = { _, _, _ in }
+        sut.handleSearch(query: "app")
+        sut.keyboardNavigator.mode = .search(query: "app")
+        sut.applySearchResults(matchingItems, query: "app", expectedQuery: "app")
+
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        sut.viewDidLayout()
+
+        #expect(sut.currentSearchQuery == "app")
+        #expect(sut.keyboardNavigator.mode == .search(query: "app"))
+        #expect(sut.visualPages.map(\.count) == [28, 2])
+        #expect(sut.gridSnapshot.sectionIdentifiers == [.searchPage(0), .searchPage(1)])
+        let metrics = try #require(sut.gridMetrics)
+        let collectionView = try #require(extractCollectionView(from: sut))
+        collectionView.collectionViewLayout?.prepare()
+        for item in sut.gridSnapshot.itemIdentifiers {
+            let indexPath = try #require(collectionView.diffableDataSource.indexPath(for: item))
+            let attributes = try #require(
+                collectionView.collectionViewLayout?.layoutAttributesForItem(at: indexPath)
+            )
+            #expect(indexPath.item / metrics.columns < metrics.rows)
+            #expect(attributes.frame.maxY <= 496)
+        }
+    }
+
+    @Test("resize 同步七列键盘步长、跨 section 选择与无障碍行")
+    func resizeSynchronizesKeyboardAndAccessibilityRows() throws {
+        let (sut, _, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
+        _ = sut.selectItem(id: itemIDs[27])
+
+        _ = sut.handleKeyEvent(.downArrow)
+
+        #expect(sut.gridMetrics?.rows == 4)
+        #expect(sut.gridMetrics?.columns == 7)
+        #expect(sut.selectedItemID == itemIDs[34])
+        #expect(sut.selectedItemIndexPath?.section == 1)
+        let collectionView = try #require(extractCollectionView(from: sut))
+        collectionView.cellViewProvider = { _ in NSView() }
+        let expectedRowCount = sut.visualPages.reduce(0) { $0 + ($1.count + 6) / 7 }
+        #expect(collectionView.accessibilityRows()?.count == expectedRowCount)
+    }
+
+    @Test("空搜索结果保留 search page 并清除不再可见的选择")
+    func emptySearchProjectsOneEmptyPageAndClearsSelection() {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 5)
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        _ = sut.selectItem(id: apps[0].id)
+        sut.searchRunner = { _, _, _ in }
+        sut.handleSearch(query: "missing")
+
+        sut.applySearchResults([], query: "missing", expectedQuery: "missing")
+
+        #expect(sut.visualPages == [[]])
+        #expect(sut.gridSnapshot.sectionIdentifiers == [.searchPage(0)])
+        #expect(sut.selectedItemID == nil)
+        #expect(sut.pagingPageCount == 1)
+    }
+
+    @Test("清空搜索丢弃结果缓存并恢复普通 stable-ID 投影")
+    func clearingSearchRestoresNormalProjection() {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 5)
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        sut.searchRunner = { _, _, _ in }
+        sut.handleSearch(query: "app")
+        sut.applySearchResults(apps, query: "app", expectedQuery: "app")
+
+        sut.handleSearch(query: "")
+
+        #expect(sut.currentSearchQuery.isEmpty)
+        #expect(sut.currentSearchResults.isEmpty)
+        #expect(sut.visualPages.flatMap { $0 }.map(\.id) == apps.map(\.id))
+        #expect(sut.gridSnapshot.sectionIdentifiers == [.page(0)])
+    }
+
+    @Test("scroll callback 同步页模型且不递归滚动")
+    func scrollCallbackSynchronizesPageWithoutRecursion() throws {
+        let (sut, _, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let scrollView = try #require(extractScrollView(from: sut))
+        let productionCallback = try #require(scrollView.onPageChanged)
+        var callbackCount = 0
+        scrollView.onPageChanged = { page in
+            callbackCount += 1
+            productionCallback(page)
+        }
+
+        scrollView.scrollToPage(1, animated: false)
+
+        #expect(callbackCount == 1)
+        #expect(sut.currentVisualPage == 1)
+    }
+
+    @Test("invalid viewport 对每个无效轴均不改变投影")
+    func invalidViewportDoesNothing() {
+        let (sut, _, _) = makeSUT()
+        var reloadCount = 0
+        sut.projectedLayoutDidReload = { reloadCount += 1 }
+        _ = sut.view
+        let invalidSizes = [
+            CGSize(width: 0, height: 620),
+            CGSize(width: 1440, height: 0),
+            CGSize(width: CGFloat.nan, height: 620),
+            CGSize(width: 1440, height: CGFloat.infinity),
+        ]
+
+        for size in invalidSizes {
+            sut.viewportSizeProvider = { size }
+            sut.viewDidLayout()
+        }
+
+        #expect(sut.gridMetrics == nil)
+        #expect(reloadCount == 0)
+    }
+
+    @Test("same metrics 不重复 reload projected layout")
+    func sameMetricsDoesNotReload() {
+        let (sut, _, _) = makeSUT()
+        var reloadCount = 0
+        sut.projectedLayoutDidReload = { reloadCount += 1 }
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 620) }
         _ = sut.view
         sut.viewDidLayout()
-        #expect(sut.view is NSView)
+        let countAfterFirstLayout = reloadCount
+
+        sut.viewDidLayout()
+
+        #expect(countAfterFirstLayout == 1)
+        #expect(reloadCount == countAfterFirstLayout)
+    }
+
+    @Test("空数据的有效 viewport 仍生成一页空投影")
+    func emptyDataProjectsOneEmptyVisualPage() {
+        let (sut, _, _) = makeSUT()
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+
+        #expect(sut.visualPages.count == 1)
+        #expect(sut.visualPages[0].isEmpty)
+        #expect(sut.gridSnapshot.sectionIdentifiers == [.page(0)])
+        #expect(sut.pagingPageCount == 1)
+    }
+
+    @Test("selectedIndex 兼容适配器从稳定 ID 投影展平索引")
+    func selectedIndexCompatibilityAdapterProjectsFlattenedIndex() {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 30)
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithData(sut, storage: storage, apps: apps)
+        sut.viewDidLayout()
+
+        #expect(sut.selectedIndex == nil)
+        _ = sut.selectItem(id: apps[29].id)
+
+        #expect(sut.selectedItemID == apps[29].id)
+        #expect(sut.selectedItemIndexPath == IndexPath(item: 1, section: 1))
+        #expect(sut.selectedIndex == 29)
+    }
+
+    @Test("nil 与未知 stable ID 均清除当前选择")
+    func selectItemClearsNilAndUnknownStableIDs() {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 5)
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        _ = sut.selectItem(id: apps[0].id)
+        #expect(sut.selectedItemID == apps[0].id)
+
+        #expect(sut.selectItem(id: nil) == nil)
+        #expect(sut.selectedItemID == nil)
+        _ = sut.selectItem(id: apps[0].id)
+        #expect(sut.selectItem(id: 999) == nil)
+        #expect(sut.selectedItemID == nil)
+    }
+
+    @Test("程序化 grid selection 不发 coordinator 业务输出")
+    func programmaticSelectionDoesNotEmitCoordinatorOutput() throws {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 5)
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+        var outputIDs: [Int64] = []
+        coordinator.onSelectionChanged = { outputIDs.append($0.id) }
+
+        _ = sut.selectItem(id: apps[2].id)
+
+        #expect(sut.selectedItemID == apps[2].id)
+        #expect(outputIDs.isEmpty)
+    }
+
+    @Test("coordinator mouse selection 绑定 stable ID")
+    func coordinatorSelectionUpdatesStableID() throws {
+        let (sut, _, storage) = makeSUT()
+        let apps = TestDataFactory.makeAppItems(count: 5)
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        let coordinator = try #require(sut.gridInteractionCoordinator)
+
+        coordinator.onSelectionChanged?(apps[3])
+
+        #expect(sut.selectedItemID == apps[3].id)
+    }
+
+    @Test("未加载视图的分页动作不强制加载视图")
+    func pageActionsDoNotLoadView() {
+        let (sut, _, _) = makeSUT()
+
+        #expect(!sut.isViewLoaded)
+        #expect(sut.handleKeyEvent(.leftArrow) == .previousPage)
+        #expect(sut.handleKeyEvent(.rightArrow) == .nextPage)
+        #expect(!sut.isViewLoaded)
     }
 
     // MARK: - setupCallbacks 闭包体（通过子视图属性直接触发）
@@ -963,11 +1248,15 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - handleItemSelection .page 分支
 
-    @Test("handleItemSelection 对 page 类型不执行任何操作")
-    func handleItemSelection_page_doesNothing() {
+    @Test("handleItemSelection 对非 snapshot page 安全清除选择")
+    func handleItemSelectionPageClearsSelectionSafely() {
         let (sut, _, _) = makeSUT()
+        _ = sut.view
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+
         sut.handleItemSelection(page)
+
+        #expect(sut.selectedItemID == nil)
     }
 
     // MARK: - 启动动画各阶段（抽出方法同步覆盖）
@@ -1217,8 +1506,11 @@ struct LaunchPadViewControllerTests {
     func launchFirstMatch_selectsFirstItem() {
         let (sut, _, storage) = makeSUT()
         loadViewWithData(sut, storage: storage)
+        layout(sut)
         sut.keyboardNavigator.mode = .search(query: "App")
         _ = sut.handleKeyEvent(.enter)
+
+        #expect(sut.selectedItemID == sut.gridSnapshot.itemIdentifiers.first?.id)
     }
 
     // MARK: - updateJiggleState 循环体（注入 cell provider）
@@ -1281,19 +1573,20 @@ struct LaunchPadViewControllerTests {
 
     // MARK: - 分支覆盖补充
 
-    @Test("loadView 中 view.bounds.width == 0 时使用 1440 默认宽度（覆盖 L178 ternary fallback）")
-    func loadView_zeroBoundsWidth_usesDefaultWidth() {
+    @Test("未注入 provider 时使用真实 clip viewport")
+    func viewDidLayoutUsesClipViewportWithoutProvider() throws {
         let (sut, _, _) = makeSUT()
-        // 通过构造 NSView(frame: .zero) 替换 sut.view 以触发 bounds.width == 0
-        let zeroView = NSView(frame: NSRect(x: 0, y: 0, width: 0, height: 0))
-        // 触发 viewDidLoad 后修改 view 的 bounds
         _ = sut.view
-        // 替换 frame 模拟零宽度场景
-        sut.view.frame = .zero
-        // loadView 中的 178 行已执行过；为再次触发，需要重新调用 loadView
-        // 这里仅通过 _ = sut.view 验证不崩溃，bounds.width=0 路径在实际 loadView 中已走过
-        _ = zeroView
-        #expect(true)
+        sut.view.frame = NSRect(x: 0, y: 0, width: 1440, height: 700)
+        sut.view.layoutSubtreeIfNeeded()
+        let scrollView = try #require(extractScrollView(from: sut))
+        let clipSize = scrollView.contentView.bounds.size
+        #expect(clipSize.width > 0)
+        #expect(clipSize.height > 0)
+
+        sut.viewDidLayout()
+
+        #expect(sut.gridMetrics == GridLayoutCalculator.calculate(viewportSize: clipSize))
     }
 
     @Test("updateJiggleState: jiggleCellProvider 返回 nil 时跳过该 cell（覆盖 L280 ?? 假分支）")
@@ -1349,77 +1642,71 @@ struct LaunchPadViewControllerTests {
         #expect(true)
     }
 
-    @Test("moveSelection: collectionView 空时 guard totalItems > 0 else 早返回（覆盖 L602 guard else）")
+    @Test("空 snapshot 的 Down 清除稳定 ID 选择")
     func moveSelection_emptyCollection_returnsEarly() {
         let (sut, _, _) = makeSUT()
-        _ = sut.view
-        // sut 视图已加载但 collectionView 无 items
-        // 通过 keyboard navigator 触发 down 方向
+        layout(sut)
+
         _ = sut.handleKeyEvent(.downArrow)
-        // selectedIndex 应仍为 nil（未选中）
-        #expect(sut.selectedIndex == nil)
+
+        #expect(sut.selectedItemID == nil)
     }
 
-    @Test("moveSelection down: selectedIndex 不为 nil 时使用 ?? 0 真分支（覆盖 L614 ?? 0 假分支）")
-    func moveSelection_down_withSelectedIndex_usesRealIndex() {
+    @Test("没有选择时 Up 保持 nil")
+    func moveSelectionUpWithoutSelectionDoesNothing() {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5)
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
-        // 第一次 down：选中第一个
-        _ = sut.handleKeyEvent(.downArrow)
-        // 第二次 down：selectedIndex 不为 nil，走 ?? 0 真分支
-        _ = sut.handleKeyEvent(.downArrow)
-        #expect(sut.selectedIndex != nil)
-    }
+        layout(sut)
 
-    @Test("moveSelection up: selectedIndex 为 nil 时 guard else 早返回（覆盖 L619 guard else）")
-    func moveSelection_up_noSelection_returnsEarly() {
-        let (sut, _, storage) = makeSUT()
-        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let apps = TestDataFactory.makeAppItems(count: 5)
-        storage.pages = [page]
-        storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
-        // selectedIndex 为 nil，up 方向走 guard let current = selectedIndex else { return }
         _ = sut.handleKeyEvent(.upArrow)
-        #expect(sut.selectedIndex == nil)
+
+        #expect(sut.selectedItemID == nil)
     }
 
-    @Test("moveSelection next (Tab): selectedIndex 不为 nil 时 ?? -1 真分支（覆盖 L626 ?? -1 假分支）")
-    func moveSelection_next_withSelectedIndex_usesRealIndex() {
+    @Test("没有选择时首次 Tab 选中 snapshot 首项")
+    func moveSelectionFirstTabSelectsSnapshotFirstItem() {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5)
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
-        // 触发 down 选中第一个
+        layout(sut)
+
+        _ = sut.handleKeyEvent(.tab)
+
+        #expect(sut.selectedItemID == sut.gridSnapshot.itemIdentifiers.first?.id)
+    }
+
+    @Test("Down 可跨 visual section 并同步当前页")
+    func moveSelectionDownCrossesVisualSection() {
+        let (sut, _, storage) = makeSUT()
+        sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
+        loadViewWithTwoPersistedPages(sut, storage: storage)
+        sut.viewDidLayout()
+        let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
+        _ = sut.selectItem(id: itemIDs[27])
+
         _ = sut.handleKeyEvent(.downArrow)
-        #expect(sut.selectedIndex == 0)
-        // 触发 tab 走 next 分支，selectedIndex 已为 0 ?? -1 真分支
-        _ = sut.handleKeyEvent(.tab)
-        #expect(sut.selectedIndex == 1)
+
+        #expect(sut.selectedItemID == itemIDs[34])
+        #expect(sut.selectedItemIndexPath?.section == 1)
+        #expect(sut.currentVisualPage == 1)
     }
 
-    @Test("moveSelection next (Tab): selectedIndex 为 nil 时走 ?? -1 fallback（覆盖 L631 ?? -1 fallback）")
-    func moveSelection_next_noSelectedIndex_usesFallback() {
+    @Test("Tab 在末项保持原 stable ID")
+    func moveSelectionNextAtEndDoesNothing() {
         let (sut, _, storage) = makeSUT()
-        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5)
-        storage.pages = [page]
-        storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
-        // 不按 down，直接按 Tab → selectedIndex 为 nil → ?? -1 fallback
+        loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        _ = sut.selectItem(id: apps.last?.id)
+
         _ = sut.handleKeyEvent(.tab)
-        // current = -1, -1 + 1 = 0, 0 < 5 → selectedIndex = 0
-        #expect(sut.selectedIndex == 0)
+
+        #expect(sut.selectedItemID == apps.last?.id)
     }
 }
 #endif
