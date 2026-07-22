@@ -1,7 +1,7 @@
 # P0 Execution Decision Log
 
-Date: 2026-07-22  
-Branch: `release-readiness`  
+Date: 2026-07-22
+Branch: `release-readiness`
 Plan: `docs/superpowers/plans/2026-07-21-p0-release-blockers.md`
 
 This is the single durable log for implementation decisions made while
@@ -155,3 +155,18 @@ the approved plan or task-specific test reports.
   prove group `.overIcon` and all non-group/missing cases `.empty`. The latest
   bounded coordinator/Grid gate passes 95 tests with the suite still at exactly
   39 tests, and the controller/coordinator/grid weak probes all become nil.
+
+## Decision 008: Make every commit gate fail closed
+
+- Status: adopted after the first decision-log commit
+- Evidence: `git diff --cached --check` correctly reported two Markdown trailing
+  spaces, but the multi-command shell did not use `set -e`; it therefore
+  continued to the commit instead of stopping at the failed quality gate.
+- Decision: preserve the existing commit, remove the whitespace in a follow-up
+  commit, and begin every future multi-command stage/commit gate with
+  `set -euo pipefail` so any static or staging failure aborts before commit.
+- Impact: no product behavior changes; repository hygiene failures become
+  fail-closed and auditable.
+- Verification: the follow-up diff passes `git diff --check`, its staged file
+  list contains only this decision log, and subsequent task commit reports must
+  include the fail-closed gate result.
