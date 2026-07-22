@@ -351,14 +351,16 @@ final class SearchBarTests: XCTestCase {
     func testSearchBar_hide_animated_completionHidesView() {
         let bar = SearchBar()
         bar.show(animated: false)
+        var completionRan = false
+        bar.hideCompletionRunner = { completion in
+            completionRan = true
+            completion()
+        }
+
         bar.hide(animated: true)
 
-        let expectation = XCTestExpectation(description: "Animated hide completes")
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.5) {
-            XCTAssertTrue(bar.isHidden)
-            expectation.fulfill()
-        }
-        wait(for: [expectation], timeout: 2.0)
+        XCTAssertTrue(completionRan)
+        XCTAssertTrue(bar.isHidden)
     }
 }
 
