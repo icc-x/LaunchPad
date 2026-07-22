@@ -890,3 +890,33 @@ the approved plan or task-specific test reports.
   and no-window layout completed `9 tests / 1 suite / 0 issues`; formal review
   reported spec compliant, Task quality Approved, and
   Critical/Important/Minor `0/0/0`.
+
+## Decision 040: Preserve committed-drop success when authoritative reload fails
+
+- Status: adopted and verified during Task 18 review closure.
+- Evidence: `LayoutMutating.apply` returns only after the storage transaction has
+  committed, while the following authoritative reload is a separate read. Mapping
+  a post-COMMIT read failure to `false` or the mutation-failure message
+  `无法更新布局，请重试` would tell the native caller or user to replay an operation
+  that has already been persisted. The original Task 18 tests covered successful
+  apply plus successful reload, and apply failure plus reload failure, but not this
+  distinct branch.
+- Decision: keep `applyDropIntent` returning `true` after a successful apply even
+  when the authoritative reload fails. Emit only the sanitized
+  `authoritative_read_failed` diagnostic for that read failure; do not emit a
+  `mutation_failed` event, the retry prompt, or an accessibility announcement.
+  Keep the pre-drop snapshot until a later authoritative read succeeds. Add a real
+  `acceptDrop -> draggingSession ended` regression that proves one apply attempt,
+  one successful apply, one failed root read, no replay, and native ended cleanup
+  without a second write or read.
+- Impact: the UI never describes an already committed transaction as failed and
+  cannot encourage duplicate mutation. Operational diagnostics remain useful but
+  contain neither the underlying read error nor user-controlled folder text.
+- Verification: the review-fix controller suite passed `118 tests / 1 suite / 0
+  issues`. Controller-fresh post-commit owning evidence passed `263 tests / 5
+  suites / 0 issues`. The Window-inclusive gate completed `286 tests / 6 suites /
+  4 issues`, all four still confined to the registered three Window tests with
+  distribution `2/1/1`; database isolation, single-writer, page-setter, diff, and
+  residual-process gates passed. Both the task re-review and a fresh formal review
+  reported spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0` for commit `c4ad6f5`.
