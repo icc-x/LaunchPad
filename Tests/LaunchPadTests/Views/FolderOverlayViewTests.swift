@@ -1,85 +1,101 @@
-import XCTest
+import Testing
 @testable import LaunchPad
 @testable import LaunchPadProtocols
 
 #if canImport(AppKit)
 import AppKit
 
-/// Tests for FolderOverlayView (0% → target 80%+)
 @MainActor
-final class FolderOverlayViewTests: XCTestCase {
+@Suite("FolderOverlayView")
+struct FolderOverlayViewTests {
 
-    private var overlay: FolderOverlayView!
-
-    override func setUp() {
-        super.setUp()
-        overlay = FolderOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-    }
-
-    override func tearDown() {
-        overlay = nil
-        super.tearDown()
+    private func makeOverlay() -> FolderOverlayView {
+        let overlay = FolderOverlayView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 700)
+        )
+        overlay.closeFolderCompletionRunner = { $0() }
+        return overlay
     }
 
     // MARK: - Init
 
-    func testInit_doesNotCrash() {
-        XCTAssertNotNil(overlay)
+    @Test
+    func init_doesNotCrash() {
+        let overlay = makeOverlay()
+        #expect(overlay != nil)
     }
 
-    func testInit_isHiddenByDefault() {
-        XCTAssertTrue(overlay.isHidden)
+    @Test
+    func init_isHiddenByDefault() {
+        let overlay = makeOverlay()
+        #expect(overlay.isHidden)
     }
 
-    func testInit_alphaIsZero() {
-        XCTAssertEqual(overlay.alphaValue, 0)
+    @Test
+    func init_alphaIsZero() {
+        let overlay = makeOverlay()
+        #expect(overlay.alphaValue == 0)
     }
 
     // MARK: - paginateItems (pure function)
 
-    func testPaginateItems_empty_returnsEmpty() {
+    @Test
+    func paginateItems_empty_returnsEmpty() {
+        _ = makeOverlay()
         let result = FolderOverlayView.paginateItems([], pageSize: 35)
-        XCTAssertTrue(result.isEmpty)
+        #expect(result.isEmpty)
     }
 
-    func testPaginateItems_lessThanPageSize_returnsSinglePage() {
+    @Test
+    func paginateItems_lessThanPageSize_returnsSinglePage() {
+        _ = makeOverlay()
         let items = TestDataFactory.makeAppItems(count: 10)
         let result = FolderOverlayView.paginateItems(items, pageSize: 35)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].count, 10)
+        #expect(result.count == 1)
+        #expect(result[0].count == 10)
     }
 
-    func testPaginateItems_exactPageSize_returnsSinglePage() {
+    @Test
+    func paginateItems_exactPageSize_returnsSinglePage() {
+        _ = makeOverlay()
         let items = TestDataFactory.makeAppItems(count: 35)
         let result = FolderOverlayView.paginateItems(items, pageSize: 35)
-        XCTAssertEqual(result.count, 1)
-        XCTAssertEqual(result[0].count, 35)
+        #expect(result.count == 1)
+        #expect(result[0].count == 35)
     }
 
-    func testPaginateItems_moreThanPageSize_returnsMultiplePages() {
+    @Test
+    func paginateItems_moreThanPageSize_returnsMultiplePages() {
+        _ = makeOverlay()
         let items = TestDataFactory.makeAppItems(count: 80)
         let result = FolderOverlayView.paginateItems(items, pageSize: 35)
-        XCTAssertEqual(result.count, 3) // 35 + 35 + 10
-        XCTAssertEqual(result[0].count, 35)
-        XCTAssertEqual(result[1].count, 35)
-        XCTAssertEqual(result[2].count, 10)
+        #expect(result.count == 3) // 35 + 35 + 10
+        #expect(result[0].count == 35)
+        #expect(result[1].count == 35)
+        #expect(result[2].count == 10)
     }
 
-    func testPaginateItems_zeroPageSize_returnsEmpty() {
+    @Test
+    func paginateItems_zeroPageSize_returnsEmpty() {
+        _ = makeOverlay()
         let items = TestDataFactory.makeAppItems(count: 5)
         let result = FolderOverlayView.paginateItems(items, pageSize: 0)
-        XCTAssertTrue(result.isEmpty)
+        #expect(result.isEmpty)
     }
 
-    func testPaginateItems_negativePageSize_returnsEmpty() {
+    @Test
+    func paginateItems_negativePageSize_returnsEmpty() {
+        _ = makeOverlay()
         let items = TestDataFactory.makeAppItems(count: 5)
         let result = FolderOverlayView.paginateItems(items, pageSize: -1)
-        XCTAssertTrue(result.isEmpty)
+        #expect(result.isEmpty)
     }
 
     // MARK: - Open Folder
 
-    func testOpenFolder_showsOverlay() {
+    @Test
+    func openFolder_showsOverlay() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Test Folder")
@@ -89,39 +105,47 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
         // isHidden is set immediately, alphaValue is animated
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testOpenFolder_setsTitle() {
+    @Test
+    func openFolder_setsTitle() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "My Apps")
         )
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
         // Title is set internally; we verify overlay is visible
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testOpenFolder_responsiveSize() {
+    @Test
+    func openFolder_responsiveSize() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
         )
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
         // Should set responsive dimensions based on screen
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testOpenFolder_reduceMotion_usesReducedBranch() {
+    @Test
+    func openFolder_reduceMotion_usesReducedBranch() {
+        let overlay = makeOverlay()
         overlay.accessibilitySettingsProvider = {
             AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         }
         let item = TestDataFactory.makePageItem(type: .group, group: TestDataFactory.makeGroupInfo())
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testCollectionView_dataSource_withAppAndIconCache_loadsIcon() {
+    @Test
+    func collectionView_dataSource_withAppAndIconCache_loadsIcon() {
+        let overlay = makeOverlay()
         // 把 overlay 加到 window 触发 layout，让 collectionView 请求 item（覆盖 itemForRepresentedObjectAt + if let app）
         let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
                               styleMask: .borderless, backing: .buffered, defer: false)
@@ -132,12 +156,14 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.openFolder(item: item, childItems: children, iconCache: iconCache)
         // 用 short displayIfNeeded 替代 layoutIfNeeded，避免 coverage instrumentation 下的 runloop 挂起
         window.displayIfNeeded()
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
     // MARK: - Close Folder
 
-    func testCloseFolder_hidesOverlay() {
+    @Test
+    func closeFolder_hidesOverlay() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -146,10 +172,12 @@ final class FolderOverlayViewTests: XCTestCase {
         // 注入同步完成回调，确定性覆盖 closeFolder 完成分支（isHidden = true）
         overlay.closeFolderCompletionRunner = { $0() }
         overlay.closeFolder()
-        XCTAssertTrue(overlay.isHidden)
+        #expect(overlay.isHidden)
     }
 
-    func testCloseFolder_callsOnClosedCallback() {
+    @Test
+    func closeFolder_callsOnClosedCallback() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -160,41 +188,47 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.onClosed = { closedCalled = true }
         overlay.closeFolderCompletionRunner = { $0() }
         overlay.closeFolder()
-        XCTAssertTrue(closedCalled)
+        #expect(closedCalled)
     }
 
     // MARK: - Callbacks
 
-    func testOnAppSelected_callbackIsSettable() {
+    @Test
+    func onAppSelected_callbackIsSettable() {
+        let overlay = makeOverlay()
         overlay.onAppSelected = { _ in }
-        XCTAssertNotNil(overlay.onAppSelected)
+        #expect(overlay.onAppSelected != nil)
     }
 
-    func testOnClosed_callbackIsSettable() {
+    @Test
+    func onClosed_callbackIsSettable() {
+        let overlay = makeOverlay()
         overlay.onClosed = { }
-        XCTAssertNotNil(overlay.onClosed)
+        #expect(overlay.onClosed != nil)
     }
 
     // MARK: - Mouse Down Outside
 
-    func testMouseDown_outsidePanel_closesFolder() throws {
+    @Test
+    func mouseDown_outsidePanel_closesFolder() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
         )
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
         overlay.layoutSubtreeIfNeeded()
-        let panel = try XCTUnwrap(findView(NSVisualEffectView.self, in: overlay))
+        let panel = try #require(findView(NSVisualEffectView.self, in: overlay))
         let outsidePoint = NSPoint(
             x: panel.frame.minX - 1,
             y: panel.frame.midY
         )
-        XCTAssertFalse(panel.frame.contains(outsidePoint))
+        #expect(!(panel.frame.contains(outsidePoint)))
         overlay.closeFolderCompletionRunner = { $0() }
         var closeCount = 0
         overlay.onClosed = { closeCount += 1 }
 
-        let event = try XCTUnwrap(NSEvent.mouseEvent(
+        let event = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown,
             location: outsidePoint,
             modifierFlags: [],
@@ -208,13 +242,15 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.mouseDown(with: event)
 
-        XCTAssertTrue(overlay.isHidden)
-        XCTAssertEqual(closeCount, 1)
+        #expect(overlay.isHidden)
+        #expect(closeCount == 1)
     }
 
     // MARK: - Open with many items (pagination)
 
-    func testOpenFolder_withManyItems_paginates() {
+    @Test
+    func openFolder_withManyItems_paginates() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Big Folder")
@@ -223,10 +259,12 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testOpenFolder_withExactly35Items_singlePage() {
+    @Test
+    func openFolder_withExactly35Items_singlePage() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Full Folder")
@@ -235,10 +273,12 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
-    func testOpenFolder_withNoTitle_usesDefaultTitle() {
+    @Test
+    func openFolder_withNoTitle_usesDefaultTitle() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: nil
@@ -246,12 +286,14 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
 
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
     // MARK: - Close then reopen
 
-    func testCloseThenReopen_doesNotCrash() {
+    @Test
+    func closeThenReopen_doesNotCrash() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -266,7 +308,9 @@ final class FolderOverlayViewTests: XCTestCase {
 
     // MARK: - observeScrollPosition
 
-    func testObserveScrollPosition_doesNotCrash() {
+    @Test
+    func observeScrollPosition_doesNotCrash() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -277,7 +321,9 @@ final class FolderOverlayViewTests: XCTestCase {
 
     // MARK: - init?(coder:)
 
-    func testInitCoder_producesValidInstance() throws {
+    @Test
+    func initCoder_producesValidInstance() throws {
+        _ = makeOverlay()
         let original = FolderOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
         let archiver = NSKeyedArchiver()
         archiver.requiresSecureCoding = false
@@ -287,12 +333,14 @@ final class FolderOverlayViewTests: XCTestCase {
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
         unarchiver.requiresSecureCoding = false
         let view = unarchiver.decodeObject(forKey: "root") as? FolderOverlayView
-        XCTAssertNotNil(view)
+        #expect(view != nil)
     }
 
     // MARK: - Data Source
 
-    func testNumberOfSections_returnsCorrectCount() {
+    @Test
+    func numberOfSections_returnsCorrectCount() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -302,10 +350,12 @@ final class FolderOverlayViewTests: XCTestCase {
 
         let collectionView = NSCollectionView()
         let count = overlay.numberOfSections(in: collectionView)
-        XCTAssertEqual(count, 2)
+        #expect(count == 2)
     }
 
-    func testNumberOfItemsInSection_returnsCorrectCount() {
+    @Test
+    func numberOfItemsInSection_returnsCorrectCount() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -314,11 +364,13 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
         let collectionView = NSCollectionView()
-        XCTAssertEqual(overlay.collectionView(collectionView, numberOfItemsInSection: 0), 35)
-        XCTAssertEqual(overlay.collectionView(collectionView, numberOfItemsInSection: 1), 5)
+        #expect(overlay.collectionView(collectionView, numberOfItemsInSection: 0) == 35)
+        #expect(overlay.collectionView(collectionView, numberOfItemsInSection: 1) == 5)
     }
 
-    func testNumberOfItemsInSection_outOfBounds_returnsZero() {
+    @Test
+    func numberOfItemsInSection_outOfBounds_returnsZero() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -326,10 +378,12 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.openFolder(item: item, childItems: TestDataFactory.makeAppItems(count: 5), iconCache: nil)
 
         let collectionView = NSCollectionView()
-        XCTAssertEqual(overlay.collectionView(collectionView, numberOfItemsInSection: 99), 0)
+        #expect(overlay.collectionView(collectionView, numberOfItemsInSection: 99) == 0)
     }
 
-    func testItemForRepresentedObjectAt_outOfBounds_returnsEmptyItem() {
+    @Test
+    func itemForRepresentedObjectAt_outOfBounds_returnsEmptyItem() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -340,12 +394,14 @@ final class FolderOverlayViewTests: XCTestCase {
         let collectionView = NSCollectionView()
         let cell = overlay.collectionView(collectionView,
                                           itemForRepresentedObjectAt: IndexPath(item: 99, section: 99))
-        XCTAssertNotNil(cell)
+        #expect(cell != nil)
     }
 
     // MARK: - Delegate
 
-    func testDidSelectItemsAt_callsOnAppSelected() {
+    @Test
+    func didSelectItemsAt_callsOnAppSelected() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -359,11 +415,13 @@ final class FolderOverlayViewTests: XCTestCase {
         // Use a standalone collectionView - deselectAll on empty collectionView is a no-op
         let collectionView = NSCollectionView()
         overlay.collectionView(collectionView, didSelectItemsAt: [IndexPath(item: 0, section: 0)])
-        XCTAssertNotNil(selected)
-        XCTAssertEqual(selected?.id, children[0].id)
+        #expect(selected != nil)
+        #expect(selected?.id == children[0].id)
     }
 
-    func testDidSelectItemsAt_emptySet_doesNotCallCallback() {
+    @Test
+    func didSelectItemsAt_emptySet_doesNotCallCallback() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -375,10 +433,12 @@ final class FolderOverlayViewTests: XCTestCase {
 
         let collectionView = NSCollectionView()
         overlay.collectionView(collectionView, didSelectItemsAt: [])
-        XCTAssertNil(selected)
+        #expect(selected == nil)
     }
 
-    func testDidSelectItemsAt_outOfBounds_doesNotCallCallback() {
+    @Test
+    func didSelectItemsAt_outOfBounds_doesNotCallCallback() {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -390,7 +450,7 @@ final class FolderOverlayViewTests: XCTestCase {
 
         let collectionView = NSCollectionView()
         overlay.collectionView(collectionView, didSelectItemsAt: [IndexPath(item: 99, section: 99)])
-        XCTAssertNil(selected)
+        #expect(selected == nil)
     }
 
     // MARK: - Navigate to Page (via onDotSelected callback)
@@ -404,7 +464,9 @@ final class FolderOverlayViewTests: XCTestCase {
         return nil
     }
 
-    func testNavigateToPage_updatesScrollPosition() {
+    @Test
+    func navigateToPage_updatesScrollPosition() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -414,30 +476,35 @@ final class FolderOverlayViewTests: XCTestCase {
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
         // Find pageControlView via view hierarchy traversal
-        let pageControlView = findView(PageControlView.self, in: overlay)
-        XCTAssertNotNil(pageControlView)
+        let pageControlView = try #require(
+            findView(PageControlView.self, in: overlay)
+        )
 
         // Find scrollView via view hierarchy traversal
-        let scrollView = findView(NSScrollView.self, in: overlay)
-        XCTAssertNotNil(scrollView)
+        let scrollView = try #require(findView(NSScrollView.self, in: overlay))
 
         // Set scrollView frame so bounds.width > 0 (no window -> auto-layout not resolved)
-        scrollView!.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
-        XCTAssertGreaterThan(scrollView!.bounds.width, 0)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
+        #expect(scrollView.bounds.width > 0)
 
         // Verify onDotSelected callback is set
-        XCTAssertNotNil(pageControlView?.onDotSelected, "onDotSelected should be set by setup()")
+        #expect(
+            pageControlView.onDotSelected != nil,
+            "onDotSelected should be set by setup()"
+        )
 
         // Trigger navigation to page 1 via onDotSelected
-        pageControlView?.onDotSelected?(1)
+        pageControlView.onDotSelected?(1)
 
         // Verify currentPage was updated via the pageControlView's viewModel
-        let vmMirror = Mirror(reflecting: pageControlView!)
+        let vmMirror = Mirror(reflecting: pageControlView)
         let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
-        XCTAssertEqual(vm?.currentPage, 1)
+        #expect(vm?.currentPage == 1)
     }
 
-    func testNavigateToPage_outOfBounds_isNoOp() {
+    @Test
+    func navigateToPage_outOfBounds_isNoOp() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -446,22 +513,26 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        let pageControlView = findView(PageControlView.self, in: overlay)
-        let scrollView = findView(NSScrollView.self, in: overlay)
-        scrollView!.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
+        let pageControlView = try #require(
+            findView(PageControlView.self, in: overlay)
+        )
+        let scrollView = try #require(findView(NSScrollView.self, in: overlay))
+        scrollView.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
 
         // Navigate to invalid page index - should be a no-op (guard fails)
-        pageControlView?.onDotSelected?(99)
+        pageControlView.onDotSelected?(99)
 
         // Verify currentPage is still 0
-        let vmMirror = Mirror(reflecting: pageControlView!)
+        let vmMirror = Mirror(reflecting: pageControlView)
         let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
-        XCTAssertEqual(vm?.currentPage, 0)
+        #expect(vm?.currentPage == 0)
     }
 
     // MARK: - updatePageFromScrollPosition (via scroll notification)
 
-    func testUpdatePageFromScrollPosition_updatesCurrentPage() {
+    @Test
+    func updatePageFromScrollPosition_updatesCurrentPage() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -470,43 +541,42 @@ final class FolderOverlayViewTests: XCTestCase {
 
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        let scrollView = findView(NSScrollView.self, in: overlay)
-        XCTAssertNotNil(scrollView)
+        let scrollView = try #require(findView(NSScrollView.self, in: overlay))
 
         // Set frame so bounds.width > 0
-        scrollView!.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
-        XCTAssertGreaterThan(scrollView!.bounds.width, 0)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 800, height: 360)
+        #expect(scrollView.bounds.width > 0)
 
         // Use contentView.scroll(to:) to set scroll position (NSClipView manages its own bounds)
-        scrollView!.contentView.scroll(to: NSPoint(x: scrollView!.bounds.width, y: 0))
+        scrollView.contentView.scroll(to: NSPoint(x: scrollView.bounds.width, y: 0))
 
-        // Post bounds change notification (dispatched async on main operation queue)
         NotificationCenter.default.post(name: NSView.boundsDidChangeNotification,
-                                         object: scrollView!.contentView)
-
-        // Run the main run loop to process the async notification callback
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.3))
+                                         object: scrollView.contentView)
 
         // updatePageFromScrollPosition() should have been called
         // The code path is exercised regardless of whether currentPage changed
         // (guard on pageWidth > 0, clampedPage calculation, comparison with currentPage)
-        let pcView = findView(PageControlView.self, in: overlay)
-        XCTAssertNotNil(pcView)
+        _ = try #require(findView(PageControlView.self, in: overlay))
     }
 
     // MARK: - mouseDown inside panel
 
-    func testMouseDown_insidePanel_doesNotClose() {
+    @Test
+    func mouseDown_insidePanel_doesNotClose() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
         )
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
+        overlay.layoutSubtreeIfNeeded()
+        let panel = try #require(findView(NSVisualEffectView.self, in: overlay))
+        let insidePoint = NSPoint(x: panel.frame.midX, y: panel.frame.midY)
+        #expect(panel.frame.contains(insidePoint))
 
-        // Click at center (where backgroundView is)
-        let event = NSEvent.mouseEvent(
+        let event = try #require(NSEvent.mouseEvent(
             with: .leftMouseDown,
-            location: NSPoint(x: 400, y: 300), // center of 800x600 overlay
+            location: insidePoint,
             modifierFlags: [],
             timestamp: 0,
             windowNumber: 0,
@@ -514,18 +584,18 @@ final class FolderOverlayViewTests: XCTestCase {
             eventNumber: 0,
             clickCount: 1,
             pressure: 0
-        )
-        if let event {
-            overlay.mouseDown(with: event)
-        }
+        ))
+        overlay.mouseDown(with: event)
 
         // Should NOT trigger close (overlay still visible)
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 
     // MARK: - Guard branches: pageWidth guard in navigateToPage
 
-    func testNavigateToPage_zeroPageWidth_returnsEarly() {
+    @Test
+    func navigateToPage_zeroPageWidth_returnsEarly() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -533,23 +603,27 @@ final class FolderOverlayViewTests: XCTestCase {
         let children = TestDataFactory.makeAppItems(count: 10)
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        let scrollView = findView(NSScrollView.self, in: overlay)
+        let scrollView = try #require(findView(NSScrollView.self, in: overlay))
         // 强制将 scrollView frame 设为 0，让 pageWidth = scrollView.bounds.width = 0
-        scrollView?.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
 
-        let pageControlView = findView(PageControlView.self, in: overlay)
+        let pageControlView = try #require(
+            findView(PageControlView.self, in: overlay)
+        )
         // pageIndex=0 应在范围内，但 pageWidth=0 触发 guard else
-        pageControlView?.onDotSelected?(0)
+        pageControlView.onDotSelected?(0)
 
-        let vmMirror = Mirror(reflecting: pageControlView!)
+        let vmMirror = Mirror(reflecting: pageControlView)
         let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
         // page should remain at 0 since guard prevented navigation
-        XCTAssertEqual(vm?.currentPage, 0)
+        #expect(vm?.currentPage == 0)
     }
 
     // MARK: - Guard branches: pageWidth guard in updatePageFromScrollPosition
 
-    func testUpdatePageFromScrollPosition_zeroPageWidth_returnsEarly() {
+    @Test
+    func updatePageFromScrollPosition_zeroPageWidth_returnsEarly() throws {
+        let overlay = makeOverlay()
         let item = TestDataFactory.makePageItem(
             id: 1, type: .group, ordering: 0,
             group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
@@ -557,33 +631,31 @@ final class FolderOverlayViewTests: XCTestCase {
         let children = TestDataFactory.makeAppItems(count: 40)
         overlay.openFolder(item: item, childItems: children, iconCache: nil)
 
-        let scrollView = findView(NSScrollView.self, in: overlay)
-        XCTAssertNotNil(scrollView)
+        let scrollView = try #require(findView(NSScrollView.self, in: overlay))
 
         // 强制将 scrollView frame 设为 0，触发 guard else 分支
-        scrollView?.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
+        scrollView.frame = NSRect(x: 0, y: 0, width: 0, height: 0)
 
         // 通过 NSView.boundsDidChangeNotification 触发 updatePageFromScrollPosition
         // 或直接通过 Mirror 调用私有方法
         // 简化：直接发送 NSView.boundsDidChangeNotification
         NotificationCenter.default.post(
             name: NSView.boundsDidChangeNotification,
-            object: scrollView!.contentView
+            object: scrollView.contentView
         )
 
-        // 给 main run loop 时间处理 notification
-        RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.1))
-
-        let pcView = findView(PageControlView.self, in: overlay)
-        let vmMirror = Mirror(reflecting: pcView!)
+        let pcView = try #require(findView(PageControlView.self, in: overlay))
+        let vmMirror = Mirror(reflecting: pcView)
         let vm = vmMirror.children.first { $0.label == "viewModel" }?.value as? PageControlViewModel
         // page should remain at default (0)
-        XCTAssertEqual(vm?.currentPage, 0)
+        #expect(vm?.currentPage == 0)
     }
 
     // MARK: - 额外分支覆盖
 
-    func testOpenFolder_responsiveSize_withWidthZeroFallback() {
+    @Test
+    func openFolder_responsiveSize_withWidthZeroFallback() {
+        let overlay = makeOverlay()
         // 覆盖 L158/L159 ?? fallback 路径：superview 为 nil 时使用 NSScreen.main?.frame.width
         // 由于 NSScreen.main 在测试环境可能非 nil，覆盖 path 走真分支即可触发代码
         // 这里仅验证不崩溃
@@ -593,7 +665,7 @@ final class FolderOverlayViewTests: XCTestCase {
         )
         // 不设置 superview（默认 nil），openFolder 走 responsive size 计算
         overlay.openFolder(item: item, childItems: [], iconCache: nil)
-        XCTAssertFalse(overlay.isHidden)
+        #expect(!(overlay.isHidden))
     }
 }
 #endif
