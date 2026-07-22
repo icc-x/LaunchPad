@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import SQLite3
 @testable import LaunchPad
 import LaunchPadProtocols
 
@@ -255,64 +256,130 @@ struct IntegrationTests {
         #expect(childrenAfter.count == 0, "group 删除后子项应被级联删除")
     }
 
-    // MARK: - FolderController 集成
+    // MARK: - 原子布局事务重开证明
 
-    @Test("FolderController — 创建文件夹后两个 item 归入同一 folder")
-    func folderController_createFolder_itemsInFolder() throws {
-        let storage = try StorageManager(dbPath: ":memory:")
-        let folderController = FolderController(itemWriter: storage)
+    @Test("folder layout COMMIT 后完整快照关闭重开不变")
+    func folderLayoutCommitSurvivesReopen() throws {
+        let directory = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("LaunchPadLayout-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("layout.sqlite").path
+        var committed: PersistedLayoutSnapshot?
 
-        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
-        let pageId = try storage.insertItem(page)
+        do {
+            let storage = try StorageManager(dbPath: path)
+            let pageID = try storage.insertItem(
+                TestDataFactory.makePageItem(uuid: "commit-page", type: .page)
+            )
+            let firstID = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "commit-first",
+                type: .app,
+                ordering: 0,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.commit.first"
+                )
+            ))
+            let secondID = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "commit-second",
+                type: .app,
+                ordering: 1,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.commit.second"
+                )
+            ))
+            try storage.apply(
+                .createFolder(
+                    itemID: secondID,
+                    targetItemID: firstID,
+                    title: "Committed"
+                ),
+                pageCapacity: 35
+            )
+            committed = try storage.persistedLayoutSnapshot()
+        }
 
-        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: pageId, app: AppInfo(id: 0, title: "Safari", bundleId: "com.apple.Safari", path: "/Applications/Safari.app", storeId: nil, category: nil), group: nil)
-        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: pageId, app: AppInfo(id: 0, title: "Mail", bundleId: "com.apple.Mail", path: "/Applications/Mail.app", storeId: nil, category: nil), group: nil)
-        let id1 = try storage.insertItem(app1)
-        let id2 = try storage.insertItem(app2)
-
-        let savedApp1 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id1 }!
-        let savedApp2 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id2 }!
-
-        let folderId = try folderController.createFolder(from: savedApp1, and: savedApp2, title: "Favorites")
-
-        let pageItems = try storage.fetchAllItems(parentId: pageId)
-        let folder = pageItems.first { $0.type == .group }
-        #expect(folder != nil)
-        #expect(folder?.group?.title == "Favorites")
-
-        let folderChildren = try storage.fetchAllItems(parentId: folderId)
-        #expect(folderChildren.count == 2)
+        let reopened = try StorageManager(dbPath: path)
+        let expected = try #require(committed)
+        #expect(try reopened.persistedLayoutSnapshot() == expected)
     }
 
-    @Test("FolderController — 自动解散：移出至只剩 1 个时自动解散")
-    func folderController_autoDissolve() throws {
-        let storage = try StorageManager(dbPath: ":memory:")
-        let folderController = FolderController(itemWriter: storage)
-
-        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
-        let pageId = try storage.insertItem(page)
-
-        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: pageId, app: AppInfo(id: 0, title: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app", storeId: nil, category: nil), group: nil)
-        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: pageId, app: AppInfo(id: 0, title: "App2", bundleId: "com.test.app2", path: "/Applications/App2.app", storeId: nil, category: nil), group: nil)
-        let id1 = try storage.insertItem(app1)
-        let id2 = try storage.insertItem(app2)
-
-        let savedApp1 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id1 }!
-        let savedApp2 = try storage.fetchAllItems(parentId: pageId).first { $0.id == id2 }!
-
-        let folderId = try folderController.createFolder(from: savedApp1, and: savedApp2)
-
-        let itemToMove = try storage.fetchAllItems(parentId: folderId).first!
-        try folderController.removeFromFolder(
-            item: itemToMove,
-            folderId: folderId,
-            targetPageId: pageId,
-            targetOrdering: 10,
-            reader: storage
+    @Test("真实 folder ROLLBACK failure 关闭连接后重开无部分事务")
+    func folderRollbackFailureInvalidatesAndReopenRestoresState() throws {
+        let directory = URL(fileURLWithPath: "/tmp")
+            .appendingPathComponent("LaunchPadRollback-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
         )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("layout.sqlite").path
+        let script = SQLiteFaultScript()
+        let storage = try StorageManager(
+            dbPath: path,
+            schemaSetup: { Schema.setupSchema(db: $0) },
+            faultInjector: script.result(for:)
+        )
+        let pageID = try storage.insertItem(
+            TestDataFactory.makePageItem(uuid: "rollback-page", type: .page)
+        )
+        let sourceID = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "rollback-source",
+            type: .app,
+            ordering: 0,
+            parentId: pageID,
+            app: TestDataFactory.makeAppInfo(
+                bundleId: "com.test.rollback.source"
+            )
+        ))
+        let folderID = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "rollback-folder",
+            type: .group,
+            ordering: 1,
+            parentId: pageID,
+            group: TestDataFactory.makeGroupInfo(title: "Rollback")
+        ))
+        for index in 0..<2 {
+            _ = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "rollback-child-\(index)",
+                type: .app,
+                ordering: index,
+                parentId: folderID,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.rollback.child.\(index)"
+                )
+            ))
+        }
+        let before = try storage.persistedLayoutSnapshot()
+        script.fail(
+            .step(.updateLayoutItem),
+            onOccurrence: 4,
+            code: SQLITE_IOERR
+        )
+        script.failNext(.rollback, code: SQLITE_IOERR)
 
-        let pageItems = try storage.fetchAllItems(parentId: pageId)
-        let folder = pageItems.first { $0.type == .group }
-        #expect(folder == nil, "只剩 1 个子项时 folder 应自动解散")
+        do {
+            try storage.apply(
+                .addToFolder(itemID: sourceID, folderID: folderID),
+                pageCapacity: 35
+            )
+            Issue.record("expected SQLiteRollbackFailure")
+        } catch let error as SQLiteRollbackFailure {
+            #expect(error.primaryError as? StorageError == .updateFailed)
+            #expect(error.rollbackCode == SQLITE_IOERR)
+        }
+        #expect(script.invocationCount(for: .step(.updateLayoutItem)) == 4)
+        #expect(script.invocationCount(for: .changes(.updateLayoutItem)) == 3)
+        #expect(throws: StorageError.storageUnavailable) {
+            _ = try storage.fetchAllItems(parentId: nil)
+        }
+
+        let reopened = try StorageManager(dbPath: path)
+        #expect(try reopened.persistedLayoutSnapshot() == before)
     }
 }

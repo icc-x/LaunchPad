@@ -169,24 +169,58 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
     ) throws {
         try withDatabase { database in
             try runTransaction(database: database, mode: .immediate) {
-                guard case .moveTopLevel = intent else {
-                    throw LayoutDomainError.unsupportedIntent
-                }
                 let before = try readPersistedLayoutSnapshot(
                     database: database
                 )
                 var state = try readLayoutDomainState(snapshot: before)
-                _ = try state.apply(intent)
+                try state.validate(intent)
+
+                let createdFolderID: Int64? = switch intent {
+                case .createFolder(_, _, let title):
+                    try insertFolder(title: title, database: database)
+                case .moveTopLevel,
+                     .addToFolder,
+                     .reorderFolderItem,
+                     .removeFromFolder,
+                     .deleteFolder:
+                    nil
+                }
+
+                let effects = try state.applyValidated(
+                    intent,
+                    createdFolderID: createdFolderID
+                )
+                try state.validateState()
                 let plan = try state.makePageRebuildPlan(
                     pageCapacity: pageCapacity
+                )
+
+                try persistFolderChildren(
+                    state.childrenByFolderID,
+                    database: database
                 )
                 let resolvedPages = try persistPagePlan(
                     plan,
                     database: database
                 )
+                for folderID in effects.folderIDsToDelete.sorted() {
+                    try deleteLayoutItem(
+                        itemID: folderID,
+                        database: database
+                    )
+                }
+
+                let createdFolderTitles: [Int64: String]
+                if let createdFolderID,
+                   let title = effects.createdFolderTitle {
+                    createdFolderTitles = [createdFolderID: title]
+                } else {
+                    createdFolderTitles = [:]
+                }
                 try verifyPersistedLayout(
                     state: state,
                     pages: resolvedPages,
+                    createdFolderTitles: createdFolderTitles,
                     database: database
                 )
             }
@@ -355,6 +389,116 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
             topLevelItems: topLevel,
             childrenByFolderID: folderChildren
         )
+    }
+
+    /// Inserts both folder rows using the caller's active layout transaction.
+    private func insertFolder(
+        title: String,
+        database: OpaquePointer
+    ) throws -> Int64 {
+        let itemKind = SQLiteStatementKind.insertItem
+        let itemSQL = """
+            INSERT INTO items (uuid, type, parent_id, ordering)
+            VALUES (?, ?, NULL, 0)
+            """
+        let uuid = UUID().uuidString
+        var itemStatement: OpaquePointer?
+        defer { sqlite3_finalize(itemStatement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: itemSQL,
+            statement: &itemStatement,
+            kind: itemKind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_text(
+                itemStatement,
+                1,
+                (uuid as NSString).utf8String,
+                -1,
+                Self.sqliteTransient
+            ),
+            kind: itemKind,
+            index: 1
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_int(
+                itemStatement,
+                2,
+                Int32(ItemType.group.rawValue)
+            ),
+            kind: itemKind,
+            index: 2
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(itemStatement, kind: itemKind) == SQLITE_DONE,
+              sqliteDriver.changes(database: database, kind: itemKind) == 1 else {
+            throw StorageError.insertFailed
+        }
+        let folderID = sqlite3_last_insert_rowid(database)
+
+        let metadataKind = SQLiteStatementKind.insertGroupMetadata
+        let metadataSQL = "INSERT INTO groups (item_id, title) VALUES (?, ?)"
+        var metadataStatement: OpaquePointer?
+        defer { sqlite3_finalize(metadataStatement) }
+        guard sqliteDriver.prepare(
+            database: database,
+            sql: metadataSQL,
+            statement: &metadataStatement,
+            kind: metadataKind
+        ) == SQLITE_OK else {
+            throw StorageError.prepareFailed
+        }
+        guard sqliteDriver.bind(
+            sqlite3_bind_int64(metadataStatement, 1, folderID),
+            kind: metadataKind,
+            index: 1
+        ) == SQLITE_OK,
+        sqliteDriver.bind(
+            sqlite3_bind_text(
+                metadataStatement,
+                2,
+                (title as NSString).utf8String,
+                -1,
+                Self.sqliteTransient
+            ),
+            kind: metadataKind,
+            index: 2
+        ) == SQLITE_OK else {
+            throw StorageError.bindFailed
+        }
+        guard sqliteDriver.step(
+            metadataStatement,
+            kind: metadataKind
+        ) == SQLITE_DONE,
+        sqliteDriver.changes(
+            database: database,
+            kind: metadataKind
+        ) == 1 else {
+            throw StorageError.insertFailed
+        }
+        return folderID
+    }
+
+    /// Rewrites every surviving folder with deterministic dense child ordering.
+    private func persistFolderChildren(
+        _ childrenByFolderID: [Int64: [LayoutNode]],
+        database: OpaquePointer
+    ) throws {
+        for folderID in childrenByFolderID.keys.sorted() {
+            let children = childrenByFolderID[folderID] ?? []
+            for (ordering, child) in children.enumerated() {
+                try updateParentAndOrdering(
+                    itemID: child.id,
+                    parentID: folderID,
+                    ordering: ordering,
+                    database: database
+                )
+            }
+        }
     }
 
     private func updateParentAndOrdering(
