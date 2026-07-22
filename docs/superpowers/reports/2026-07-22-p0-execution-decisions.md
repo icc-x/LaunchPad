@@ -361,3 +361,24 @@ the approved plan or task-specific test reports.
 - Verification: the reviewer re-read the focused range, withdrew the Important
   finding, and approved Task 6 with Critical/Important/Minor counts of `0/0/0`;
   the controller independently ran the focused suite with `21/21` tests passing.
+
+## Decision 019: Verify search focus through AppKit's field editor
+
+- Status: adopted during Task 7 systematic debugging
+- Evidence: after the approved production call
+  `makeFirstResponder(searchBar)`, the exact RED test and an independent
+  controller run consistently reported `window.firstResponder` as the shared
+  `NSTextView` field editor. Every action, query, and debounce assertion passed;
+  only the brief's direct `NSSearchField` identity assertion failed.
+- Decision: retain the single production request that makes the search field the
+  responder, but test actual editing focus by requiring
+  `searchBar.currentEditor()` to be non-nil and identical to
+  `window.firstResponder`. Do not issue duplicate responder requests or weaken
+  the assertion to a generic non-nil check.
+- Impact: the test now expresses AppKit's real responder-chain contract while
+  preserving the product requirement that the first character, input focus, and
+  one debounced request are applied atomically.
+- Verification: the corrected exact test passed `1/1`; the controller ran the
+  complete VC and debounce filter with `118/118` passing; the independent task
+  reviewer confirmed the field-editor assertion is the more accurate contract
+  and approved with Critical/Important/Minor counts of `0/0/0`.
