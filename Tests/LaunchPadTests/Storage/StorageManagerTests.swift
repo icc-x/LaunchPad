@@ -4,6 +4,99 @@ import SQLite3
 import LaunchPadProtocols
 @testable import LaunchPad
 
+final class SQLiteFaultScript: @unchecked Sendable {
+    private struct ScheduledFailure {
+        var callsUntilFailure: Int
+        let code: Int32
+    }
+
+    private let lock = NSLock()
+    private var failures: [SQLiteFaultPoint: [ScheduledFailure]] = [:]
+    private var invocations: [SQLiteFaultPoint: Int] = [:]
+
+    func failNext(_ point: SQLiteFaultPoint, code: Int32) {
+        fail(point, onOccurrence: 1, code: code)
+    }
+
+    func fail(
+        _ point: SQLiteFaultPoint,
+        onOccurrence: Int,
+        code: Int32
+    ) {
+        precondition(onOccurrence > 0)
+        lock.lock()
+        failures[point, default: []].append(
+            ScheduledFailure(
+                callsUntilFailure: onOccurrence,
+                code: code
+            )
+        )
+        lock.unlock()
+    }
+
+    func result(for point: SQLiteFaultPoint) -> Int32? {
+        lock.lock()
+        defer { lock.unlock() }
+        invocations[point, default: 0] += 1
+        guard var scheduled = failures[point], !scheduled.isEmpty else {
+            return nil
+        }
+        scheduled[0].callsUntilFailure -= 1
+        if scheduled[0].callsUntilFailure == 0 {
+            let code = scheduled.removeFirst().code
+            failures[point] = scheduled
+            return code
+        }
+        failures[point] = scheduled
+        return nil
+    }
+
+    func invocationCount(for point: SQLiteFaultPoint) -> Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return invocations[point, default: 0]
+    }
+}
+
+private final class QueueObservationRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var values: [Bool] = []
+
+    func append(_ value: Bool) {
+        lock.lock()
+        values.append(value)
+        lock.unlock()
+    }
+
+    var snapshot: [Bool] {
+        lock.lock()
+        defer { lock.unlock() }
+        return values
+    }
+}
+
+private func makeFaultableStorage(
+    _ script: SQLiteFaultScript
+) throws -> StorageManager {
+    try StorageManager(
+        dbPath: ":memory:",
+        schemaSetup: { Schema.setupSchema(db: $0) },
+        faultInjector: script.result(for:)
+    )
+}
+
+private func withSQLiteDatabase<T>(
+    _ body: (OpaquePointer) throws -> T
+) throws -> T {
+    var connection: OpaquePointer?
+    guard sqlite3_open(":memory:", &connection) == SQLITE_OK,
+          let database = connection else {
+        throw StorageError.openFailed
+    }
+    defer { sqlite3_close_v2(database) }
+    return try body(database)
+}
+
 @Suite("StorageManager 基础 CRUD")
 struct StorageManagerTests {
 
@@ -342,9 +435,19 @@ struct StorageManagerUpdateTests {
         try StorageManager(dbPath: ":memory:", schemaSetup: { _ in })
     }
 
-    private func makeItemsOnlySUT() throws -> StorageManager {
+    private func makeItemsOnlySUT(
+        seedID: Int64? = nil,
+        seedType: ItemType = .app
+    ) throws -> StorageManager {
         try StorageManager(dbPath: ":memory:", schemaSetup: { db in
             sqlite3_exec(db, Schema.createItemsTable, nil, nil, nil)
+            if let seedID {
+                let sql = """
+                    INSERT INTO items (id, uuid, type, ordering)
+                    VALUES (\(seedID), 'seed-\(seedID)', \(seedType.rawValue), 0)
+                    """
+                precondition(sqlite3_exec(db, sql, nil, nil, nil) == SQLITE_OK)
+            }
         })
     }
 
@@ -453,17 +556,25 @@ struct StorageManagerUpdateTests {
 
     @Test("items 表存在但 apps 表不存在 -> updateItem apps prepare 失败")
     func itemsOnly_updateApp_prepareFails() throws {
-        let sut = try makeItemsOnlySUT()
-        #expect(throws: StorageError.self) {
-            try sut.updateItem(TestDataFactory.makePageItem(type: .app, app: TestDataFactory.makeAppInfo()))
+        let sut = try makeItemsOnlySUT(seedID: 1, seedType: .app)
+        #expect(throws: StorageError.prepareFailed) {
+            try sut.updateItem(TestDataFactory.makePageItem(
+                id: 1,
+                type: .app,
+                app: TestDataFactory.makeAppInfo()
+            ))
         }
     }
 
     @Test("items 表存在但 groups 表不存在 -> updateItem groups prepare 失败")
     func itemsOnly_updateGroup_prepareFails() throws {
-        let sut = try makeItemsOnlySUT()
-        #expect(throws: StorageError.self) {
-            try sut.updateItem(TestDataFactory.makePageItem(type: .group, group: TestDataFactory.makeGroupInfo()))
+        let sut = try makeItemsOnlySUT(seedID: 2, seedType: .group)
+        #expect(throws: StorageError.prepareFailed) {
+            try sut.updateItem(TestDataFactory.makePageItem(
+                id: 2,
+                type: .group,
+                group: TestDataFactory.makeGroupInfo()
+            ))
         }
     }
 
@@ -594,5 +705,337 @@ struct StorageManagerFetchImageNullBlobTests {
 
         let result = try sut.fetchImage(itemId: 2)
         #expect(result == nil)
+    }
+}
+
+@Suite("StorageManager checked SQLite boundaries")
+struct StorageManagerSQLiteBoundaryTests {
+    @Test("deferred 与 immediate 使用对应 SQLite transaction mode")
+    func transactionModesEnterExpectedSQLiteState() throws {
+        try withSQLiteDatabase { database in
+            let transaction = SQLiteTransaction(
+                database: database,
+                driver: SQLiteDriver(faultInjector: nil)
+            )
+
+            let deferredState = try transaction.run(mode: .deferred) {
+                sqlite3_txn_state(database, nil)
+            }
+            let immediateState = try transaction.run(mode: .immediate) {
+                sqlite3_txn_state(database, nil)
+            }
+
+            #expect(deferredState == SQLITE_TXN_NONE)
+            #expect(immediateState == SQLITE_TXN_WRITE)
+        }
+    }
+
+    @Test("BEGIN 失败不执行事务 body")
+    func beginFailureDoesNotWrite() throws {
+        let script = SQLiteFaultScript()
+        let sut = try makeFaultableStorage(script)
+        script.failNext(.begin, code: SQLITE_BUSY)
+
+        #expect(throws: StorageError.beginFailed) {
+            _ = try sut.insertItem(
+                TestDataFactory.makePageItem(
+                    uuid: "begin-failure",
+                    type: .page
+                )
+            )
+        }
+        #expect(script.invocationCount(for: .rollback) == 0)
+        #expect(try sut.fetchAllItems(parentId: nil).isEmpty)
+    }
+
+    @Test("COMMIT 失败回滚 insert")
+    func commitFailureRollsBackInsert() throws {
+        let script = SQLiteFaultScript()
+        let sut = try makeFaultableStorage(script)
+        script.failNext(.commit, code: SQLITE_IOERR)
+
+        #expect(throws: StorageError.commitFailed) {
+            _ = try sut.insertItem(
+                TestDataFactory.makePageItem(
+                    uuid: "commit-failure",
+                    type: .page
+                )
+            )
+        }
+        #expect(script.invocationCount(for: .rollback) == 1)
+        #expect(try sut.fetchAllItems(parentId: nil).isEmpty)
+    }
+
+    @Test("ROLLBACK 失败保留 primary error 并使 storage 不可用")
+    func rollbackFailureInvalidatesStorage() throws {
+        let script = SQLiteFaultScript()
+        let sut = try makeFaultableStorage(script)
+        _ = try sut.insertItem(
+            TestDataFactory.makePageItem(uuid: "duplicate", type: .page)
+        )
+        script.failNext(.rollback, code: SQLITE_IOERR)
+
+        do {
+            _ = try sut.insertItem(
+                TestDataFactory.makePageItem(uuid: "duplicate", type: .page)
+            )
+            Issue.record("expected SQLiteRollbackFailure")
+        } catch let error as SQLiteRollbackFailure {
+            #expect(error.primaryError as? StorageError == .insertFailed)
+            #expect(error.rollbackCode == SQLITE_IOERR)
+        }
+        #expect(throws: StorageError.storageUnavailable) {
+            _ = try sut.fetchAllItems(parentId: nil)
+        }
+    }
+
+    @Test("SQLite 已进入 autocommit 时保留 primary error 且不执行 synthetic rollback")
+    func alreadyAutocommitDoesNotRollback() throws {
+        try withSQLiteDatabase { database in
+            let script = SQLiteFaultScript()
+            script.failNext(.rollback, code: SQLITE_IOERR)
+            let transaction = SQLiteTransaction(
+                database: database,
+                driver: SQLiteDriver(faultInjector: script.result(for:))
+            )
+
+            #expect(throws: StorageError.updateFailed) {
+                try transaction.run(mode: .deferred) {
+                    #expect(sqlite3_exec(
+                        database,
+                        "ROLLBACK",
+                        nil,
+                        nil,
+                        nil
+                    ) == SQLITE_OK)
+                    throw StorageError.updateFailed
+                }
+            }
+            #expect(script.invocationCount(for: .rollback) == 0)
+
+            do {
+                try transaction.run(mode: .deferred) {
+                    throw StorageError.deleteFailed
+                }
+                Issue.record("expected SQLiteRollbackFailure")
+            } catch let error as SQLiteRollbackFailure {
+                #expect(error.primaryError as? StorageError == .deleteFailed)
+                #expect(error.rollbackCode == SQLITE_IOERR)
+            }
+        }
+    }
+
+    @Test("driver prepare/bind/step/changes 故障精确映射并回滚")
+    func driverWriteFaultsMapAndRollback() throws {
+        let cases: [(SQLiteFaultPoint, Int32, StorageError)] = [
+            (.prepare(.insertItem), SQLITE_IOERR, .prepareFailed),
+            (.bind(.insertItem, index: 1), SQLITE_RANGE, .bindFailed),
+            (.step(.insertItem), SQLITE_IOERR, .insertFailed),
+            (.changes(.insertItem), 0, .insertFailed),
+        ]
+
+        for (index, testCase) in cases.enumerated() {
+            let (point, code, expectedError) = testCase
+            let script = SQLiteFaultScript()
+            let sut = try makeFaultableStorage(script)
+            script.failNext(point, code: code)
+
+            do {
+                _ = try sut.insertItem(
+                    TestDataFactory.makePageItem(
+                        uuid: "driver-fault-\(index)",
+                        type: .page
+                    )
+                )
+                Issue.record("expected \(expectedError)")
+            } catch let error as StorageError {
+                #expect(error == expectedError)
+            }
+            #expect(script.invocationCount(for: .rollback) == 1)
+            #expect(try sut.fetchAllItems(parentId: nil).isEmpty)
+        }
+    }
+
+    @Test("metadata helper 故障精确映射并回滚")
+    func metadataFaultsMapAndRollback() throws {
+        let insertScript = SQLiteFaultScript()
+        let insertSUT = try makeFaultableStorage(insertScript)
+        insertScript.failNext(.bind(.insertAppMetadata, index: 6), code: SQLITE_RANGE)
+        #expect(throws: StorageError.bindFailed) {
+            _ = try insertSUT.insertItem(TestDataFactory.makePageItem(
+                uuid: "metadata-insert",
+                type: .app,
+                app: TestDataFactory.makeAppInfo(bundleId: "metadata.insert")
+            ))
+        }
+        #expect(insertScript.invocationCount(for: .rollback) == 1)
+        #expect(try insertSUT.fetchAllItems(parentId: nil).isEmpty)
+
+        let updateScript = SQLiteFaultScript()
+        let updateSUT = try makeFaultableStorage(updateScript)
+        let item = TestDataFactory.makePageItem(
+            uuid: "metadata-update",
+            type: .group,
+            group: TestDataFactory.makeGroupInfo(title: "Before")
+        )
+        let itemID = try updateSUT.insertItem(item)
+        updateScript.failNext(.changes(.updateGroupMetadata), code: 0)
+        #expect(throws: StorageError.updateFailed) {
+            try updateSUT.updateItem(PageItem(
+                id: itemID,
+                uuid: item.uuid,
+                type: .group,
+                ordering: 5,
+                parentId: nil,
+                app: nil,
+                group: GroupInfo(id: itemID, title: "After")
+            ))
+        }
+        #expect(updateScript.invocationCount(for: .rollback) == 1)
+        let stored = try #require(updateSUT.fetchAllItems(parentId: nil).first)
+        #expect(stored.ordering == 0)
+        #expect(stored.group?.title == "Before")
+    }
+
+    @Test("fetchItems 首次与 terminal step 错误均抛 queryFailed")
+    func fetchItemsStepErrorsAreNotEndOfData() throws {
+        let firstScript = SQLiteFaultScript()
+        let firstSUT = try makeFaultableStorage(firstScript)
+        firstScript.failNext(.step(.fetchItems), code: SQLITE_IOERR)
+        #expect(throws: StorageError.queryFailed) {
+            _ = try firstSUT.fetchAllItems(parentId: nil)
+        }
+
+        let terminalScript = SQLiteFaultScript()
+        let terminalSUT = try makeFaultableStorage(terminalScript)
+        _ = try terminalSUT.insertItem(
+            TestDataFactory.makePageItem(uuid: "fetch-terminal", type: .page)
+        )
+        terminalScript.fail(
+            .step(.fetchItems),
+            onOccurrence: 2,
+            code: SQLITE_IOERR
+        )
+        #expect(throws: StorageError.queryFailed) {
+            _ = try terminalSUT.fetchAllItems(parentId: nil)
+        }
+    }
+
+    @Test("fetchImage 首次与 terminal step 错误均抛 queryFailed")
+    func fetchImageStepErrorsAreNotMissingData() throws {
+        let firstScript = SQLiteFaultScript()
+        let firstSUT = try makeFaultableStorage(firstScript)
+        firstScript.failNext(.step(.fetchImage), code: SQLITE_IOERR)
+        #expect(throws: StorageError.queryFailed) {
+            _ = try firstSUT.fetchImage(itemId: 1)
+        }
+
+        let terminalScript = SQLiteFaultScript()
+        let terminalSUT = try makeFaultableStorage(terminalScript)
+        let itemID = try terminalSUT.insertItem(
+            TestDataFactory.makePageItem(uuid: "image-terminal", type: .page)
+        )
+        try terminalSUT.saveImage(
+            itemId: itemID,
+            icon1x: Data([1]),
+            icon2x: Data([2])
+        )
+        terminalScript.fail(
+            .step(.fetchImage),
+            onOccurrence: 2,
+            code: SQLITE_IOERR
+        )
+        #expect(throws: StorageError.queryFailed) {
+            _ = try terminalSUT.fetchImage(itemId: itemID)
+        }
+    }
+
+    @Test("stale update/delete/reorder ID 均严格失败且 reorder 回滚")
+    func staleWriteIDsFailStrictly() throws {
+        let sut = try StorageManager(dbPath: ":memory:")
+        #expect(throws: StorageError.updateFailed) {
+            try sut.updateItem(TestDataFactory.makePageItem(
+                id: 999,
+                uuid: "stale-update",
+                type: .page
+            ))
+        }
+        #expect(throws: StorageError.deleteFailed) {
+            try sut.deleteItem(id: 999)
+        }
+
+        let pageID = try sut.insertItem(
+            TestDataFactory.makePageItem(uuid: "stale-page", type: .page)
+        )
+        let firstID = try sut.insertItem(TestDataFactory.makePageItem(
+            uuid: "stale-first",
+            type: .app,
+            ordering: 0,
+            parentId: pageID,
+            app: TestDataFactory.makeAppInfo(bundleId: "stale.first")
+        ))
+        let secondID = try sut.insertItem(TestDataFactory.makePageItem(
+            uuid: "stale-second",
+            type: .app,
+            ordering: 1,
+            parentId: pageID,
+            app: TestDataFactory.makeAppInfo(bundleId: "stale.second")
+        ))
+        #expect(throws: StorageError.updateFailed) {
+            try sut.reorderItems(
+                parentId: pageID,
+                orderedIds: [secondID, 999]
+            )
+        }
+        let storedIDs = try sut.fetchAllItems(parentId: pageID).map(\.id)
+        #expect(storedIDs == [firstID, secondID])
+    }
+
+    @Test("全部 7 个 public API 精确进入同一 databaseQueue")
+    func everyPublicMethodUsesDatabaseQueue() throws {
+        let sut = try StorageManager(dbPath: ":memory:")
+        let pageID = try sut.insertItem(
+            TestDataFactory.makePageItem(uuid: "queue-page", type: .page)
+        )
+        let app = TestDataFactory.makeAppInfo(
+            title: "Queue",
+            bundleId: "com.test.queue"
+        )
+        let appID = try sut.insertItem(TestDataFactory.makePageItem(
+            uuid: "queue-app",
+            type: .app,
+            parentId: pageID,
+            app: app
+        ))
+        let recorder = QueueObservationRecorder()
+        sut.databaseAccessObserver = { recorder.append($0) }
+
+        let removableID = try sut.insertItem(
+            TestDataFactory.makePageItem(uuid: "queue-removable", type: .page)
+        )
+        try sut.updateItem(PageItem(
+            id: appID,
+            uuid: "queue-app",
+            type: .app,
+            ordering: 0,
+            parentId: pageID,
+            app: AppInfo(
+                id: appID,
+                title: "Queue Updated",
+                bundleId: "com.test.queue",
+                path: app.path,
+                storeId: nil,
+                category: nil
+            ),
+            group: nil
+        ))
+        try sut.deleteItem(id: removableID)
+        _ = try sut.fetchAllItems(parentId: pageID)
+        try sut.reorderItems(parentId: pageID, orderedIds: [appID])
+        try sut.saveImage(itemId: appID, icon1x: Data([1]), icon2x: Data([2]))
+        _ = try sut.fetchImage(itemId: appID)
+
+        #expect(recorder.snapshot.count == 7)
+        #expect(recorder.snapshot.allSatisfy { $0 })
     }
 }
