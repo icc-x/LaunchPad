@@ -131,7 +131,8 @@ final class MockIconProvider: IconProviding, @unchecked Sendable {
 
 // MARK: - MockHotkeyManager
 
-final class MockHotkeyManager: HotkeyManaging, @unchecked Sendable {
+@MainActor
+final class MockHotkeyManager: HotkeyManaging {
     var onToggle: (@Sendable () -> Void)?
     var registerResult = true
     private(set) var registerCallCount = 0

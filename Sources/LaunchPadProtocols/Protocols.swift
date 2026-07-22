@@ -83,6 +83,7 @@ public protocol IconCaching: Sendable {
 }
 
 /// 测试时可模拟按键事件
+@MainActor
 public protocol HotkeyManaging: Sendable {
     var onToggle: (@Sendable () -> Void)? { get set }
     func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool

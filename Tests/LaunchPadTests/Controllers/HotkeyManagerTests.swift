@@ -11,6 +11,7 @@ private final class SendableCounter: @unchecked Sendable {
     var flag: Bool = false
 }
 
+@MainActor
 @Suite("HotkeyManager")
 struct HotkeyManagerTests {
 
@@ -28,6 +29,11 @@ struct HotkeyManagerTests {
         manager.localMonitorInstaller = { _ in localMonitorToken }
         manager.localMonitorRemover = { _ in }
         return manager
+    }
+
+    private func makeMachPort() throws -> CFMachPort {
+        let port = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
+        return try #require(port)
     }
 
     // MARK: - onToggle callback
@@ -213,19 +219,13 @@ struct HotkeyManagerTests {
 
     // MARK: - isAccessibilityTrusted
 
-    @Test("isAccessibilityTrusted returns a Bool without crashing")
-    func isAccessibilityTrusted_returnsBool() {
-        let manager = makeIsolatedManager()
-        // 仅验证属性可读取，不假定具体值（测试环境通常为 false）
-        _ = manager.isAccessibilityTrusted
-    }
+    @Test("isAccessibilityTrusted returns the injected permission value")
+    func isAccessibilityTrusted_returnsInjectedValue() {
+        let manager = makeIsolatedManager(accessibilityTrusted: false)
+        #expect(manager.isAccessibilityTrusted == false)
 
-    @Test("defaultAccessibilityCheck delegates to system AXIsProcessTrusted")
-    func defaultAccessibilityCheck_delegatesToSystem() {
-        // 直接调用默认实现（具名函数），覆盖其函数体
-        // AXIsProcessTrusted() 仅返回当前授权布尔值，无副作用、不弹窗
-        let result = HotkeyManager.defaultAccessibilityCheck()
-        #expect(result == result) // 仅验证可调用并返回 Bool
+        manager.accessibilityChecker = { true }
+        #expect(manager.isAccessibilityTrusted == true)
     }
 
     // MARK: - onKeyDown callback
@@ -260,23 +260,64 @@ struct HotkeyManagerTests {
         }
     }
 
-    // MARK: - simulateToggle from background thread
+    // MARK: - C callback delivery
 
-    @Test("simulateToggle from background thread dispatches to main")
-    func simulateToggle_fromBackgroundThread_dispatchesToMain() async {
-        let manager = makeIsolatedManager()
+    @Test("background C callbacks synchronously preserve flags/keyDown ordering")
+    func tapCallback_fromBackground_preservesEventOrdering() async throws {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
+        let port = try makeMachPort()
+        manager.tapProvider = nil
+        var contextAddress: UInt?
+        manager.eventTapCreator = { _, _, context in
+            contextAddress = context.map { UInt(bitPattern: $0) }
+            return port
+        }
         let counter = SendableCounter()
-        manager.onToggle = { counter.count += 1 }
+        manager.onToggle = {
+            MainActor.preconditionIsolated()
+            counter.count += 1
+        }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+        let address = try #require(contextAddress)
 
-        // 从后台线程调用，验证 DispatchQueue.main.sync 分支
         await withCheckedContinuation { continuation in
             DispatchQueue.global().async {
-                manager.simulateToggle()
+                guard
+                    let context = UnsafeMutableRawPointer(bitPattern: address),
+                    let flagsEvent = CGEvent(
+                        keyboardEventSource: nil,
+                        virtualKey: 49,
+                        keyDown: true
+                    ),
+                    let keyEvent = CGEvent(
+                        keyboardEventSource: nil,
+                        virtualKey: 49,
+                        keyDown: true
+                    ),
+                    let proxy = CGEventTapProxy(bitPattern: 1)
+                else {
+                    continuation.resume()
+                    return
+                }
+                flagsEvent.flags = .maskAlternate
+                _ = HotkeyManager.tapCallback(
+                    proxy,
+                    .flagsChanged,
+                    flagsEvent,
+                    context
+                )
+                _ = HotkeyManager.tapCallback(
+                    proxy,
+                    .keyDown,
+                    keyEvent,
+                    context
+                )
                 continuation.resume()
             }
         }
 
         #expect(counter.count == 1)
+        manager.unregisterGlobalHotkey()
     }
 
     // MARK: - registerGlobalHotkey with different parameters
@@ -321,35 +362,56 @@ struct HotkeyManagerTests {
 
     // MARK: - CGEventTap callback (tapCallbackEntry / handleGlobalEvent)
 
-    private func makeCGKeyEvent(keyCode: UInt16) -> CGEvent {
-        let event = CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true)!
-        return event
+    private func makeCGKeyEvent(keyCode: UInt16) throws -> CGEvent {
+        try #require(CGEvent(keyboardEventSource: nil, virtualKey: keyCode, keyDown: true))
     }
 
     @Test("tapCallbackEntry with nil refcon returns event unchanged")
-    func tapCallbackEntry_nilRefcon_returnsEvent() {
-        let event = makeCGKeyEvent(keyCode: 49)
-        let result = HotkeyManager.tapCallback(CGEventTapProxy(bitPattern: 1)!, .keyDown, event, nil)
+    func tapCallbackEntry_nilRefcon_returnsEvent() throws {
+        let event = try makeCGKeyEvent(keyCode: 49)
+        let proxy = try #require(CGEventTapProxy(bitPattern: 1))
+        let result = HotkeyManager.tapCallback(proxy, .keyDown, event, nil)
         #expect(result != nil)
     }
 
     @Test("tapCallbackEntry with valid refcon dispatches to handleGlobalEvent")
-    func tapCallbackEntry_validRefcon_dispatches() {
-        let manager = makeIsolatedManager()
-        let event = makeCGKeyEvent(keyCode: 49)
-        let refcon = Unmanaged.passRetained(manager).toOpaque()
-        let result = HotkeyManager.tapCallback(CGEventTapProxy(bitPattern: 1)!, .flagsChanged, event, refcon)
+    func tapCallbackEntry_validRefcon_dispatches() throws {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
+        let port = try makeMachPort()
+        manager.tapProvider = nil
+        var contextAddress: UInt?
+        manager.eventTapCreator = { _, _, context in
+            contextAddress = context.map { UInt(bitPattern: $0) }
+            return port
+        }
+        let counter = SendableCounter()
+        manager.onToggle = { counter.count += 1 }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+
+        let event = try makeCGKeyEvent(keyCode: 49)
+        event.flags = .maskAlternate
+        let address = try #require(contextAddress)
+        let context = try #require(UnsafeMutableRawPointer(bitPattern: address))
+        let proxy = try #require(CGEventTapProxy(bitPattern: 1))
+        let result = HotkeyManager.tapCallback(
+            proxy,
+            .flagsChanged,
+            event,
+            context
+        )
+        manager.simulateSpaceKeyDown()
+
         #expect(result != nil)
-        // 平衡 passRetained 的引用计数
-        _ = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeRetainedValue()
+        #expect(counter.count == 1)
+        manager.unregisterGlobalHotkey()
     }
 
     @Test("handleGlobalEvent flagsChanged updates isOptionHeld (true)")
-    func handleGlobalEvent_flagsChanged_setsOptionHeldTrue() {
+    func handleGlobalEvent_flagsChanged_setsOptionHeldTrue() throws {
         let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
-        let event = makeCGKeyEvent(keyCode: 49)
+        let event = try makeCGKeyEvent(keyCode: 49)
         event.flags = .maskAlternate
         manager.handleGlobalEvent(type: .flagsChanged, event: event)
         // isOptionHeld 应为 true → simulateSpaceKeyDown 触发 onToggle
@@ -358,12 +420,12 @@ struct HotkeyManagerTests {
     }
 
     @Test("handleGlobalEvent flagsChanged updates isOptionHeld (false)")
-    func handleGlobalEvent_flagsChanged_setsOptionHeldFalse() {
+    func handleGlobalEvent_flagsChanged_setsOptionHeldFalse() throws {
         let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyDown() // isOptionHeld = true
-        let event = makeCGKeyEvent(keyCode: 49)
+        let event = try makeCGKeyEvent(keyCode: 49)
         event.flags = [] // 无 Alternate 标志
         manager.handleGlobalEvent(type: .flagsChanged, event: event)
         // isOptionHeld 应为 false → simulateSpaceKeyDown 不触发
@@ -372,31 +434,31 @@ struct HotkeyManagerTests {
     }
 
     @Test("handleGlobalEvent keyDown with Option+Space triggers onToggle")
-    func handleGlobalEvent_keyDown_optionSpace_triggersToggle() {
+    func handleGlobalEvent_keyDown_optionSpace_triggersToggle() throws {
         let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyDown() // isOptionHeld = true
-        let event = makeCGKeyEvent(keyCode: 49) // Space
+        let event = try makeCGKeyEvent(keyCode: 49) // Space
         manager.handleGlobalEvent(type: .keyDown, event: event)
         #expect(counter.count == 1)
     }
 
     @Test("handleGlobalEvent keyDown without Option does not trigger onToggle")
-    func handleGlobalEvent_keyDown_withoutOption_noToggle() {
+    func handleGlobalEvent_keyDown_withoutOption_noToggle() throws {
         let manager = makeIsolatedManager()
         let counter = SendableCounter()
         manager.onToggle = { counter.count += 1 }
         manager.simulateOptionKeyUp() // isOptionHeld = false
-        let event = makeCGKeyEvent(keyCode: 49)
+        let event = try makeCGKeyEvent(keyCode: 49)
         manager.handleGlobalEvent(type: .keyDown, event: event)
         #expect(counter.count == 0)
     }
 
     @Test("handleGlobalEvent default type does nothing")
-    func handleGlobalEvent_defaultType_noOp() {
+    func handleGlobalEvent_defaultType_noOp() throws {
         let manager = makeIsolatedManager()
-        let event = makeCGKeyEvent(keyCode: 49)
+        let event = try makeCGKeyEvent(keyCode: 49)
         // 不应崩溃
         manager.handleGlobalEvent(type: .scrollWheel, event: event)
     }
@@ -442,6 +504,136 @@ struct HotkeyManagerTests {
         #expect(registered == false)
         #expect(manager.hasConflict == true)
         #expect(creatorCalls == 0)
+    }
+
+    @Test("no tap override calls the injected creator exactly once")
+    func eventTapCreatorWithoutOverrideCalledExactlyOnce() {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
+        manager.tapProvider = nil
+        var creatorCalls = 0
+        weak var weakBox: HotkeyManager.HotkeyCallbackBox?
+        manager.eventTapCreator = { _, _, context in
+            creatorCalls += 1
+            if let context {
+                weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                    .fromOpaque(context)
+                    .takeUnretainedValue()
+            }
+            return nil
+        }
+
+        let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
+
+        #expect(registered == false)
+        #expect(manager.hasConflict == true)
+        #expect(creatorCalls == 1)
+        #expect(weakBox == nil)
+    }
+
+    @Test("conflict resets before permission failure and later success")
+    func conflictStateResetsAcrossRegistrationAttempts() throws {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
+        let port = try makeMachPort()
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == false)
+        #expect(manager.hasConflict == true)
+
+        manager.accessibilityChecker = { false }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == false)
+        #expect(manager.hasConflict == false)
+
+        manager.accessibilityChecker = { true }
+        manager.tapProvider = { port }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+        #expect(manager.hasConflict == false)
+        manager.unregisterGlobalHotkey()
+    }
+
+    @Test("successful unregister releases callback ownership")
+    func successfulUnregisterReleasesManager() throws {
+        let port = try makeMachPort()
+        weak var weakManager: HotkeyManager?
+        weak var weakBox: HotkeyManager.HotkeyCallbackBox?
+        do {
+            let manager = makeIsolatedManager(accessibilityTrusted: true)
+            manager.tapProvider = nil
+            manager.eventTapCreator = { _, _, context in
+                if let context {
+                    weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                        .fromOpaque(context)
+                        .takeUnretainedValue()
+                }
+                return port
+            }
+            weakManager = manager
+            #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+            #expect(weakBox != nil)
+            manager.unregisterGlobalHotkey()
+            #expect(weakBox == nil)
+        }
+
+        #expect(weakManager == nil)
+    }
+
+    @Test("re-registration and double unregister release each callback context once")
+    func repeatedRegistrationAndDoubleUnregisterReleaseOwnedContexts() throws {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
+        let firstPort = try makeMachPort()
+        let secondPort = try makeMachPort()
+        manager.tapProvider = nil
+        weak var firstBox: HotkeyManager.HotkeyCallbackBox?
+        weak var secondBox: HotkeyManager.HotkeyCallbackBox?
+        var creatorCalls = 0
+        manager.eventTapCreator = { _, _, context in
+            creatorCalls += 1
+            if let context {
+                let box = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                    .fromOpaque(context)
+                    .takeUnretainedValue()
+                if creatorCalls == 1 {
+                    firstBox = box
+                } else {
+                    secondBox = box
+                }
+            }
+            return creatorCalls == 1 ? firstPort : secondPort
+        }
+
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+        #expect(firstBox != nil)
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+        #expect(firstBox == nil)
+        #expect(secondBox != nil)
+
+        manager.unregisterGlobalHotkey()
+        manager.unregisterGlobalHotkey()
+
+        #expect(secondBox == nil)
+        #expect(creatorCalls == 2)
+    }
+
+    @Test("deinit releases an active callback context")
+    func deinitReleasesActiveCallbackContext() throws {
+        let port = try makeMachPort()
+        weak var weakManager: HotkeyManager?
+        weak var weakBox: HotkeyManager.HotkeyCallbackBox?
+        do {
+            let manager = makeIsolatedManager(accessibilityTrusted: true)
+            manager.tapProvider = nil
+            manager.eventTapCreator = { _, _, context in
+                if let context {
+                    weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                        .fromOpaque(context)
+                        .takeUnretainedValue()
+                }
+                return port
+            }
+            weakManager = manager
+            #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
+            #expect(weakBox != nil)
+        }
+
+        #expect(weakManager == nil)
+        #expect(weakBox == nil)
     }
 
     @Test("local monitor lifecycle uses injected boundary")

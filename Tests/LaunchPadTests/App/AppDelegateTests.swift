@@ -12,6 +12,11 @@ struct AppDelegateTests {
 
     // MARK: - Test Doubles
 
+    @MainActor
+    private final class CallRecorder {
+        var count = 0
+    }
+
     /// 可控的 DataStoring 实现：通过属性控制 fetchAllItems 的返回/抛错，其余为无操作
     private struct MockStoring: DataStoring, @unchecked Sendable {
         var itemsToReturn: [PageItem] = []
@@ -187,6 +192,22 @@ struct AppDelegateTests {
         #expect(sut.hotkeyManager != nil)
     }
 
+    @Test("setupServices 只调用一次热键工厂并使用其返回实例")
+    func setupServices_usesHotkeyFactoryExactlyOnce() {
+        let sut = makeDelegate()
+        let expectedManager = makeIsolatedHotkeyManager()
+        var factoryCalls = 0
+        sut.hotkeyManagerFactory = {
+            factoryCalls += 1
+            return expectedManager
+        }
+
+        sut.setupServices()
+
+        #expect(factoryCalls == 1)
+        #expect(sut.hotkeyManager === expectedManager)
+    }
+
     @Test("setupServices：数据库损坏后删除并重建成功")
     func setupServices_corruptionRecovery() throws {
         let sut = makeDelegate()
@@ -359,6 +380,30 @@ struct AppDelegateTests {
         #expect(openedURLs.isEmpty)
     }
 
+    @Test("setupHotkey：注册成功时不显示告警且不打开 URL")
+    func setupHotkey_successDoesNotShowAlertOrOpenURL() throws {
+        let sut = makeDelegate()
+        let optionalPort = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
+        let port = try #require(optionalPort)
+        sut.hotkeyManager = makeIsolatedHotkeyManager(
+            accessibilityTrusted: true,
+            tapResult: port
+        )
+        var alertCount = 0
+        var openedURLs: [URL] = []
+        sut.alertRunner = { _ in
+            alertCount += 1
+            return .alertFirstButtonReturn
+        }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
+
+        sut.setupHotkey()
+
+        #expect(alertCount == 0)
+        #expect(openedURLs.isEmpty)
+        sut.hotkeyManager.unregisterGlobalHotkey()
+    }
+
     // MARK: - onToggle / onKeyDown 回调
 
     @Test("onToggle 回调切换窗口")
@@ -524,28 +569,6 @@ struct AppDelegateTests {
         #expect(sut.fileWatcher != nil)
     }
 
-    @Test("setupFileWatcher：文件变更触发增量扫描")
-    func setupFileWatcher_triggersIncrementalScan() async throws {
-        let sut = makeDelegate()
-        sut.storage = MockStoring(itemsToReturn: [pageItem()])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-
-        let dir = (NSTemporaryDirectory() as NSString).appendingPathComponent("launchpad_fw_\(UUID().uuidString)")
-        try FileManager.default.createDirectory(atPath: dir, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(atPath: dir) }
-
-        sut.watchedPaths = [dir]
-        sut.fileWatcherFactory = { FileWatcher(debounceInterval: 0.1) }
-        sut.setupFileWatcher()
-
-        // 写入文件触发 FSEvents → onChange → performIncrementalScan
-        let file = (dir as NSString).appendingPathComponent("probe.txt")
-        try "x".write(toFile: file, atomically: true, encoding: .utf8)
-
-        try? await Task.sleep(nanoseconds: 2_000_000_000)
-        #expect(true)
-    }
-
     // MARK: - 私有实现结构体
 
     @Test("SystemIconProvider 与 SystemFileSystemService 方法均被调用")
@@ -573,22 +596,6 @@ struct AppDelegateTests {
         #expect(storage != nil)
     }
 
-    @Test("默认 loginItemUnregister 闭包可调用")
-    func defaultLoginItemUnregister_callable() {
-        let sut = AppDelegate()
-        // 在 headless 测试环境 SMAppService.mainApp.unregister() 可能失败/成功
-        // 仅验证闭包可调用，不假定结果
-        _ = try? sut.loginItemUnregister()
-    }
-
-    @Test("默认 loginItemRegister 闭包可调用")
-    func defaultLoginItemRegister_callable() {
-        let sut = AppDelegate()
-        // 在 headless 测试环境 SMAppService.mainApp.register() 可能失败/成功
-        // 仅验证闭包可调用，不假定结果
-        _ = try? sut.loginItemRegister()
-    }
-
     // MARK: - performInitialScan NSScreen.main 为 nil 时走 ?? 1440 fallback
 
     @Test("performInitialScan: 在无 NSScreen.main 环境下使用默认 1440 宽度（覆盖 L348 ?? fallback）")
@@ -605,19 +612,28 @@ struct AppDelegateTests {
 
     // MARK: - weak self 防御分支（guard let self else）
 
-    @Test("setupHotkey onToggle: 闭包内 weak self 已 nil 时 guard else 分支（覆盖 L224）")
-    func setupHotkey_onToggle_weakSelfNil_guardElse() {
-        // 触发 AppDelegate.setupHotkey 中 onToggle 闭包内 `guard let self else { return }` 的 else 分支
+    @Test("setupHotkey onToggle：delegate 释放后 runner 仍交付安全 no-op action")
+    func setupHotkey_onToggle_releasedDelegateRunsSafeNoOp() {
+        let runnerCalls = CallRecorder()
+        weak var weakDelegate: AppDelegate?
         var sut: AppDelegate? = makeDelegate()
         let hm = makeIsolatedHotkeyManager()
+        weakDelegate = sut
+        sut?.hotkeyToggleRunner = { action in
+            MainActor.assumeIsolated {
+                runnerCalls.count += 1
+                action()
+            }
+        }
         sut?.hotkeyManager = hm
         sut?.setupHotkey()
-        // 释放 sut
+
         sut = nil
-        // 现在 hotkeyManager 的 onToggle 闭包中 [weak self] 已为 nil
-        // 调用 onToggle 触发 guard let sut else { return } 路径
+        #expect(weakDelegate == nil)
+
         hm.onToggle?()
-        #expect(true)
+
+        #expect(runnerCalls.count == 1)
     }
 
     @Test("setupHotkey onKeyDown: 闭包内 weak self 已 nil 时 guard else 分支（覆盖 L260）")

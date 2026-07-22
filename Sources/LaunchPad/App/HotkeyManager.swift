@@ -13,8 +13,17 @@ typealias EventTapCreator = (
 /// Global hotkey manager
 /// - CGEventTap two-step state machine detecting Option+Space
 /// - NSEvent local monitor for in-app keyboard events
-/// - Thread safety: CGEventTap callback dispatches via DispatchQueue.main.async
-public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
+/// - CGEventTap callback synchronously preserves event ordering on MainActor
+@MainActor
+public final class HotkeyManager: HotkeyManaging {
+
+    final class HotkeyCallbackBox {
+        weak var manager: HotkeyManager?
+
+        init(manager: HotkeyManager) {
+            self.manager = manager
+        }
+    }
 
     public var onToggle: (@Sendable () -> Void)?
 
@@ -30,17 +39,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     private var eventTap: CFMachPort?
     private var runLoopSource: CFRunLoopSource?
     private var localMonitor: Any?
-
-    // MARK: - Class-level strong reference with lock protection
-
-    private static let retainedLock = NSLock()
-    nonisolated(unsafe) private static var retainedSelf: HotkeyManager?
-
-    private static func setRetained(_ manager: HotkeyManager?) {
-        retainedLock.lock()
-        retainedSelf = manager
-        retainedLock.unlock()
-    }
+    private var callbackContext: UnsafeMutableRawPointer?
 
     // MARK: - Test injection points
 
@@ -100,6 +99,9 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
     @discardableResult
     public func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool {
+        unregisterGlobalHotkey()
+        hasConflict = false
+
         // Global event taps require Accessibility / Input Monitoring permission.
         // CGEvent.tapCreate may succeed without permission on some macOS versions but the
         // callback will never fire, so we treat "no permission" as a registration failure
@@ -111,29 +113,31 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
             (1 << CGEventType.keyDown.rawValue)
         )
 
-        // Use passRetained to prevent use-after-free — the callback holds a strong reference
-        let selfPtr = Unmanaged.passRetained(self).toOpaque()
+        let context = Unmanaged.passRetained(HotkeyCallbackBox(manager: self)).toOpaque()
 
         let tap: CFMachPort?
         if let tapProvider {
             tap = tapProvider()
         } else {
-            tap = eventTapCreator(mask, HotkeyManager.tapCallback, selfPtr)
+            tap = eventTapCreator(mask, HotkeyManager.tapCallback, context)
         }
-        eventTap = tap
 
         guard let tap else {
             // tapCreate 失败：可能是快捷键被其他应用占用
             hasConflict = true
-            _ = Unmanaged<HotkeyManager>.fromOpaque(selfPtr).takeRetainedValue()
-            HotkeyManager.setRetained(nil)
+            Unmanaged<HotkeyCallbackBox>.fromOpaque(context).release()
             return false
         }
 
-        HotkeyManager.setRetained(self)
+        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
+            CGEvent.tapEnable(tap: tap, enable: false)
+            Unmanaged<HotkeyCallbackBox>.fromOpaque(context).release()
+            return false
+        }
 
-        let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0)
+        eventTap = tap
         runLoopSource = source
+        callbackContext = context
         CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
         CGEvent.tapEnable(tap: tap, enable: true)
 
@@ -142,13 +146,47 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
 
     // MARK: - CGEventTap callback
 
-    /// 静态 CGEventTap 回调（@convention(c)，可直接单元测试）。
-    /// 解析 refcon 恢复 manager 实例，调用 handleGlobalEvent（tap 回调本就在主线程 run loop 触发）。
-    static let tapCallback: CGEventTapCallBack = { proxy, type, event, refcon in
-        guard let refcon = refcon else { return Unmanaged.passUnretained(event) }
-        let manager = Unmanaged<HotkeyManager>.fromOpaque(refcon).takeUnretainedValue()
-        manager.handleGlobalEvent(type: type, event: event)
+    /// 静态 CGEventTap 回调（@convention(c)）。事件状态机必须同步交付，
+    /// 否则 flagsChanged 和随后的 keyDown 可能发生乱序。
+    nonisolated static let tapCallback: CGEventTapCallBack = { _, type, event, refcon in
+        guard let refcon else { return Unmanaged.passUnretained(event) }
+        let contextAddress = UInt(bitPattern: refcon)
+        let eventAddress = UInt(bitPattern: Unmanaged.passUnretained(event).toOpaque())
+
+        if Thread.isMainThread {
+            MainActor.assumeIsolated {
+                handleTapCallback(
+                    contextAddress: contextAddress,
+                    eventAddress: eventAddress,
+                    type: type
+                )
+            }
+        } else {
+            DispatchQueue.main.sync {
+                MainActor.assumeIsolated {
+                    handleTapCallback(
+                        contextAddress: contextAddress,
+                        eventAddress: eventAddress,
+                        type: type
+                    )
+                }
+            }
+        }
         return Unmanaged.passUnretained(event)
+    }
+
+    private static func handleTapCallback(
+        contextAddress: UInt,
+        eventAddress: UInt,
+        type: CGEventType
+    ) {
+        guard let context = UnsafeMutableRawPointer(bitPattern: contextAddress),
+              let eventPointer = UnsafeMutableRawPointer(bitPattern: eventAddress) else {
+            return
+        }
+        let box = Unmanaged<HotkeyCallbackBox>.fromOpaque(context).takeUnretainedValue()
+        let event = Unmanaged<CGEvent>.fromOpaque(eventPointer).takeUnretainedValue()
+        box.manager?.handleGlobalEvent(type: type, event: event)
     }
 
     /// CGEventTap 回调核心逻辑（抽出便于测试，主线程执行）。
@@ -169,21 +207,21 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     }
 
     public func unregisterGlobalHotkey() {
-        if let tap = eventTap {
-            CGEvent.tapEnable(tap: tap, enable: false)
-            // Reuse the source created in registerGlobalHotkey — creating a new one here
-            // would be a different instance and CFRunLoopRemoveSource would be a no-op,
-            // leaking the original source on the run loop.
-            if let source = runLoopSource {
-                CFRunLoopRemoveSource(CFRunLoopGetCurrent(), source, .commonModes)
-                runLoopSource = nil
-            }
-            eventTap = nil
+        if let eventTap {
+            CGEvent.tapEnable(tap: eventTap, enable: false)
         }
-        // The retain from passRetained(self) is balanced by clearing the class-level
-        // strong reference. The previous `passUnretained(self).takeRetainedValue()` call
-        // was incorrect (mismatched Unmanaged pairing) and decremented an unrelated retain.
-        HotkeyManager.setRetained(nil)
+        if let runLoopSource {
+            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+        }
+        eventTap = nil
+        runLoopSource = nil
+        releaseCallbackContext()
+    }
+
+    private func releaseCallbackContext() {
+        guard let callbackContext else { return }
+        self.callbackContext = nil
+        Unmanaged<HotkeyCallbackBox>.fromOpaque(callbackContext).release()
     }
 
     // MARK: - In-app keyboard monitoring
@@ -213,13 +251,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
     // MARK: - Test helpers
 
     public func simulateToggle() {
-        if Thread.isMainThread {
-            onToggle?()
-        } else {
-            DispatchQueue.main.sync { [weak self] in
-                self?.onToggle?()
-            }
-        }
+        onToggle?()
     }
 
     public func simulateOptionKeyDown() {
@@ -235,7 +267,7 @@ public final class HotkeyManager: HotkeyManaging, @unchecked Sendable {
         onToggle?()
     }
 
-    deinit {
+    isolated deinit {
         unregisterGlobalHotkey()
         unregisterLocalMonitor()
     }
