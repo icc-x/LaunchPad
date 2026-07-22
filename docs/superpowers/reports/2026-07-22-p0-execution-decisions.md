@@ -382,3 +382,46 @@ the approved plan or task-specific test reports.
   complete VC and debounce filter with `118/118` passing; the independent task
   reviewer confirmed the field-editor assertion is the more accurate contract
   and approved with Critical/Important/Minor counts of `0/0/0`.
+
+## Decision 020: Reuse the stronger monitor lifecycle test and cover both event types
+
+- Status: adopted before Task 8 implementation
+- Evidence: the existing injected-boundary lifecycle test already performs
+  duplicate registration and duplicate unregistration and asserts exactly one
+  install, exactly one remove, and removed-token identity. The brief's proposed
+  idempotence test would duplicate a weaker subset. The production installer
+  listens to both `.keyDown` and `.flagsChanged`, while the brief's nil matrix
+  originally exercised only `.keyDown`.
+- Decision: rename and retain the stronger lifecycle test under the Task 8
+  focused-filter name instead of adding duplicate logic. Add an explicit
+  `.flagsChanged` callback-nil case alongside special and ordinary keyDown cases,
+  and run every case through the injected `localMonitorHandler` boundary.
+- Impact: the suite has one authoritative lifecycle contract and a complete
+  event-type suppression matrix without touching real accessibility, event-tap,
+  or local-monitor system resources.
+- Verification: the cumulative Task 8 diff preserves all lifecycle assertions;
+  the controller ran `HotkeyManagerTests` with `50/50` passing, and the final
+  reviewer approved the reuse and event matrix with no findings.
+
+## Decision 021: Separate manager deallocation from callback suppression
+
+- Status: adopted from Task 8 RED root-cause evidence
+- Evidence: the original initializer used
+  `self?.handleLocalMonitorEvent(event) ?? event`. Both a released manager and a
+  live callback intentionally returning `nil` produce nil at that expression,
+  so nil-coalescing incorrectly converts a valid suppression result into the
+  original event. Changing only `handleLocalMonitorEvent` cannot satisfy the
+  Task 8 contract.
+- Decision: use an explicit weak-self guard that returns the original event only
+  when the manager is gone, then return the live handler's `NSEvent?` without
+  coalescing. Keep register/unregister unchanged. Tests must distinguish the two
+  states: the same closure returns nil while the manager lives and the original
+  event after a weak reference proves deallocation; ordinary keyDown must also
+  prove callback invocation and nil propagation.
+- Impact: callback suppression and object-lifecycle fallback no longer share an
+  ambiguous optional path; special keys, ordinary keys, and flags changes obey
+  one routing rule.
+- Verification: the initial review caught two non-discriminating tests; fix
+  `c3ae65d` made both old behavior and a live-manager false positive impossible.
+  The controller reran `50/50`, and re-review reported
+  Critical/Important/Minor counts of `0/0/0`.
