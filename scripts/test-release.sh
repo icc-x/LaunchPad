@@ -111,6 +111,15 @@ func parseEvents() throws {
         return "\(testID)\t\(caseID)"
     }
 
+    func requiredTestID(payload: [String: Any], line: Int) throws -> String {
+        guard let testID = payload["testID"] as? String,
+              !testID.isEmpty,
+              testID.contains("/") else {
+            throw ParserError.invalidEvent(line)
+        }
+        return testID
+    }
+
     for (index, line) in lines.enumerated() {
         let object = try JSONSerialization.jsonObject(with: Data(line.utf8))
         guard let event = object as? [String: Any],
@@ -131,7 +140,9 @@ func parseEvents() throws {
             guard recordKind == "function" else {
                 continue
             }
-            guard let testID = payload["id"] as? String, testID.contains("/") else {
+            guard let testID = payload["id"] as? String,
+                  !testID.isEmpty,
+                  testID.contains("/") else {
                 throw ParserError.invalidEvent(index + 1)
             }
             try insertUnique(testID, into: &functionRecords)
@@ -152,28 +163,26 @@ func parseEvents() throws {
         guard kind == "event", let eventKind = payload["kind"] as? String else {
             throw ParserError.invalidEvent(index + 1)
         }
-        guard let testID = payload["testID"] as? String else {
-            continue
-        }
-        guard testID.contains("/") else {
-            continue
-        }
 
         switch eventKind {
         case "testStarted":
+            let testID = try requiredTestID(payload: payload, line: index + 1)
             try insertUnique(testID, into: &functionStarts)
         case "testEnded":
+            let testID = try requiredTestID(payload: payload, line: index + 1)
             guard let messages = payload["messages"] as? [[String: Any]],
                   messages.contains(where: { $0["symbol"] as? String == "pass" }) else {
                 continue
             }
             try insertUnique(testID, into: &functionEnds)
         case "testCaseStarted":
+            let testID = try requiredTestID(payload: payload, line: index + 1)
             try insertUnique(
                 try caseIdentity(testID: testID, payload: payload),
                 into: &caseStarts
             )
         case "testCaseEnded":
+            let testID = try requiredTestID(payload: payload, line: index + 1)
             try insertUnique(
                 try caseIdentity(testID: testID, payload: payload),
                 into: &caseEnds
@@ -185,6 +194,9 @@ func parseEvents() throws {
 
     guard !functionRecords.isEmpty else {
         throw ParserError.emptyStream
+    }
+    guard !caseRecords.isEmpty else {
+        throw ParserError.identityMismatch("parameter case records are empty")
     }
     guard functionRecords == functionStarts else {
         throw ParserError.identityMismatch("function records vs starts")
@@ -401,7 +413,7 @@ capture_related_pids() {
     '(^|/)swiftpm-testing-helper([[:space:]]|$)' || return $?
   append_process_matches "$raw_destination" -f \
     '/LaunchPadPackageTests\.xctest/Contents/MacOS/LaunchPadPackageTests' || return $?
-  LC_ALL=C sort -un "$raw_destination" > "$destination" || return $?
+  LC_ALL=C sort -u "$raw_destination" > "$destination" || return $?
 }
 
 assert_invocation_gone() {
@@ -468,7 +480,10 @@ run_watchdog() {
   set +e
   RUN_TIMEOUT_SUPERVISOR_PIDFILE="$supervisor_file" \
     RUN_TIMEOUT_CHILD_PIDFILE="$child_file" \
-    "$WATCHDOG" "$timeout" -- "$@"
+    "$WATCHDOG" "$timeout" -- /usr/bin/env \
+      -u RUN_TIMEOUT_SUPERVISOR_PIDFILE \
+      -u RUN_TIMEOUT_CHILD_PIDFILE \
+      "$@"
   command_status=$?
   set -e
 

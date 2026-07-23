@@ -60,6 +60,44 @@ private func deterministicIndices(
     }
 }
 
+#if canImport(AppKit)
+private struct IconCacheBitmapFixture {
+    let image: NSImage
+    let tiffData: Data
+}
+
+private enum PerformanceFixtureError: Error {
+    case bitmapCreationFailed
+    case tiffEncodingFailed
+}
+
+private func makeIconCacheBitmapFixture(size: Int = 16) throws -> IconCacheBitmapFixture {
+    guard let bitmapRepresentation = NSBitmapImageRep(
+        bitmapDataPlanes: nil,
+        pixelsWide: size,
+        pixelsHigh: size,
+        bitsPerSample: 8,
+        samplesPerPixel: 4,
+        hasAlpha: true,
+        isPlanar: false,
+        colorSpaceName: .deviceRGB,
+        bytesPerRow: size * 4,
+        bitsPerPixel: 32
+    ) else {
+        throw PerformanceFixtureError.bitmapCreationFailed
+    }
+
+    let image = NSImage(size: NSSize(width: size, height: size))
+    image.addRepresentation(bitmapRepresentation)
+    guard let tiffData = image.tiffRepresentation,
+          !tiffData.isEmpty,
+          NSBitmapImageRep(data: tiffData) != nil else {
+        throw PerformanceFixtureError.tiffEncodingFailed
+    }
+    return IconCacheBitmapFixture(image: image, tiffData: tiffData)
+}
+#endif
+
 @Suite("性能基准测试")
 struct PerformanceTests {
 
@@ -189,18 +227,17 @@ struct PerformanceTests {
 
     #if canImport(AppKit)
     @Test("IconCache 1000 次内存命中 median/p95 < 300ms")
-    func iconCache_1000randomAccess_perf() {
+    func iconCache_1000randomAccess_perf() throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
-        let image = NSImage(size: NSSize(width: 16, height: 16))
-        let data = image.tiffRepresentation ?? Data()
+        let fixture = try makeIconCacheBitmapFixture()
         let itemCount = 50
         let fixedModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
         let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
 
-        provider.iconResult = image
+        provider.iconResult = fixture.image
         for (index, path) in paths.enumerated() {
-            store.storedImages[Int64(index)] = (data, data)
+            store.storedImages[Int64(index)] = (fixture.tiffData, fixture.tiffData)
             provider.modificationDates[path] = fixedModificationDate
         }
 
@@ -241,18 +278,17 @@ struct PerformanceTests {
     }
 
     @Test("IconCache 1000 次访问后无磁盘重复写入")
-    func iconCache_1000access_noDiskWriteLeak() {
+    func iconCache_1000access_noDiskWriteLeak() throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
-        let image = NSImage(size: NSSize(width: 16, height: 16))
-        let data = image.tiffRepresentation ?? Data()
+        let fixture = try makeIconCacheBitmapFixture()
         let itemCount = 50
         let fixedModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
         let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
 
-        provider.iconResult = image
+        provider.iconResult = fixture.image
         for (index, path) in paths.enumerated() {
-            store.storedImages[Int64(index)] = (data, data)
+            store.storedImages[Int64(index)] = (fixture.tiffData, fixture.tiffData)
             provider.modificationDates[path] = fixedModificationDate
         }
 
