@@ -920,3 +920,148 @@ the approved plan or task-specific test reports.
   residual-process gates passed. Both the task re-review and a fresh formal review
   reported spec compliant, Task quality Approved, and
   Critical/Important/Minor `0/0/0` for commit `c4ad6f5`.
+
+## Decision 041: Keep migration commits production-empty without making their fixtures uncompilable
+
+- Status: adopted and verified in Task 19.
+- Evidence: the required 39-test overlay migration had to compile before the
+  later behavior commit introduced `folderViewportSizeProvider`. Adding that
+  reference in the migration commit would either break the migration boundary or
+  introduce production code into a commit whose purpose was one-to-one test
+  conversion.
+- Decision: preserve a compilable migration fixture against the API available at
+  each migration commit, then add the provider-based fixture only in the behavior
+  commit where the production seam exists. Keep both migration commits free of
+  `Sources` changes and prove identity through canonical 47-row snapshots rather
+  than comparing the final, expanded 71-test discovery to the migration baseline.
+- Impact: every historical commit builds, the test-framework migration remains
+  auditable independently of product behavior, and later behavior coverage does
+  not falsify the 47-to-47 migration record.
+- Verification: all four migration snapshots contain 47 unique IDs, both
+  directional diffs are empty, and commits `91cebe5` and `50e0111` contain no
+  production changes.
+
+## Decision 042: Derive drag fixture coordinates from laid-out AppKit views
+
+- Status: adopted and verified in Task 19.
+- Evidence: guessed zero-origin points can accidentally fall inside the folder
+  panel or hide a duplicated coordinate conversion. The exterior path crosses
+  overlay-local, window, and grid-local coordinate systems, and the external-click
+  close path depends on the panel's actual frame after layout.
+- Decision: lay out the view hierarchy, locate the real panel, and construct a
+  point proven outside it. For exterior drag tests, use nonzero overlay and grid
+  origins and exercise each native entry through the real conversion bridge.
+- Impact: tests detect double conversion, missing conversion, and panel/self
+  rejection regressions rather than passing only because all origins are zero.
+- Verification: the four exterior entries and the external-click fixture pass
+  with real laid-out geometry; formal review found no remaining coordinate-space
+  gap.
+
+## Decision 043: Preserve closed-folder identity guards in helper fixtures
+
+- Status: adopted and verified in Task 19.
+- Evidence: exterior helper tests initially attempted valid drops without first
+  establishing the overlay's folder identity. Relaxing the production guard would
+  permit stale or closed overlays to emit layout mutations.
+- Decision: keep the production closed/stale-folder guard strict. Valid helper
+  tests must open or otherwise establish the matching folder identity before
+  exercising an exterior drop; invalid fixtures remain explicit rejection cases.
+- Impact: test convenience cannot weaken a lifecycle invariant, and stale overlay
+  callbacks remain unable to reach the single layout writer.
+- Verification: closed, stale, wrong-parent, malformed, and valid-folder branches
+  are all represented in the final overlay suites with zero callback on rejection.
+
+## Decision 044: Own scroll observers behind a lock-protected lifetime object
+
+- Status: adopted and verified in Task 19.
+- Evidence: a bare `nonisolated(unsafe)` observer token would make a mutable,
+  non-Sendable value reachable from a nonisolated deinitializer without an
+  enforced synchronization contract. MainActor-only ownership cannot by itself
+  satisfy deinit cleanup.
+- Decision: use a private `ScrollObservationOwner: @unchecked Sendable` whose
+  token replacement and removal are serialized by `NSLock`. MainActor open/close
+  call the owner, while nonisolated deinit only invokes its synchronized removal.
+- Impact: repeated opens cannot leak or duplicate observers, close and deinit are
+  idempotent, and concurrency safety is encoded in the owner instead of suppressed
+  at the property declaration.
+- Verification: replace, close, and direct-observer deinit fixtures pass; formal
+  review accepted observer lifecycle with no finding.
+
+## Decision 045: Test observer release independently of AppKit close animation retention
+
+- Status: adopted and verified in Task 19.
+- Evidence: an early deinit fixture called `openFolder` with empty children and
+  expected immediate release, but AppKit close animation temporarily retained the
+  overlay. That result did not distinguish animation ownership from an observer
+  reference cycle.
+- Decision: install the scroll observer directly for the deinit-cycle regression.
+  Test repeated open/close observer replacement separately through the public
+  folder lifecycle.
+- Impact: the release test measures the ownership boundary it names and does not
+  encode an invalid assumption about AppKit animation timing.
+- Verification: the direct observer fixture passes `1 test / 1 suite / 0 issues`,
+  while open/close behavior is covered independently.
+
+## Decision 046: Inject screen geometry while preserving production display selection
+
+- Status: adopted and verified in Task 19.
+- Evidence: Window tests that query real screens or launch applications are host
+  dependent. Replacing production logic with a fixed frame would make tests stable
+  by changing multi-display and no-screen behavior.
+- Decision: inject `targetScreenFrameProvider`, application URL lookup, application
+  opening, and the main-actor dispatcher. Production defaults retain the existing
+  `NSWorkspace`, target-screen, and main-queue semantics; tests provide a concrete
+  frame or nil and never call host application APIs.
+- Impact: multi-display behavior remains intact while found-screen, no-screen,
+  URL-missing, and URL-open branches become deterministic and side-effect free.
+- Verification: Window boundary suites cover all branches, and static scanning
+  finds no real `NSWorkspace` lookup/open call in tests.
+
+## Decision 047: Keep native drag cleanup owned by AppKit session end
+
+- Status: adopted and verified in Task 19.
+- Evidence: cleaning immediately after a successful native `perform` would remove
+  the session, preview, and timer before AppKit emits its terminal callback, while
+  cleaning in both places risks duplicate callbacks and state transitions.
+- Decision: validate, accept, and perform may commit once but retain native session
+  ownership. `draggingSession(...endedAt:...)` performs the terminal cleanup;
+  explicit cancellation paths remain idempotent when a later native ended callback
+  arrives.
+- Impact: the commit path has exactly one domain write, transient preview remains
+  valid through native completion, and cleanup is deterministic under accepted,
+  rejected, and explicitly cancelled sessions.
+- Verification: one ordered session covers entered, updated, prepare, perform, and
+  ended; callback count is one, state survives perform, and ended clears all state.
+
+## Decision 048: Treat migration identity and final behavior discovery as separate gates
+
+- Status: adopted and verified in Task 19.
+- Evidence: the two migrated XCTest files contained 47 original tests, while the
+  completed feature required 24 additional overlay and paging regressions. A
+  direct comparison of the old 47 IDs with final discovery count 71 would report a
+  false migration mismatch.
+- Decision: freeze and compare the 47-ID snapshots at the migration commit boundary.
+  Record final 71-test discovery only as behavior coverage after feature additions.
+- Impact: one-to-one migration proof and new coverage growth remain independently
+  meaningful and reproducible.
+- Verification: the historical 47-to-47 diffs are empty, while the final focused
+  aggregate includes the added tests and passes.
+
+## Decision 049: Close lifecycle review findings with branch-local transient-state fixtures
+
+- Status: adopted and verified during Task 19 formal review closure.
+- Evidence: production routed search activation, normal ESC close, and edit-mode
+  ESC through the same idempotent cancellation entry, but the three tests did not
+  each establish and assert active session, pending drag timer, and visible preview.
+  Shared implementation was not sufficient evidence for the brief's per-branch
+  acceptance rule.
+- Decision: keep production unchanged. Give search debounce and drag timing separate
+  schedulers, and for each of the three exits establish source item 10, preview
+  target 11, and a pending drag timer before asserting session nil, drag actions
+  empty, and preview nil. Preserve the normal-ESC native-ended idempotency check.
+- Impact: the tests now prove every named lifecycle branch without conflating search
+  work with drag work or weakening cleanup ownership.
+- Verification: fix commit `bfed5c9` is production-empty; targeted tests pass
+  `3/3`, controller-fresh `LaunchPadViewControllerTests` pass `128/128`, and the
+  formal re-review reports spec compliant, Task quality Approved, and
+  Critical/Important/Minor `0/0/0`.
