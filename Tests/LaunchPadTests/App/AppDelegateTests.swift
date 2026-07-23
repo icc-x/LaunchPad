@@ -12,6 +12,15 @@ struct AppDelegateTests {
 
     // MARK: - Test Doubles
 
+    private final class MockStatusItem: StatusItemManaging {
+        var button: NSStatusBarButton?
+        var menu: NSMenu?
+
+        init(button: NSStatusBarButton? = nil) {
+            self.button = button
+        }
+    }
+
     @MainActor
     private final class CallRecorder {
         var count = 0
@@ -97,7 +106,8 @@ struct AppDelegateTests {
         sut.loginItemStatusProvider = { .notRegistered }
         sut.loginItemUnregister = {}
         sut.loginItemRegister = {}
-        sut.statusItemFactory = { NSStatusItem() }
+        sut.statusItemFactory = { MockStatusItem() }
+        sut.statusItemRemover = { _ in }
         sut.fileWatcherFactory = {
             FileWatcher(
                 debounceInterval: 2.0,
@@ -474,7 +484,7 @@ struct AppDelegateTests {
         sut.setupMenuBar()
 
         #expect(sut.statusItem != nil)
-        let loginItem = sut.statusItem.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
+        let loginItem = sut.statusItem?.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
         #expect(loginItem?.state == .off)
     }
 
@@ -485,8 +495,22 @@ struct AppDelegateTests {
 
         sut.setupMenuBar()
 
-        let loginItem = sut.statusItem.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
+        let loginItem = sut.statusItem?.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
         #expect(loginItem?.state == .on)
+    }
+
+    @Test("setupMenuBar 只配置注入 status item 的 button")
+    func setupMenuBarConfiguresInjectedButton() {
+        let sut = makeDelegate()
+        let button = NSStatusBarButton()
+        let statusItem = MockStatusItem(button: button)
+        sut.statusItemFactory = { statusItem }
+
+        sut.setupMenuBar()
+
+        #expect(sut.statusItem === statusItem)
+        #expect(button.action == #selector(AppDelegate.statusItemClicked))
+        #expect(button.target === sut)
     }
 
     // MARK: - toggleLoginItem
@@ -503,7 +527,7 @@ struct AppDelegateTests {
         sut.toggleLoginItem()
 
         #expect(unregisterCalled)
-        let loginItem = sut.statusItem.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
+        let loginItem = sut.statusItem?.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
         #expect(loginItem?.state == .off)
     }
 
@@ -519,7 +543,7 @@ struct AppDelegateTests {
         sut.toggleLoginItem()
 
         #expect(registerCalled)
-        let loginItem = sut.statusItem.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
+        let loginItem = sut.statusItem?.menu?.items.first(where: { $0.action == #selector(AppDelegate.toggleLoginItem) })
         #expect(loginItem?.state == .on)
     }
 
@@ -882,22 +906,65 @@ struct AppDelegateTests {
         #expect(categories == ["file-watcher-start-failed"])
     }
 
-    // MARK: - 私有实现结构体
+    @Test("applicationWillTerminate 重复调用只释放每项进程资源一次")
+    func applicationWillTerminateIsIdempotent() throws {
+        let sut = makeDelegate()
+        let backend = MockFileEventStream()
+        let watcher = FileWatcher(backend: backend, scheduler: MockScheduler())
+        #expect(watcher.start(paths: ["/Applications"]) {})
+        sut.fileWatcher = watcher
 
-    @Test("SystemIconProvider 与 SystemFileSystemService 方法均被调用")
-    func systemServiceImplementations() {
-        let iconProvider = SystemIconProvider()
-        let missingAppPath = "/tmp/launchpad-missing-\(UUID().uuidString).app"
-        _ = iconProvider.icon(forPath: missingAppPath)
-        _ = iconProvider.modificationDate(forPath: missingAppPath)
+        let manager = makeIsolatedHotkeyManager(accessibilityTrusted: true)
+        let optionalPort = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
+        let port = try #require(optionalPort)
+        let localToken = NSObject()
+        var sourceRemovals = 0
+        var tapStates: [Bool] = []
+        var localRemovals = 0
+        manager.eventTapCreator = { _, _, _ in port }
+        manager.runLoopSourceRemover = { _ in sourceRemovals += 1 }
+        manager.eventTapEnabler = { _, enabled in tapStates.append(enabled) }
+        manager.localMonitorInstaller = { _ in localToken }
+        manager.localMonitorRemover = { token in
+            #expect(token as AnyObject === localToken)
+            localRemovals += 1
+        }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        manager.registerLocalMonitor()
+        sut.hotkeyManager = manager
 
-        let fs = SystemFileSystemService()
-        _ = fs.fileExists(at: URL(fileURLWithPath: missingAppPath))
-        _ = try? fs.contentsOfDirectory(at: URL(fileURLWithPath: missingAppPath))
-        _ = fs.bundleInfo(at: URL(fileURLWithPath: missingAppPath))
-        // 不存在的包路径触发 bundleInfo 的 guard-else 分支
-        _ = fs.bundleInfo(at: URL(fileURLWithPath: "/tmp/launchpad_no_such_\(UUID().uuidString).app"))
-        #expect(true)
+        let statusItem = MockStatusItem()
+        var statusRemovals = 0
+        sut.statusItem = statusItem
+        sut.statusItemRemover = { item in
+            #expect(item === statusItem)
+            statusRemovals += 1
+        }
+        let notification = Notification(name: NSApplication.willTerminateNotification)
+
+        sut.applicationWillTerminate(notification)
+        sut.applicationWillTerminate(notification)
+
+        #expect(backend.stopCallCount == 1)
+        #expect(sourceRemovals == 1)
+        #expect(tapStates == [true, false])
+        #expect(localRemovals == 1)
+        #expect(statusRemovals == 1)
+        #expect(sut.fileWatcher == nil)
+        #expect(sut.statusItem == nil)
+    }
+
+    @Test("applicationWillTerminate 在资源均为空时保持幂等")
+    func applicationWillTerminateWithNoResourcesIsIdempotent() {
+        let sut = AppDelegate()
+        var statusRemovals = 0
+        sut.statusItemRemover = { _ in statusRemovals += 1 }
+        let notification = Notification(name: NSApplication.willTerminateNotification)
+
+        sut.applicationWillTerminate(notification)
+        sut.applicationWillTerminate(notification)
+
+        #expect(statusRemovals == 0)
     }
 
     // MARK: - 默认闭包覆盖

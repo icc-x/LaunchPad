@@ -4,6 +4,15 @@ import AppKit
 import LaunchPadProtocols
 import ServiceManagement
 
+@MainActor
+protocol StatusItemManaging: AnyObject {
+    var button: NSStatusBarButton? { get }
+    var menu: NSMenu? { get set }
+}
+
+@MainActor
+extension NSStatusItem: StatusItemManaging {}
+
 /// 应用入口 — 菜单栏图标、服务初始化、热键注册
 /// Agent 应用模式（无 Dock 图标）
 @preconcurrency @MainActor
@@ -28,7 +37,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Menu Bar
 
-    var statusItem: NSStatusItem!
+    var statusItem: (any StatusItemManaging)?
 
     // MARK: - Test Injection Points
 
@@ -77,8 +86,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 登录项注册（默认 SMAppService.mainApp.register，测试注入）
     var loginItemRegister: () throws -> Void = { try SMAppService.mainApp.register() }
 
-    /// 状态栏图标工厂（默认 NSStatusBar.system.statusItem，测试注入可返回可控实例）
-    var statusItemFactory: () -> NSStatusItem = { NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength) }
+    /// 状态栏图标工厂（默认创建真实 item，测试返回纯协议实现）。
+    var statusItemFactory: () -> any StatusItemManaging = {
+        NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    }
+
+    /// 状态栏图标释放边界；测试替换后不会触碰进程级 NSStatusBar。
+    var statusItemRemover: (any StatusItemManaging) -> Void = { item in
+        guard let statusItem = item as? NSStatusItem else { return }
+        NSStatusBar.system.removeStatusItem(statusItem)
+    }
 
     /// 文件监控器工厂（默认创建真实 FileWatcher，测试注入安全检查版本避免真实 FSEvent 监听）
     var fileWatcherFactory: () -> FileWatcher = { FileWatcher(debounceInterval: 2.0) }
@@ -138,6 +155,17 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         setupHotkey()
         performInitialScan()
         setupFileWatcher()
+    }
+
+    public func applicationWillTerminate(_ notification: Notification) {
+        fileWatcher?.stop()
+        fileWatcher = nil
+        hotkeyManager?.unregisterLocalMonitor()
+        hotkeyManager?.unregisterGlobalHotkey()
+        if let statusItem {
+            statusItemRemover(statusItem)
+            self.statusItem = nil
+        }
     }
 
     // MARK: - Service Setup
@@ -221,7 +249,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Menu Bar
 
     func setupMenuBar() {
-        statusItem = statusItemFactory()
+        let statusItem = statusItemFactory()
+        self.statusItem = statusItem
 
         if let button = statusItem.button {
             button.image = NSImage(named: NSImage.applicationIconName)
@@ -255,7 +284,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 try loginItemRegister()
             }
             // 更新菜单状态
-            if let menu = statusItem.menu,
+            if let menu = statusItem?.menu,
                let item = menu.items.first(where: { $0.action == #selector(toggleLoginItem) }) {
                 item.state = loginItemStatusProvider() == .enabled ? .on : .off
             }
