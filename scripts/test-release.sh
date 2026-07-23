@@ -4,8 +4,7 @@ unsetopt BG_NICE
 
 ROOT_DIR=${0:A:h:h}
 WATCHDOG="$ROOT_DIR/scripts/run-with-timeout.sh"
-export CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache
-export SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache
+unset LAUNCHPAD_PROCESS_PROBE_SYNTHETIC_ERRNO
 
 cd "$ROOT_DIR"
 
@@ -19,10 +18,28 @@ if [[ -n ${LAUNCHPAD_RELEASE_ARTIFACT_DIR:-} ]]; then
 else
   ARTIFACT_DIR=$(mktemp -d "$ROOT_DIR/.superpowers/sdd/release-gate.XXXXXX")
 fi
+ARTIFACT_DIR=${ARTIFACT_DIR:A}
 
 RESULT_STATUS="$ARTIFACT_DIR/result.status"
 RESULT_STATUS_TEMP="$ARTIFACT_DIR/result.status.passed"
 print -r -- 'failed' > "$RESULT_STATUS"
+
+SWIFTPM_SCRATCH_DIR="$ARTIFACT_DIR/swiftpm-scratch"
+SWIFTPM_CACHE_DIR="$ARTIFACT_DIR/swiftpm-cache"
+CLANG_MODULE_CACHE_PATH="$ARTIFACT_DIR/clang-module-cache"
+SWIFTPM_MODULECACHE_OVERRIDE="$ARTIFACT_DIR/swiftpm-module-cache"
+mkdir -p "$SWIFTPM_SCRATCH_DIR" "$SWIFTPM_CACHE_DIR" \
+  "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE"
+export SWIFTPM_SCRATCH_DIR SWIFTPM_CACHE_DIR
+export CLANG_MODULE_CACHE_PATH SWIFTPM_MODULECACHE_OVERRIDE
+
+typeset -ar AUTHORITATIVE_SWIFTPM_INVOCATIONS=(
+  discovery-1 tests-1
+  discovery-2 tests-2
+  discovery-3 tests-3
+  release-build
+)
+typeset -a RECORDED_SWIFTPM_INVOCATIONS=()
 
 MANIFEST="$ARTIFACT_DIR/manifest.txt"
 HEAD_AT_START=$(git rev-parse HEAD)
@@ -31,6 +48,10 @@ HEAD_AT_START=$(git rev-parse HEAD)
   print -r -- "start=$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
   print -r -- "uname=$(/usr/bin/uname -a)"
   print -r -- "configuration=three debug Swift Testing runs and one release product build"
+  print -r -- "swiftpm_scratch_path=$SWIFTPM_SCRATCH_DIR"
+  print -r -- "swiftpm_cache_path=$SWIFTPM_CACHE_DIR"
+  print -r -- "clang_module_cache_path=$CLANG_MODULE_CACHE_PATH"
+  print -r -- "swiftpm_module_cache_override=$SWIFTPM_MODULECACHE_OVERRIDE"
   print -r -- 'toolchain.begin'
   swift --version
   print -r -- 'toolchain.end'
@@ -368,7 +389,7 @@ assert_static_policy() {
   local environment_pattern='ProcessInfo\.processInfo\.'environment
   local performance_skip_pattern='--ski''p(=|[[:space:]]+)[^[:space:]]*PerformanceTests'
   local performance_switch_pattern='retr''y|threshold[ _-]*multiplier'
-  local own_supervisor_pattern='run_with_timeou''t\(\)|se''tpgrp|se''tpgid|(^|[[:space:];])tr''ap[[:space:]]+|/usr/bin/pe''rl'
+  local own_supervisor_pattern='run_with_timeou''t\(\)|se''tpgrp|se''tpgid|(^|[[:space:];])tr''ap[[:space:]]+'
 
   assert_no_matches legacy-xctest 'legacy test framework residue detected' \
     -n --glob '*.swift' "$legacy_pattern" Tests || return $?
@@ -408,31 +429,92 @@ assert_static_policy() {
     || return $?
   assert_no_matches second-supervisor 'second timeout supervisor detected' \
     -n --pcre2 "$own_supervisor_pattern" scripts/test-release.sh || return $?
+  assert_swiftpm_resource_contract || return $?
 }
 
-append_process_matches() {
-  local destination=$1
-  shift
+assert_swiftpm_resource_contract() {
+  local expected_invocations=(
+    discovery-1 tests-1
+    discovery-2 tests-2
+    discovery-3 tests-3
+    release-build
+  )
+  local source="$ROOT_DIR/scripts/test-release.sh"
+  local command_source="$ARTIFACT_DIR/static-swiftpm-commands.sh"
+  local test_template_count=0 build_template_count=0 swiftpm_template_count=0
+  local record_template_count=0 loop_template_count=0
+  local host_capture_count=0 unique_invocation_count=0
+  local host_capture_pattern='capture_related_''pids|append_process_''matches|pg''rep'
 
-  pgrep "$@" >> "$destination" && return 0
-  local command_status=$?
-  (( command_status == 1 )) && return 0
-  return "$command_status"
+  [[ ${#AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]} -eq 7 ]] || return 1
+  [[ "${(j:|:)AUTHORITATIVE_SWIFTPM_INVOCATIONS}" \
+      == "${(j:|:)expected_invocations}" ]] || return 1
+  unique_invocation_count=$(print -l -- "${AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]}" \
+    | LC_ALL=C sort -u | wc -l | tr -d ' ') || return 1
+  [[ $unique_invocation_count -eq 7 ]] || return 1
+
+  [[ "$SWIFTPM_SCRATCH_DIR" == "$ARTIFACT_DIR"/* ]] || return 1
+  [[ "$SWIFTPM_CACHE_DIR" == "$ARTIFACT_DIR"/* ]] || return 1
+  [[ "$CLANG_MODULE_CACHE_PATH" == "$ARTIFACT_DIR"/* ]] || return 1
+  [[ "$SWIFTPM_MODULECACHE_OVERRIDE" == "$ARTIFACT_DIR"/* ]] || return 1
+  [[ -d "$SWIFTPM_SCRATCH_DIR" && -d "$SWIFTPM_CACHE_DIR" ]] || return 1
+  [[ -d "$CLANG_MODULE_CACHE_PATH" && -d "$SWIFTPM_MODULECACHE_OVERRIDE" ]] \
+    || return 1
+
+  /usr/bin/awk '
+    /^# AUTHORITATIVE_SWIFTPM_COMMANDS_BEGIN$/ { capture = 1; next }
+    /^# AUTHORITATIVE_SWIFTPM_COMMANDS_END$/ { capture = 0; next }
+    capture { print }
+  ' "$source" > "$command_source" || return 1
+  test_template_count=$(rg -c -- \
+    'swift test --scratch-path "\$SWIFTPM_SCRATCH_DIR" --cache-path "\$SWIFTPM_CACHE_DIR"' \
+    "$command_source") || test_template_count=0
+  build_template_count=$(rg -c -- \
+    'swift build --scratch-path "\$SWIFTPM_SCRATCH_DIR" --cache-path "\$SWIFTPM_CACHE_DIR"' \
+    "$command_source") || build_template_count=0
+  swiftpm_template_count=$(rg -c -- 'swift (test|build)' "$command_source") \
+    || swiftpm_template_count=0
+  record_template_count=$(rg -c -- \
+    'record_swiftpm_invocation_resources ' "$command_source") \
+    || record_template_count=0
+  loop_template_count=$(rg -c -- '^for run in 1 2 3; do$' "$command_source") \
+    || loop_template_count=0
+  host_capture_count=$(rg -c -- "$host_capture_pattern" "$source") \
+    || host_capture_count=0
+
+  [[ $test_template_count -eq 2 ]] || return 1
+  [[ $build_template_count -eq 1 ]] || return 1
+  [[ $swiftpm_template_count -eq 3 ]] || return 1
+  [[ $record_template_count -eq 3 ]] || return 1
+  [[ $loop_template_count -eq 1 ]] || return 1
+  [[ $(( test_template_count * 3 + build_template_count )) -eq 7 ]] || return 1
+  [[ $host_capture_count -eq 0 ]] || return 1
+  print -r -- 'command.static-swiftpm-resource.invocation_count=7' >> "$MANIFEST"
 }
 
-capture_related_pids() {
-  local destination=$1
-  local raw_destination="${destination}.raw"
+record_swiftpm_invocation_resources() {
+  local label=$1 candidate found=0
+  for candidate in "${AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]}"; do
+    if [[ "$candidate" == "$label" ]]; then
+      found=1
+      break
+    fi
+  done
+  (( found == 1 )) || return 1
+  for candidate in "${RECORDED_SWIFTPM_INVOCATIONS[@]}"; do
+    [[ "$candidate" != "$label" ]] || return 1
+  done
+  RECORDED_SWIFTPM_INVOCATIONS+=("$label")
+  print -r -- "command.${label}.swiftpm_scratch_path=$SWIFTPM_SCRATCH_DIR" \
+    >> "$MANIFEST" || return 1
+  print -r -- "command.${label}.swiftpm_cache_path=$SWIFTPM_CACHE_DIR" \
+    >> "$MANIFEST" || return 1
+}
 
-  : > "$raw_destination"
-  append_process_matches "$raw_destination" -x swift-test || return $?
-  append_process_matches "$raw_destination" -x swiftpm-testing-helper || return $?
-  append_process_matches "$raw_destination" -x LaunchPadPackageTests || return $?
-  append_process_matches "$raw_destination" -f \
-    '(^|/)swiftpm-testing-helper([[:space:]]|$)' || return $?
-  append_process_matches "$raw_destination" -f \
-    '/LaunchPadPackageTests\.xctest/Contents/MacOS/LaunchPadPackageTests' || return $?
-  LC_ALL=C sort -u "$raw_destination" > "$destination" || return $?
+assert_recorded_swiftpm_invocations() {
+  [[ ${#RECORDED_SWIFTPM_INVOCATIONS[@]} -eq 7 ]] || return 1
+  [[ "${(j:|:)RECORDED_SWIFTPM_INVOCATIONS}" \
+      == "${(j:|:)AUTHORITATIVE_SWIFTPM_INVOCATIONS}" ]]
 }
 
 capture_token_pids() {
@@ -442,40 +524,97 @@ capture_token_pids() {
   /usr/bin/awk \
     -v marker="LAUNCHPAD_RELEASE_INVOCATION_TOKEN=${token}" \
     'index($0, marker) { print $1 }' "$snapshot" \
-    | LC_ALL=C sort -u > "$destination"
+    | LC_ALL=C sort -u > "$destination" || return 1
+}
+
+process_identity_is_gone() {
+  local identity=$1
+  local synthetic_errno=${LAUNCHPAD_PROCESS_PROBE_SYNTHETIC_ERRNO:-}
+  [[ "$identity" == <-> || "$identity" == -<-> ]] || return 64
+
+  /usr/bin/perl -MPOSIX=:errno_h -e '
+    use strict;
+    use warnings;
+    my ($identity, $synthetic_errno) = @ARGV;
+    my $alive;
+    if ($synthetic_errno eq "EPERM") {
+      $alive = 0;
+      $! = EPERM;
+    } else {
+      $alive = kill 0, $identity;
+    }
+    if ($alive) {
+      print "alive\n";
+      exit 1;
+    }
+    my $error = 0 + $!;
+    if ($error == ESRCH) {
+      print "gone\n";
+      exit 0;
+    }
+    if ($error == EPERM) {
+      print "eperm\n";
+      exit 2;
+    }
+    print "errno=$error\n";
+    exit 3;
+  ' -- "$identity" "$synthetic_errno"
 }
 
 assert_invocation_gone() {
   local label=$1 token=$2 wrapper_file=$3 supervisor_file=$4 child_file=$5
-  local process_group_file=$6 token_after_file=$7 related_after_file=$8
-  local conflict_file=$9
-  local pid_file pid process_group child exact_pid_status=0 process_group_status=0
+  local process_group_file=$6 token_after_file=$7
+  local pid_file role pid process_group child liveness_status
+  local exact_pid_status=0 process_group_status=0
   local token_enumeration_status=0 token_residue_status=0
-  local environment_enumeration_status=0 environment_conflict_status=0
 
-  for pid_file in "$wrapper_file" "$supervisor_file" "$child_file"; do
+  for role in wrapper supervisor child; do
+    case $role in
+      wrapper) pid_file=$wrapper_file ;;
+      supervisor) pid_file=$supervisor_file ;;
+      child) pid_file=$child_file ;;
+    esac
     if [[ ! -s "$pid_file" ]]; then
+      print -r -- "command.${label}.${role}_liveness_status=missing" >> "$MANIFEST"
       exact_pid_status=1
-      break
+      continue
     fi
     pid=$(<"$pid_file")
-    if [[ "$pid" != <-> ]] || kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" != <-> ]]; then
+      liveness_status=64
+    elif process_identity_is_gone "$pid" \
+        > "$ARTIFACT_DIR/${label}.${role}.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    print -r -- "command.${label}.${role}_liveness_status=${liveness_status}" \
+      >> "$MANIFEST"
+    if (( liveness_status != 0 )); then
       exact_pid_status=1
-      break
     fi
   done
   print -r -- "command.${label}.exact_pid_status=${exact_pid_status}" >> "$MANIFEST"
 
+  liveness_status=missing
   if [[ ! -s "$process_group_file" || ! -s "$child_file" ]]; then
     process_group_status=1
   else
     process_group=$(<"$process_group_file")
     child=$(<"$child_file")
-    if [[ "$process_group" != <-> || "$process_group" != "$child" ]] \
-        || kill -0 -- "-$process_group" 2>/dev/null; then
+    if [[ "$process_group" != <-> || "$process_group" != "$child" ]]; then
+      process_group_status=1
+      liveness_status=64
+    elif process_identity_is_gone "-$process_group" \
+        > "$ARTIFACT_DIR/${label}.process-group.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
       process_group_status=1
     fi
   fi
+  print -r -- "command.${label}.process_group_liveness_status=${liveness_status:-missing}" \
+    >> "$MANIFEST"
   print -r -- "command.${label}.process_group_status=${process_group_status}" \
     >> "$MANIFEST"
 
@@ -490,28 +629,10 @@ assert_invocation_gone() {
   print -r -- "command.${label}.token_residue_status=${token_residue_status}" \
     >> "$MANIFEST"
 
-  capture_related_pids "$related_after_file" \
-    || environment_enumeration_status=$?
-  if (( environment_enumeration_status == 0 )); then
-    LC_ALL=C comm -23 "$related_after_file" "$token_after_file" \
-      > "$conflict_file" || environment_enumeration_status=$?
-  fi
-  if (( environment_enumeration_status == 0 )) && [[ -s "$conflict_file" ]]; then
-    environment_conflict_status=1
-  fi
-  print -r -- \
-    "command.${label}.environment_after_enumeration_status=${environment_enumeration_status}" \
-    >> "$MANIFEST"
-  print -r -- \
-    "command.${label}.environment_conflict_status=${environment_conflict_status}" \
-    >> "$MANIFEST"
-
   (( exact_pid_status == 0 \
       && process_group_status == 0 \
       && token_enumeration_status == 0 \
-      && token_residue_status == 0 \
-      && environment_enumeration_status == 0 \
-      && environment_conflict_status == 0 ))
+      && token_residue_status == 0 ))
 }
 
 run_watchdog() {
@@ -522,32 +643,10 @@ run_watchdog() {
   local supervisor_file="$ARTIFACT_DIR/${label}.supervisor.pid"
   local child_file="$ARTIFACT_DIR/${label}.child.pid"
   local process_group_file="$ARTIFACT_DIR/${label}.process-group.pid"
-  local environment_before_file="$ARTIFACT_DIR/${label}.environment-before.pids"
-  local environment_after_file="$ARTIFACT_DIR/${label}.environment-after.pids"
-  local environment_conflict_file="$ARTIFACT_DIR/${label}.environment-conflict.pids"
   local token_after_file="$ARTIFACT_DIR/${label}.token-residue.pids"
   local token="${label}-$(/usr/bin/uuidgen)"
-  local command_status=0 residue_status=0 environment_enumeration_status=0
-  local environment_conflict_status=0
+  local command_status=0 residue_status=0
 
-  capture_related_pids "$environment_before_file" \
-    || environment_enumeration_status=$?
-  if (( environment_enumeration_status == 0 )) \
-      && [[ -s "$environment_before_file" ]]; then
-    environment_conflict_status=1
-  fi
-  print -r -- \
-    "command.${label}.environment_before_enumeration_status=${environment_enumeration_status}" \
-    >> "$MANIFEST"
-  print -r -- \
-    "command.${label}.environment_conflict_status=${environment_conflict_status}" \
-    >> "$MANIFEST"
-  if (( environment_enumeration_status != 0 \
-      || environment_conflict_status != 0 )); then
-    record_status "$label" 'not-run'
-    print -r -- "command.${label}.residue_status=not-run" >> "$MANIFEST"
-    return 1
-  fi
   print -r -- "command.${label}.invocation_token=${token}" >> "$MANIFEST"
   set +e
   LAUNCHPAD_RELEASE_INVOCATION_TOKEN="$token" \
@@ -566,8 +665,7 @@ run_watchdog() {
 
   assert_invocation_gone "$label" "$token" "$wrapper_file" \
     "$supervisor_file" "$child_file" "$process_group_file" \
-    "$token_after_file" "$environment_after_file" \
-    "$environment_conflict_file" || residue_status=$?
+    "$token_after_file" || residue_status=$?
   record_status "$label" "$command_status"
   print -r -- "command.${label}.residue_status=${residue_status}" >> "$MANIFEST"
 
@@ -679,7 +777,8 @@ probe_provenance_mutation() {
 }
 
 probe_invocation_ownership() {
-  local probe_exit_code=0 unrelated_pid=0
+  local probe_exit_code=0
+  local timeout_fifo="$ARTIFACT_DIR/probe-timeout.fifo"
 
   run_watchdog probe-token-normal 10 /bin/zsh -c \
     '[[ -n ${LAUNCHPAD_RELEASE_INVOCATION_TOKEN:-} ]]' || return $?
@@ -693,7 +792,8 @@ probe_invocation_ownership() {
   rg -q '^command\.probe-token-nonzero\.residue_status=0$' "$MANIFEST" \
     || return 1
 
-  if run_watchdog probe-token-timeout 1 /bin/sleep 30; then
+  /usr/bin/mkfifo "$timeout_fifo" || return 1
+  if run_watchdog probe-token-timeout 1 /bin/cat "$timeout_fifo"; then
     probe_exit_code=0
   else
     probe_exit_code=$?
@@ -702,21 +802,184 @@ probe_invocation_ownership() {
   rg -q '^command\.probe-token-timeout\.residue_status=0$' "$MANIFEST" \
     || return 1
 
-  ARGV0=swiftpm-testing-helper /bin/sleep 30 &
-  unrelated_pid=$!
-  if run_watchdog probe-environment-conflict 10 /usr/bin/true; then
-    probe_exit_code=0
-  else
-    probe_exit_code=$?
+  [[ $(<"$RESULT_STATUS") == failed ]] || return 1
+}
+
+capture_artifact_resource_files() {
+  local destination=$1
+  /usr/bin/find "$SWIFTPM_SCRATCH_DIR" "$SWIFTPM_CACHE_DIR" \
+    "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE" \
+    -type f -print | LC_ALL=C sort > "$destination" || return 1
+}
+
+probe_resource_isolation() {
+  local unrelated_root
+  unrelated_root=$(mktemp -d /tmp/launchpad-resource-probe.XXXXXX) || return 1
+  local short_pid=0 long_pid=0 probe_status=0
+  local ready_fifo="$unrelated_root/long-ready.fifo"
+  local control_fifo="$unrelated_root/long-control.fifo"
+  local before="$ARTIFACT_DIR/probe-resources.before"
+  local after="$ARTIFACT_DIR/probe-resources.after"
+
+  assert_swiftpm_resource_contract || probe_status=$?
+  capture_artifact_resource_files "$before" || probe_status=$?
+  /usr/bin/mkfifo "$ready_fifo" "$control_fifo" || probe_status=$?
+
+  if (( probe_status == 0 )); then
+    /usr/bin/env -u LAUNCHPAD_RELEASE_INVOCATION_TOKEN \
+      SWIFTPM_SCRATCH_DIR="$unrelated_root/short-scratch" \
+      SWIFTPM_CACHE_DIR="$unrelated_root/short-cache" \
+      CLANG_MODULE_CACHE_PATH="$unrelated_root/short-clang" \
+      SWIFTPM_MODULECACHE_OVERRIDE="$unrelated_root/short-module" \
+      /bin/zsh -c '
+        mkdir -p "$SWIFTPM_SCRATCH_DIR" "$SWIFTPM_CACHE_DIR" \
+          "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE" || exit 1
+        print short > "$SWIFTPM_SCRATCH_DIR/helper.marker" || exit 1
+        print short > "$SWIFTPM_CACHE_DIR/helper.marker" || exit 1
+        print short > "$CLANG_MODULE_CACHE_PATH/helper.marker" || exit 1
+        print short > "$SWIFTPM_MODULECACHE_OVERRIDE/helper.marker" || exit 1
+      ' &
+    short_pid=$!
+    wait "$short_pid" || probe_status=$?
   fi
-  kill "$unrelated_pid" 2>/dev/null || true
-  wait "$unrelated_pid" 2>/dev/null || true
-  [[ $probe_exit_code -ne 0 ]] || return 1
-  rg -q \
-    '^command\.probe-environment-conflict\.environment_conflict_status=1$' \
-    "$MANIFEST" || return 1
-  rg -q '^command\.probe-environment-conflict\.residue_status=not-run$' \
-    "$MANIFEST" || return 1
+
+  if (( probe_status == 0 )); then
+    /usr/bin/env -u LAUNCHPAD_RELEASE_INVOCATION_TOKEN \
+      SWIFTPM_SCRATCH_DIR="$unrelated_root/long-scratch" \
+      SWIFTPM_CACHE_DIR="$unrelated_root/long-cache" \
+      CLANG_MODULE_CACHE_PATH="$unrelated_root/long-clang" \
+      SWIFTPM_MODULECACHE_OVERRIDE="$unrelated_root/long-module" \
+      /bin/zsh -c '
+        mkdir -p "$SWIFTPM_SCRATCH_DIR" "$SWIFTPM_CACHE_DIR" \
+          "$CLANG_MODULE_CACHE_PATH" "$SWIFTPM_MODULECACHE_OVERRIDE" || exit 1
+        print long > "$SWIFTPM_SCRATCH_DIR/helper.marker" || exit 1
+        print long > "$SWIFTPM_CACHE_DIR/helper.marker" || exit 1
+        print long > "$CLANG_MODULE_CACHE_PATH/helper.marker" || exit 1
+        print long > "$SWIFTPM_MODULECACHE_OVERRIDE/helper.marker" || exit 1
+        print ready > "$1" || exit 1
+        exec /bin/cat "$2"
+    ' _ "$ready_fifo" "$control_fifo" &
+    long_pid=$!
+    local ready
+    ready=$("$WATCHDOG" 10 -- /bin/cat "$ready_fifo") || probe_status=$?
+    [[ "$ready" == ready ]] || probe_status=1
+  fi
+
+  if (( probe_status == 0 )); then
+    run_watchdog probe-resource-isolation 10 /usr/bin/true || probe_status=$?
+  fi
+
+  if (( long_pid > 0 )); then
+    kill "$long_pid" 2>/dev/null || probe_status=$?
+    wait "$long_pid" 2>/dev/null || true
+  fi
+
+  if (( probe_status == 0 )); then
+    process_identity_is_gone "$short_pid" \
+      > "$ARTIFACT_DIR/probe-short-helper.liveness" 2>&1 || probe_status=$?
+    process_identity_is_gone "$long_pid" \
+      > "$ARTIFACT_DIR/probe-long-helper.liveness" 2>&1 || probe_status=$?
+    capture_artifact_resource_files "$after" || probe_status=$?
+    cmp -s "$before" "$after" || probe_status=1
+    [[ -f "$unrelated_root/short-scratch/helper.marker" ]] || probe_status=1
+    [[ -f "$unrelated_root/long-scratch/helper.marker" ]] || probe_status=1
+    [[ ! -e "$SWIFTPM_SCRATCH_DIR/helper.marker" ]] || probe_status=1
+    [[ ! -e "$SWIFTPM_CACHE_DIR/helper.marker" ]] || probe_status=1
+    rg -q '^command\.probe-resource-isolation\.token_residue_status=0$' \
+      "$MANIFEST" || probe_status=1
+    [[ $(<"$RESULT_STATUS") == failed ]] || probe_status=1
+  fi
+
+  rm -rf "$unrelated_root"
+  return "$probe_status"
+}
+
+probe_process_liveness() {
+  local probe_root
+  probe_root=$(mktemp -d /tmp/launchpad-liveness-probe.XXXXXX) || return 1
+  local ready_fifo="$probe_root/ready.fifo"
+  local control_fifo="$probe_root/control.fifo"
+  local helper_pid=0 probe_status=0 liveness_status=0 ready current_pgid
+
+  /usr/bin/mkfifo "$ready_fifo" "$control_fifo" || probe_status=$?
+  if (( probe_status == 0 )); then
+    /bin/zsh -c '
+      print ready > "$1" || exit 1
+      exec /bin/cat "$2"
+    ' _ "$ready_fifo" "$control_fifo" &
+    helper_pid=$!
+    ready=$("$WATCHDOG" 10 -- /bin/cat "$ready_fifo") || probe_status=$?
+    [[ "$ready" == ready ]] || probe_status=1
+    current_pgid=$(/usr/bin/perl -MPOSIX=getpgrp -e \
+      'print POSIX::getpgrp(), "\n"') || probe_status=$?
+    [[ "$current_pgid" == <-> ]] || probe_status=1
+  fi
+
+  if (( probe_status == 0 )); then
+    if process_identity_is_gone invalid > "$ARTIFACT_DIR/probe-invalid.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 64 ]] || probe_status=1
+
+    if process_identity_is_gone "$helper_pid" \
+        > "$ARTIFACT_DIR/probe-pid-alive.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 1 ]] || probe_status=1
+
+    if process_identity_is_gone "-$current_pgid" \
+        > "$ARTIFACT_DIR/probe-pgid-alive.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 1 ]] || probe_status=1
+
+    if process_identity_is_gone 1 > "$ARTIFACT_DIR/probe-pid-host.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 1 || $liveness_status -eq 2 ]] || probe_status=1
+
+    if LAUNCHPAD_PROCESS_PROBE_SYNTHETIC_ERRNO=EPERM \
+        process_identity_is_gone "$helper_pid" \
+        > "$ARTIFACT_DIR/probe-pid-eperm.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 2 ]] || probe_status=1
+
+    if LAUNCHPAD_PROCESS_PROBE_SYNTHETIC_ERRNO=EPERM \
+        process_identity_is_gone "-$helper_pid" \
+        > "$ARTIFACT_DIR/probe-pgid-eperm.liveness" 2>&1; then
+      liveness_status=0
+    else
+      liveness_status=$?
+    fi
+    [[ $liveness_status -eq 2 ]] || probe_status=1
+  fi
+
+  if (( helper_pid > 0 )); then
+    kill "$helper_pid" 2>/dev/null || probe_status=$?
+    wait "$helper_pid" 2>/dev/null || true
+  fi
+
+  if (( probe_status == 0 )); then
+    process_identity_is_gone "$helper_pid" \
+      > "$ARTIFACT_DIR/probe-pid-gone.liveness" 2>&1 || probe_status=$?
+    process_identity_is_gone "-$helper_pid" \
+      > "$ARTIFACT_DIR/probe-pgid-gone.liveness" 2>&1 || probe_status=$?
+    [[ $(<"$RESULT_STATUS") == failed ]] || probe_status=1
+  fi
+
+  rm -rf "$probe_root"
+  return "$probe_status"
 }
 
 case ${1:-} in
@@ -726,6 +989,14 @@ case ${1:-} in
     ;;
   --probe-invocation-ownership)
     probe_invocation_ownership
+    exit $?
+    ;;
+  --probe-resource-isolation)
+    probe_resource_isolation
+    exit $?
+    ;;
+  --probe-process-liveness)
+    probe_process_liveness
     exit $?
     ;;
 esac
@@ -739,6 +1010,7 @@ run_watchdog self-test-timeout 60 "$WATCHDOG" --self-test-timeout
 run_watchdog self-test-signal 60 "$WATCHDOG" --self-test-signal
 run_watchdog self-test-nonzero 60 "$WATCHDOG" --self-test-nonzero
 
+# AUTHORITATIVE_SWIFTPM_COMMANDS_BEGIN
 for run in 1 2 3; do
   print "release gate: test run ${run}/3"
   raw_list="$ARTIFACT_DIR/tests-${run}.raw"
@@ -751,8 +1023,9 @@ for run in 1 2 3; do
   summary_file="$ARTIFACT_DIR/tests-${run}.summary"
   normalized_summary="$ARTIFACT_DIR/tests-${run}.normalized-summary"
 
+  record_swiftpm_invocation_resources "discovery-${run}"
   run_watchdog "discovery-${run}" 180 /bin/zsh -o pipefail -c \
-    'swift test --disable-sandbox --disable-xctest --enable-swift-testing list 2>&1 | tee "$1"' \
+    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing list 2>&1 | tee "$1"' \
     _ "$raw_list"
   record_check "discovery-${run}-contract" extract_discovery "$raw_list" "$list"
   if (( run > 1 )); then
@@ -761,8 +1034,9 @@ for run in 1 2 3; do
   fi
   expected_count=$(wc -l < "$list" | tr -d ' ')
 
+  record_swiftpm_invocation_resources "tests-${run}"
   run_watchdog "tests-${run}" 900 /bin/zsh -o pipefail -c \
-    'swift test --disable-sandbox --disable-xctest --enable-swift-testing --no-parallel --event-stream-output-path "$2" --event-stream-version 0 2>&1 | tee "$1"' \
+    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing --no-parallel --event-stream-output-path "$2" --event-stream-version 0 2>&1 | tee "$1"' \
     _ "$log" "$events"
   record_check "tests-${run}-log-contract" assert_run_log \
     "tests-${run}" "$log" "$expected_count" "$summary_file" "$normalized_summary"
@@ -785,9 +1059,12 @@ for run in 1 2 3; do
 done
 
 print 'release gate: release build'
+record_swiftpm_invocation_resources release-build
 run_watchdog release-build 900 /bin/zsh -o pipefail -c \
-  'swift build -c release --product LaunchPadApp 2>&1 | tee "$1"' \
+  'swift build --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" -c release --product LaunchPadApp 2>&1 | tee "$1"' \
   _ "$ARTIFACT_DIR/release-build.log"
+record_check swiftpm-resource-runtime assert_recorded_swiftpm_invocations
+# AUTHORITATIVE_SWIFTPM_COMMANDS_END
 record_check provenance-end capture_and_compare_end_provenance
 print -r -- 'result=passed' >> "$MANIFEST"
 print -r -- 'passed' > "$RESULT_STATUS_TEMP"
