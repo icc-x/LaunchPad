@@ -3,29 +3,51 @@ import Foundation
 import AppKit
 #endif
 
+struct AccessibilitySettingsSource: Sendable {
+    let reduceMotion: @Sendable () -> Bool
+    let reduceTransparency: @Sendable () -> Bool
+    let increaseContrast: @Sendable () -> Bool
+
+    #if canImport(AppKit)
+    static let system = AccessibilitySettingsSource(
+        reduceMotion: {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        },
+        reduceTransparency: {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        },
+        increaseContrast: {
+            NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        }
+    )
+    #else
+    static let system = AccessibilitySettingsSource(
+        reduceMotion: { false },
+        reduceTransparency: { false },
+        increaseContrast: { false }
+    )
+    #endif
+}
+
 /// Accessibility settings snapshot (current values)
-public struct AccessibilitySettings {
+public struct AccessibilitySettings: Sendable {
     public let reduceMotion: Bool
     public let reduceTransparency: Bool
     public let increaseContrast: Bool
 
     /// Read current accessibility settings from system
     public static func current() -> AccessibilitySettings {
-        #if canImport(AppKit)
-        return AccessibilitySettings(
-            reduceMotion: NSWorkspace.shared.accessibilityDisplayShouldReduceMotion,
-            reduceTransparency: NSWorkspace.shared
-                .accessibilityDisplayShouldReduceTransparency,
-            increaseContrast: UserDefaults.standard
-                .bool(forKey: "com.apple.universalaccess.highContrast")
+        current(source: .system)
+    }
+
+    static func current(
+        source: AccessibilitySettingsSource
+    ) -> AccessibilitySettings {
+        AccessibilitySettings(
+            reduceMotion: source.reduceMotion(),
+            reduceTransparency: source.reduceTransparency(),
+            increaseContrast: source.increaseContrast()
         )
-        #else
-        return AccessibilitySettings(
-            reduceMotion: false,
-            reduceTransparency: false,
-            increaseContrast: false
-        )
-        #endif
     }
 }
 
@@ -35,19 +57,29 @@ public final class AccessibilityObserver: @unchecked Sendable {
 
     public typealias ChangeCallback = (AccessibilitySettings) -> Void
 
+    private let notificationCenter: NotificationCenter
+    private let settingsProvider: @Sendable () -> AccessibilitySettings
     private let callback: ChangeCallback
     private var observer: NSObjectProtocol?
 
-    public init(callback: @escaping ChangeCallback) {
+    public init(
+        notificationCenter: NotificationCenter = .default,
+        settingsProvider: @escaping @Sendable () -> AccessibilitySettings = {
+            AccessibilitySettings.current()
+        },
+        callback: @escaping ChangeCallback
+    ) {
+        self.notificationCenter = notificationCenter
+        self.settingsProvider = settingsProvider
         self.callback = callback
         #if canImport(AppKit)
-        self.observer = NotificationCenter.default.addObserver(
+        self.observer = notificationCenter.addObserver(
             forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil,
             queue: .main
         ) { [weak self] _ in
-            guard let self = self else { return }
-            self.callback(AccessibilitySettings.current())
+            guard let self else { return }
+            self.callback(self.settingsProvider())
         }
         #endif
     }
@@ -57,12 +89,9 @@ public final class AccessibilityObserver: @unchecked Sendable {
     }
 
     public func stop() {
-        #if canImport(AppKit)
-        if let observer = observer {
-            NotificationCenter.default.removeObserver(observer)
-            self.observer = nil
-        }
-        #endif
+        guard let observer else { return }
+        notificationCenter.removeObserver(observer)
+        self.observer = nil
     }
 }
 

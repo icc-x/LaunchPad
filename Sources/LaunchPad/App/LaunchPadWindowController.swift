@@ -9,7 +9,8 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     private let viewController: LaunchPadViewController
     private var accessibilityObserver: AccessibilityObserver?
     /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduced 动画分支
-    internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
+    internal var accessibilitySettingsProvider: @Sendable ()
+        -> AccessibilitySettings = { .current() }
 
     /// 测试注入：驱动「动画 + 完成回调」。生产环境使用真实 NSAnimationContext；
     /// 测试环境注入为同步立即触发完成回调，确定性覆盖 lifecycle.xxxDidFinish()。
@@ -47,7 +48,13 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
 
     // MARK: - Init
 
-    public init(lifecycle: WindowLifecycle, viewController: LaunchPadViewController) {
+    public init(
+        lifecycle: WindowLifecycle,
+        viewController: LaunchPadViewController,
+        accessibilityNotificationCenter: NotificationCenter = .default,
+        accessibilitySettingsProvider: @escaping @Sendable ()
+            -> AccessibilitySettings = { AccessibilitySettings.current() }
+    ) {
         self.lifecycle = lifecycle
         self.viewController = viewController
 
@@ -86,7 +93,11 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         lifecycle.delegate = self
 
         // Accessibility observer
-        accessibilityObserver = AccessibilityObserver { [weak self] settings in
+        self.accessibilitySettingsProvider = accessibilitySettingsProvider
+        accessibilityObserver = AccessibilityObserver(
+            notificationCenter: accessibilityNotificationCenter,
+            settingsProvider: accessibilitySettingsProvider
+        ) { [weak self] settings in
             self?.applyAccessibilitySettings(settings)
         }
 

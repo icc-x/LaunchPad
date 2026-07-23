@@ -24,6 +24,29 @@ struct LaunchPadWindowControllerTests {
         func fetchImage(itemId: Int64) throws -> (Data, Data)? { nil }
     }
 
+    private final class AccessibilitySettingsProviderSpy: @unchecked Sendable {
+        private let lock = NSLock()
+        private var reads = 0
+        private let settings: LaunchPad.AccessibilitySettings
+
+        init(settings: LaunchPad.AccessibilitySettings) {
+            self.settings = settings
+        }
+
+        func read() -> LaunchPad.AccessibilitySettings {
+            lock.lock()
+            defer { lock.unlock() }
+            reads += 1
+            return settings
+        }
+
+        var callCount: Int {
+            lock.lock()
+            defer { lock.unlock() }
+            return reads
+        }
+    }
+
     // MARK: - Helpers
 
     private struct SUT {
@@ -31,9 +54,19 @@ struct LaunchPadWindowControllerTests {
         let lifecycle: WindowLifecycle
         let viewController: LaunchPadViewController
         let scheduler: MockScheduler
+        let accessibilityNotificationCenter: NotificationCenter
     }
 
-    private func makeSUT() -> SUT {
+    private func makeSUT(
+        accessibilitySettingsProvider: @escaping @Sendable ()
+            -> LaunchPad.AccessibilitySettings = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
+    ) -> SUT {
         let storage = MockDataStore()
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
         let scheduler = MockScheduler()
@@ -47,17 +80,35 @@ struct LaunchPadWindowControllerTests {
             folderController: folderController
         )
         let lifecycle = WindowLifecycle()
-        let controller = LaunchPadWindowController(lifecycle: lifecycle, viewController: viewController)
+        let notificationCenter = NotificationCenter()
+        let controller = LaunchPadWindowController(
+            lifecycle: lifecycle,
+            viewController: viewController,
+            accessibilityNotificationCenter: notificationCenter,
+            accessibilitySettingsProvider: accessibilitySettingsProvider
+        )
         return SUT(
             controller: controller,
             lifecycle: lifecycle,
             viewController: viewController,
-            scheduler: scheduler
+            scheduler: scheduler,
+            accessibilityNotificationCenter: notificationCenter
         )
     }
 
-    private func makeSynchronousWindowSUT() -> SUT {
-        let sut = makeSUT()
+    private func makeSynchronousWindowSUT(
+        accessibilitySettingsProvider: @escaping @Sendable ()
+            -> LaunchPad.AccessibilitySettings = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
+    ) -> SUT {
+        let sut = makeSUT(
+            accessibilitySettingsProvider: accessibilitySettingsProvider
+        )
         sut.controller.mainActorDispatcher = { operation in
             MainActor.assumeIsolated { operation() }
         }
@@ -228,22 +279,21 @@ struct LaunchPadWindowControllerTests {
 
     @Test("无障碍设置变化通知触发材质更新")
     func applyAccessibilitySettings_onNotification_updatesMaterial() {
-        let sut = makeSUT()
+        let sut = makeSUT {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: true,
+                increaseContrast: true
+            )
+        }
         let visualEffect = sut.controller.window?.contentView as? NSVisualEffectView
         #expect(visualEffect != nil)
-        // 模拟系统无障碍设置变化通知
-        NotificationCenter.default.post(
+        sut.accessibilityNotificationCenter.post(
             name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
             object: nil
         )
-        // applyAccessibilitySettings 根据当前系统设置选择材质
-        let reduceTransparency = AccessibilitySettings.current().reduceTransparency
-        let expectedMaterial: NSVisualEffectView.Material = reduceTransparency ? .menu : .hudWindow
-        let expectedState: NSVisualEffectView.State = reduceTransparency
-            ? .inactive
-            : .followsWindowActiveState
-        #expect(visualEffect?.material == expectedMaterial)
-        #expect(visualEffect?.state == expectedState)
+        #expect(visualEffect?.material == .menu)
+        #expect(visualEffect?.state == .inactive)
     }
 
     @Test("init(coder:) 返回 nil（不支持 NSCoding）")
@@ -309,20 +359,46 @@ struct LaunchPadWindowControllerTests {
 
     @Test("reduceMotion=true -> showWindowAnimated 用 reduced 分支")
     func showWindowAnimated_reduceMotion_usesReducedBranch() {
-        let sut = makeSynchronousWindowSUT()
-        sut.controller.accessibilitySettingsProvider = {
+        let sut = makeSynchronousWindowSUT {
             AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         }
         sut.controller.toggle()
         #expect(sut.lifecycle.state == .visible)
     }
 
+    @Test("initializer settings provider 同时驱动 opening 和 closing 动画")
+    func initializerSettingsProviderDrivesBothAnimations() {
+        var durations: [TimeInterval] = []
+        let provider = AccessibilitySettingsProviderSpy(
+            settings: AccessibilitySettings(
+                reduceMotion: true,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        )
+        let sut = makeSynchronousWindowSUT(
+            accessibilitySettingsProvider: provider.read
+        )
+        sut.controller.runAnimated = { duration, animations, completion in
+            durations.append(duration)
+            animations()
+            completion()
+        }
+
+        sut.controller.toggle()
+        #expect(sut.lifecycle.state == .visible)
+        sut.controller.toggle()
+
+        #expect(sut.lifecycle.state == .hidden)
+        #expect(provider.callCount == 2)
+        #expect(durations == [0.1, 0.1])
+    }
+
     // MARK: - 额外分支覆盖
 
     @Test("hideWindowAnimated reduceMotion=true -> 持续时间用 0.1（覆盖 L181 ternary 真分支）")
     func hideWindowAnimated_reduceMotion_usesShortDuration() {
-        let sut = makeSynchronousWindowSUT()
-        sut.controller.accessibilitySettingsProvider = {
+        let sut = makeSynchronousWindowSUT {
             AccessibilitySettings(reduceMotion: true, reduceTransparency: false, increaseContrast: false)
         }
         sut.controller.runAnimated = { duration, animations, completion in
