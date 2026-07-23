@@ -1612,3 +1612,75 @@ the approved plan or task-specific test reports.
   mutation artifact shows start/end status and hashes differ, and ownership
   manifest fields report residue 0 while the unrelated helper is
   `environment_conflict_status=1` with command/residue not run.
+
+## Decision 078: Close the second aggregate review as one evidence-backed fix wave
+
+- Status: adopted after the independent re-reviews of
+  `9a0f9b3..76cfcd3`; this decision supersedes the all-host process-conflict
+  portion of Decision 074 while preserving its candidate provenance and exact
+  invocation ownership requirements.
+- Evidence: the production/architecture track reports Critical/Important/Minor
+  `1/2/0`: readable plists with missing or blank mandatory identity fields are
+  silently omitted from a complete discovery, the default query-only search
+  cache can return an old authoritative snapshot, and an absent optional
+  `~/Applications` root permanently blocks synchronization. The independent
+  test/release track reports `0/2/1`: Decision 070 lacks a real file-backed
+  AppDelegate topology regression, before/after host process snapshots miss a
+  short-lived concurrent SwiftPM helper, and shell `kill -0` conflates ESRCH
+  with EPERM.
+- Branch inventory: discovery has eleven relevant branches (root success,
+  optional-root missing, required-root failure, non-app, bundle read/parse
+  failure, missing/blank name, explicit UIElement filter, missing/blank bundle
+  identifier, excluded app, valid app and first-wins duplicate); active search
+  has six (first nonempty query, same query after authoritative replacement,
+  different-query stale completion, same-query stale generation, empty query
+  and reload failure); process proof has seven (invalid identity, exact PID
+  gone/alive/EPERM, exact PGID gone/alive/EPERM and token residue), plus short-
+  and long-lived unrelated helpers. Each branch must be read and covered by
+  static or executable evidence before the wave is closed.
+- Decision: treat a readable candidate `.app` whose `CFBundleName` or
+  `CFBundleIdentifier` is missing, non-string, empty or whitespace-only as a
+  structured bundle discovery failure; only explicit `LSUIElement == true` and
+  configured exclusion are normal filters. Introduce a typed discovery-root
+  descriptor carrying required versus optional-missing policy. Classify only
+  `CocoaError.fileNoSuchFile` for an optional root as an authoritative empty
+  root; permissions and all other I/O failures remain incomplete. Do not use a
+  `fileExists` preflight because it adds a TOCTOU window.
+- Decision: keep `SearchEngine` cache behavior for callers that explicitly use
+  it, but make the default production controller runner call the item-scoped
+  uncached `search(items:query:)` API. Prove added, removed and renamed results
+  after warming the same query and replacing the authoritative snapshot.
+- Decision: add file-backed Swift Testing regressions that enter through
+  `AppDelegate.performInitialScan` and `performIncrementalScan`, use a real
+  `StorageManager`, and compare the complete persisted layout before failure,
+  immediately after failure and after manager release/reopen. Cover a failed
+  root, malformed/unreadable existing bundle and the next complete scan; assert
+  stable IDs, dense ordering and parent/folder membership, not merely writer
+  call counts.
+- Decision: isolate all seven authoritative SwiftPM invocations inside the
+  artifact with one unique `--scratch-path`, one unique `--cache-path`, and
+  artifact-local `CLANG_MODULE_CACHE_PATH` and
+  `SWIFTPM_MODULECACHE_OVERRIDE`. Record their absolute paths and verify the
+  static command contract. Remove the all-host same-name `pgrep` before/after
+  conflict heuristic; retain invocation token, exact wrapper/supervisor/child,
+  PGID and token-residue evidence, which prove only this invocation tree.
+  Unrelated short- and long-lived helpers must not share or mutate the artifact
+  resources and probe mode must remain non-authoritative.
+- Decision: replace shell-only `kill -0` interpretation with one shared
+  Perl/POSIX liveness probe for both positive PID and negative PGID. Only ESRCH
+  means gone; alive, EPERM and any other errno fail closed. Add executable
+  alive/gone and synthetic or host-backed EPERM coverage without weakening
+  cleanup requirements.
+- Impact: protocol, scanner, AppDelegate/controller, Swift Testing and release
+  orchestration surfaces change. Storage schema, product layout behavior,
+  watchdog ownership and wall-clock thresholds remain unchanged. The sole
+  final-authority `scripts/test-release.sh` run remains unconsumed until both
+  aggregate re-reviews report no open Critical or Important finding.
+- Verification: preserve RED and GREEN output for every behavioral regression;
+  run scanner, AppDelegate, integration/storage, search/controller suites plus
+  syntax, provenance, ownership, resource-isolation and errno probes. Commit
+  source/tests and scripts with explicit path whitelists, regenerate the full
+  `9a0f9b3..HEAD` package, repeat both independent reviews, then run the
+  P0-adjacent suite. Only a clean frozen candidate may consume the single final
+  release gate, whose artifact must remain `failed` on any ownership,
+  provenance, resource or wall-clock failure.
