@@ -1271,3 +1271,116 @@ the approved plan or task-specific test reports.
 - Verification: controller focused runs pass `156/156` twice, full suite passes
   `1064/1064` in `6.688s`, legacy/system/disabled scans return no matches, the
   real FSEvents title appears once, and host residual `pgrep` returns no process.
+
+## Decision 062: Fix the AppIcon test boundary instead of weakening the release scan
+
+- Status: adopted during Task 22 prerequisite closure.
+- Evidence: the strengthened Task 22 static policy found the only remaining
+  real-system mutation at `AppIconCellTests.swift`, where one reduce-motion test
+  wrote `UserDefaults.standard`. The same fixture also left
+  `accessibilitySettingsProvider` at its production `.current()` default, so
+  otherwise unrelated cell tests could read process-global accessibility state.
+- Decision: keep the release scan fail-closed with no allowlist. Make the shared
+  cell fixture inject local all-false settings and make the reduce-motion tests
+  use explicit local providers. Preserve all existing test identities and prove
+  both the actual pulse animation and the exact `configure` then
+  `startJiggling` provider-consumption sequence.
+- Impact: production behavior is unchanged; cell tests no longer depend on or
+  mutate host accessibility state, and the release gate retains one uniform
+  host-safety rule.
+- Verification: the prerequisite commit is restricted to
+  `AppIconCellTests.swift`; the focused suite, system-boundary scan, identity
+  audit and independent task review must all pass before Task 22 can close.
+
+## Decision 063: Expand reopen durability to every folder-cardinality branch
+
+- Status: adopted during Task 23 preflight under the user's high-quality and
+  autonomous-execution authorization.
+- Evidence: Task 23's three planned tests cover cross-page blank append,
+  create-folder, add, reorder, remove from three and two children, and safe
+  delete with multiple children. The production domain has distinct durable
+  branches for same-page top-level movement, safe delete with zero or one
+  child, and remove-from-folder with one child, including the unique
+  `children.isEmpty` placement calculation. Existing Task 14 tests cover these
+  mainly in memory and do not prove those rows after a new file-backed manager
+  lifetime.
+- Decision: retain the three planned file-backed tests, add an intermediate
+  same-page close/reopen checkpoint before the cross-page blank append, and add
+  focused file-backed cases for safe-delete `0/1/N` and remove-from-folder
+  `N/2/1`. Every mutation is followed by releasing the prior `StorageManager`
+  and opening a new instance before asserting the complete dense layout.
+- Impact: only `IntegrationTests.swift` grows; production code and schema remain
+  unchanged. The final durability evidence covers all six layout intents and
+  all folder-cardinality branches without duplicating rollback-failure tests.
+- Verification: the focused storage/domain/integration gate must pass, the
+  integration commit must contain exactly one file, and an independent review
+  must map each production branch to a post-reopen assertion.
+
+## Decision 064: Do not manufacture a RED for evidence-only durability tests
+
+- Status: adopted during Task 23 preflight.
+- Evidence: Tasks 11-14 already implemented and unit-tested all six mutation
+  intents and their transaction semantics. Task 23 owns file-backed
+  close/reopen evidence, not a new production behavior. Its new assertions can
+  therefore pass on first execution when the existing implementation is
+  correct; forcing them to fail would require weakening a valid assertion or
+  temporarily damaging reviewed production code.
+- Decision: treat absence of the required file-backed branch evidence as the
+  test-coverage RED. Add each test with exact before/after topology, dense
+  ordering, deleted-row and fresh-manager assertions, run it immediately, and
+  only change production code if a real failing case identifies a root cause.
+  Do not create a synthetic production regression merely to demonstrate a
+  red-green transcript.
+- Impact: Task 23 remains test-only and preserves the reviewed production
+  implementation while still producing falsifiable durability evidence.
+- Verification: every new case must map to a distinct production branch and
+  assert that branch's unique topology, deleted rows and dense ordering through
+  a newly created `StorageManager`; the committed tree must pass focused
+  storage/domain/integration suites without any production diff.
+
+## Decision 065: Make blank-tail and per-mutation reopen fixtures literal
+
+- Status: adopted after the independent Task 23 test-design review.
+- Evidence: the plan's cross-page example uses capacity two with two items on
+  each page, so the target page is full and cannot prove a blank-tail drop. Its
+  folder sequence also performs create and add before the first reopen, which
+  cannot attribute durability to each individual mutation.
+- Decision: use capacity three with initial pages `[A, B, C]` and `[D]`, first
+  prove a same-page move through a fresh manager, then move the source after
+  `D` while the target page has two empty slots and prove the final global/page
+  order through another fresh manager. Prove create-folder separately from an
+  independently seeded folder used for add/reorder/remove, so every tested
+  mutation is followed immediately by releasing the only manager reference and
+  reopening the file.
+- Impact: test intent matches the product terms "blank append" and "every
+  mutation reopens" exactly; production code, schema and public contracts stay
+  unchanged.
+- Verification: review must check precise page IDs, flattened IDs, child IDs,
+  dense order arrays and deleted folder rows at every reopen checkpoint, not
+  merely the final snapshot or item count.
+
+## Decision 066: Keep release evidence provenance outside child commands
+
+- Status: adopted during Task 22 final review closure.
+- Evidence: the orchestrator's PIDFILE variables were inherited by nested
+  watchdog invocations, allowing the exec-127 branch to overwrite the outer
+  supervisor/child evidence. The event parser also accepted an entirely empty
+  parameter-case set and ignored malformed IDs on known identity events, while
+  numeric PID sorting did not satisfy `comm`'s C-locale ordering contract.
+  Separately, a blank `NSImage(size:)` returned nil TIFF data and emitted two
+  `CGImageDestinationFinalize` lines in every performance run.
+- Decision: preserve the shared watchdog unchanged. After it records outer
+  PIDs, execute each child through `/usr/bin/env -u` for both provenance
+  variables so descendants cannot rewrite them. Require valid IDs for the four
+  known function/case lifecycle events and at least one parameter-case record;
+  use `LC_ALL=C sort -u` on both inputs and execute `comm` itself with
+  `LC_ALL=C`. Build IconCache performance data from a real decodable bitmap/TIFF
+  fixture and fail the test if fixture creation fails.
+- Impact: process ownership and structured execution evidence become
+  fail-closed without a second supervisor or a change to the Task 4 watchdog;
+  performance thresholds and measured work remain unchanged, while test logs
+  lose the fixture-generated TIFF errors.
+- Verification: extracted probes must show stable outer PID files, all outer
+  command/residue fields zero, malformed/empty parameter inputs nonzero, exact
+  PID delta `2000` for the ordering boundary, and two clean focused performance
+  passes before independent re-review.
