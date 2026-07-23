@@ -189,8 +189,6 @@ struct IntegrationTests {
     @Test("首次启动 — 100 个应用 + 35 每页 → 创建 3 页，最后一页 30 项")
     func firstLaunch_100apps_pagination() throws {
         let storage = try StorageManager(dbPath: ":memory:")
-        let mockFS = MockFileSystemService()
-        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: [])
 
         // 创建 100 个扫描结果
         let apps = (0..<100).map { i in
@@ -216,8 +214,6 @@ struct IntegrationTests {
     @Test("首次启动 — 应用按字母顺序排列，跨页连续")
     func firstLaunch_alphabetical_order() throws {
         let storage = try StorageManager(dbPath: ":memory:")
-        let mockFS = MockFileSystemService()
-        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: [])
 
         // 创建乱序应用名
         let names = ["Zulu", "Alpha", "Mike", "Bravo", "Echo", "Charlie", "Delta", "Foxtrot",
@@ -264,20 +260,33 @@ struct IntegrationTests {
     func excludedApps_notInGrid() throws {
         let storage = try StorageManager(dbPath: ":memory:")
         let mockFS = MockFileSystemService()
+        let appDirectory = URL(fileURLWithPath: "/Applications")
+        let visibleURL = appDirectory.appendingPathComponent("Visible.app")
+        let excludedURL = appDirectory.appendingPathComponent("Excluded.app")
         let excludedBundleIds: Set<String> = ["com.test.excluded"]
         let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: excludedBundleIds)
 
-        let apps = [
-            ScannedApp(name: "Visible", bundleId: "com.test.visible", path: "/Applications/Visible.app"),
-            ScannedApp(name: "Excluded", bundleId: "com.test.excluded", path: "/Applications/Excluded.app")
+        mockFS.directoryContentsMap[appDirectory] = [visibleURL, excludedURL]
+        mockFS.bundleInfos[visibleURL] = [
+            "CFBundleName": "Visible",
+            "CFBundleIdentifier": "com.test.visible",
+        ]
+        mockFS.bundleInfos[excludedURL] = [
+            "CFBundleName": "Excluded",
+            "CFBundleIdentifier": "com.test.excluded",
         ]
 
-        // scanDirectories 会过滤掉 excluded
-        let scanned = scanner.scanDirectories([URL(fileURLWithPath: "/Applications")])
-        // 由于 MockFileSystemService 没有 bundleInfo，scanApp 返回 nil
-        // 直接测试 isExcluded
-        #expect(scanner.isExcluded(bundleId: "com.test.excluded") == true)
-        #expect(scanner.isExcluded(bundleId: "com.test.visible") == false)
+        let scanned = scanner.scanDirectories([appDirectory])
+        #expect(scanned.map(\.bundleId) == ["com.test.visible"])
+
+        _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 35)
+
+        let pages = try storage.fetchAllItems(parentId: nil)
+            .filter { $0.type == .page }
+        #expect(pages.count == 1)
+        let gridItems = try storage.fetchAllItems(parentId: pages[0].id)
+        #expect(gridItems.map(\.app?.bundleId) == ["com.test.visible"])
+        #expect(gridItems.contains { $0.app?.bundleId == "com.test.excluded" } == false)
     }
 
     // MARK: - StorageManager 三层嵌套
