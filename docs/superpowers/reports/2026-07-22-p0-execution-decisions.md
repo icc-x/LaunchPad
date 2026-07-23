@@ -1065,3 +1065,132 @@ the approved plan or task-specific test reports.
   `3/3`, controller-fresh `LaunchPadViewControllerTests` pass `128/128`, and the
   formal re-review reports spec compliant, Task quality Approved, and
   Critical/Important/Minor `0/0/0`.
+
+## Decision 050: Reconstruct Task 20 RED from an isolated committed baseline
+
+- Status: adopted and verified during Task 20.
+- Evidence: Task 20 implementation was already present in the active worktree
+  when the missing RED record was identified. Reverting production files in the
+  shared checkout would have disturbed valid work and the user-owned dirty plan,
+  while a GREEN run could not prove that the new tests detected the absent scan
+  contract.
+- Decision: export commit `933fd5d` to `/tmp/launchpad-task20-red`, apply only
+  the five Task 20 test files, and run the named five-suite filter there through
+  the shared watchdog. Treat the resulting compile failure on the missing
+  `ScanBatchWriting`, transaction, AppDelegate gate, and viewport symbols as the
+  authoritative RED. Do not manufacture RED by weakening current production
+  code or modifying the shared checkout.
+- Impact: the TDD record is causally meaningful and reproducible without
+  rewriting branch history or touching unrelated user changes.
+- Verification: the isolated command exited nonzero for the expected missing
+  interfaces before any test executed; the later production checkout passed
+  the corresponding six-suite GREEN with `231/231` tests.
+
+## Decision 051: Land the FileWatcher seam once, ahead of Task 21
+
+- Status: adopted and verified during Task 20; consumed by Task 21.
+- Evidence: Task 20 must prove that an AppDelegate file event reaches the new
+  batch scan path, but the legacy watcher combined live FSEvents ownership,
+  debounce scheduling, and MainActor delivery and ignored
+  `FSEventStreamStart` failure. Keeping the temporary real-host orchestration
+  test would make the scan gate depend on sandbox and host timing. Task 21 Step
+  5 already defines the narrow `FileEventStreaming` boundary and explicitly
+  requires deterministic AppDelegate fixtures.
+- Decision: advance Task 21 Step 5 into the Task 20 implementation: split the
+  system FSEvents backend from MainActor orchestration, expose startup success,
+  inject the scheduler/backend in tests, and make AppDelegate discard a failed
+  watcher. Task 21 must reuse and audit this implementation, not introduce a
+  second backend, compatibility initializer, or alternate lifecycle owner.
+- Impact: Task 20 gets deterministic scan-trigger coverage and correct startup
+  failure behavior; Task 21 retains one implementation and one ownership model.
+- Verification: mock orchestration/lifecycle tests pass without host resources,
+  the real UUID-directory test remains the single host proof, and formal Task 20
+  review accepted the pre-landed boundary with no finding.
+
+## Decision 052: Treat FSEvents sandbox failure as a permission boundary, not a flaky test
+
+- Status: adopted and verified during Task 20.
+- Evidence: the unchanged UUID temporary-directory test returned
+  `FSEventStreamStart == false` inside the Codex workspace sandbox and passed in
+  the host environment. The production callback, debounce, and structured
+  10-second timeout were identical in both runs.
+- Decision: keep the test non-skipped and unchanged. Run deterministic watcher
+  logic in the sandbox and run the one real FSEvents case once with narrowly
+  escalated host permission through `scripts/run-with-timeout.sh`. Do not add a
+  retry, sleep, environment bypass, timeout extension, or fallback assertion.
+- Impact: an actual FSEvents regression still fails the release work, while an
+  outer sandbox service restriction is not misdiagnosed as product behavior.
+- Verification: the main-agent fresh host run passed `1/1` in `1.071s`; the
+  implementer host run passed `1/1` in `1.079s`.
+
+## Decision 053: Keep the scan and required watcher boundary in one auditable Task 20 range
+
+- Status: adopted and verified during Task 20.
+- Evidence: the AppDelegate scan callback and watcher startup result must compile
+  and behave together; splitting the watcher seam out while committing the scan
+  caller would leave an intermediate commit with a missing lifecycle contract.
+  The approved task workflow requires every commit boundary to keep the package
+  compileable and each aggregate task range independently reviewable.
+- Decision: commit the initial scan transaction and the prerequisite watcher
+  seam together as `67b4dd5`, then place reviewer-driven correctness fixes in
+  separate commits `26e3455` and `7d63b60`. Review both each fix range and the
+  complete Task 20 aggregate rather than rewriting or amending reviewed commits.
+- Impact: history exposes the original implementation, the production fix, and
+  the strengthened lifecycle evidence as three inspectable stages.
+- Verification: the aggregate changes exactly the 14 declared source/test paths;
+  the two follow-up commits change only the five finding-related files and then
+  the single lifecycle test file, respectively.
+
+## Decision 054: Invalidate watcher events at both asynchronous boundaries
+
+- Status: adopted and verified during Task 20 review closure.
+- Evidence: an old backend callback can enqueue a MainActor task before restart,
+  and a current task can enqueue a debounce action before stop or another
+  restart. Checking only `isStarted` or only the first hop allows stale work to
+  invoke the replacement session's callback.
+- Decision: advance a generation on stop/start invalidation, capture the active
+  generation in the backend closure, and require the same generation plus active
+  state both when the MainActor task is received and when the scheduled debounce
+  action executes.
+- Impact: old streams and old timers cannot cross session ownership boundaries,
+  including immediate restart and failed-start paths.
+- Verification: the regression emits from the old backend, restarts before
+  yielding, advances the scheduler, and observes zero old/new callbacks; a new
+  event then triggers the replacement callback exactly once.
+
+## Decision 055: Preserve the earliest independent scan write error
+
+- Status: adopted and verified during Task 20 review closure.
+- Evidence: the batch deliberately continues independent SQL writes after an
+  individual failure, so normalization can encounter a later snapshot-read
+  failure. Letting the later read escape would replace the causal first write
+  error and violate `ScanBatchWriteFailure.primaryError` semantics.
+- Decision: if normalization throws after `firstError` is set, throw a
+  `ScanBatchWriteFailure` carrying that first error and the accumulated counters.
+  Preserve `SQLiteRollbackFailure` unchanged when rollback itself fails.
+- Impact: diagnostics remain stable and identify the operation that first made
+  the atomic batch unsuccessful without changing continuation or rollback rules.
+- Verification: a combined update-write fault and second snapshot-read fault
+  reports `.updateFailed` and restores the complete pre-scan snapshot; storage
+  and integration regressions pass `133/133`.
+
+## Decision 056: Require timing-observable retained-context and dense-layout evidence
+
+- Status: adopted and verified during Task 20 review closure.
+- Evidence: counting only `FSEventStreamRelease` did not observe
+  `Unmanaged<CallbackBox>.release()`, and a weak probe checked only after stream
+  deinit could not distinguish explicit-stop cleanup from deinit fallback.
+  Likewise, a capacity-one scan fixture left the surviving child at ordering
+  zero and could pass without proving normalization.
+- Decision: use a lock-protected deinit counter captured solely by `onEvents`;
+  release the test's local callback, assert count one while the stopped stream is
+  still alive, and prove double stop keeps the count at one. Use the explicit
+  `page1:A`, `page2:B(0),C(1)`, `page3:D` topology, retain only C, and assert
+  child ordering `1 -> 0`, page ordering zero, empty-page cleanup, then exactly
+  one empty page after an empty scan.
+- Impact: the tests can fail for the exact ownership and normalization defects
+  they name instead of passing on coincidental final state.
+- Verification: lifecycle timing test passes `1/1`; Task 20 formal re-review is
+  spec compliant and Approved with Critical/Important/Minor `0/0/0`; main-agent
+  fresh gates pass `231/231`, `133/133`, the real host test `1/1`, and static
+  checks with no output.
