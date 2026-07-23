@@ -1384,3 +1384,48 @@ the approved plan or task-specific test reports.
   command/residue fields zero, malformed/empty parameter inputs nonzero, exact
   PID delta `2000` for the ordering boundary, and two clean focused performance
   passes before independent re-review.
+
+## Decision 067: Make Task 23 failures diagnosable and close warnings in the touched file
+
+- Status: adopted during Task 23 formal review closure.
+- Evidence: the first durability review found that force-unwrapping tested
+  `pageChildren` and `folderChildren` entries would turn a persistence regression
+  into a process-level fatal error. It also found repeated 0/1/only-child seed
+  construction. After those fixes, a clean rebuild exposed five pre-existing
+  unused-value warnings in `IntegrationTests.swift`; two were dead scanner
+  constructions and the excluded-app test did not exercise its claimed
+  scanner-to-grid integration path.
+- Decision: compare tested snapshot maps as optionals so missing entries produce
+  Swift Testing failures; share only an ID-valued folder-cardinality seed fixture
+  while keeping mutations, manager release/reopen boundaries and topology
+  assertions explicit. Delete the two dead scanner constructions and replace the
+  weak excluded-app check with a real
+  `MockFileSystemService -> AppScanner -> StorageManager -> page children` proof.
+- Impact: Task 23 remains confined to `IntegrationTests.swift`; production code,
+  schema and public contracts are unchanged. The touched test file is warning
+  free on a clean rebuild. Other compiler warnings remain outside this task and
+  must not be described as zero in release documentation; the final aggregate
+  review determines whether any is a P0 blocker.
+- Verification: the final three-commit range `e0159b3..e5f02ff` is spec compliant,
+  Task quality Approved and Critical/Important/Minor `0/0/0`; controller fresh
+  storage/domain/integration passes 138/138, clean-rebuild Integration passes
+  18/18, the `IntegrationTests.swift:.*warning:` scan is empty, and the cumulative
+  tracked file whitelist contains only `IntegrationTests.swift`.
+
+## Decision 068: Review the frozen code candidate before consuming the final gate run
+
+- Status: adopted before the Task 23 release phase.
+- Evidence: the final release script is intentionally limited to one authoritative
+  run per frozen candidate. Running it before a full-range review could produce an
+  artifact for code that must subsequently change, invalidating the evidence and
+  forcing a new candidate run.
+- Decision: first review the complete P0 range `9a0f9b3..HEAD` on two independent
+  tracks: production architecture/data flow and tests/release/process boundaries.
+  Close and re-review all findings, then run the P0-adjacent suite and freeze the
+  candidate. Only after controlled paths are clean may that candidate consume its
+  single `scripts/test-release.sh` run.
+- Impact: no product behavior changes. The ordering makes the final artifact bind
+  to already reviewed code and preserves the gate's provenance contract.
+- Verification: both aggregate reports must name the same base/head and report no
+  open Critical or Important finding before the adjacent suite or final gate runs;
+  any later code/test/script fix invalidates prior review and gate evidence.
