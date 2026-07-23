@@ -4,6 +4,19 @@ import Testing
 import AppKit
 #endif
 
+private final class ObserverRemovalRecorder: @unchecked Sendable {
+    private let lock = NSLock()
+    private var count = 0
+
+    func record() {
+        lock.withLock { count += 1 }
+    }
+
+    var callCount: Int {
+        lock.withLock { count }
+    }
+}
+
 @MainActor
 @Suite("AccessibilityObservers accessibility settings monitoring")
 struct AccessibilityObserversTests {
@@ -91,6 +104,34 @@ struct AccessibilityObserversTests {
         observer.stop()
 
         #expect(callbackCount == 0)
+    }
+
+    @Test("并发 stop 原子移除 observer token 一次")
+    func concurrentStopsRemoveObserverOnce() async {
+        let center = NotificationCenter()
+        let removals = ObserverRemovalRecorder()
+        let observer = AccessibilityObserver(
+            notificationCenter: center,
+            settingsProvider: {
+                AccessibilitySettings(
+                    reduceMotion: false,
+                    reduceTransparency: false,
+                    increaseContrast: false
+                )
+            },
+            observerRemover: { token in
+                removals.record()
+                center.removeObserver(token)
+            }
+        ) { _ in }
+
+        await withTaskGroup(of: Void.self) { group in
+            for _ in 0..<32 {
+                group.addTask { observer.stop() }
+            }
+        }
+
+        #expect(removals.callCount == 1)
     }
 
     #endif

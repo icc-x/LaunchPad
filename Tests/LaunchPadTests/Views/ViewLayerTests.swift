@@ -575,20 +575,30 @@ private func expectRowMajor(
         let fixture = makeGridFixture(
             itemCounts: [1, 1, 1], viewportSize: viewportSize
         )
+        fixture.scrollView.scrollerStyle = .legacy
+        fixture.scrollView.hasVerticalScroller = true
         fixture.collectionView.setFrameSize(NSSize(width: 900, height: 620))
+        fixture.window.contentView?.layoutSubtreeIfNeeded()
+        let clipSize = fixture.scrollView.contentView.bounds.size
         let parameters = GridLayoutCalculator.calculate(screenWidth: viewportSize.width)
-        let expectedMetrics = GridLayoutCalculator.calculate(viewportSize: viewportSize)
+        let expectedMetrics = GridLayoutCalculator.calculate(viewportSize: clipSize)
         let expectedContentHeight = expectedMetrics.sectionInsets.top
             + CGFloat(expectedMetrics.rows) * expectedMetrics.itemSize.height
             + CGFloat(max(expectedMetrics.rows - 1, 0)) * expectedMetrics.verticalSpacing
             + expectedMetrics.sectionInsets.bottom
+
+        #expect(fixture.scrollView.scrollerStyle == .legacy)
+        #expect(clipSize.width < viewportSize.width)
 
         for _ in 0..<2 {
             fixture.layout.applyGridParameters(parameters)
             fixture.layout.prepare()
 
             #expect(
-                abs(fixture.layout.collectionViewContentSize.width - 900) <= 0.5
+                abs(
+                    fixture.layout.collectionViewContentSize.width
+                        - 3 * clipSize.width
+                ) <= 0.5
             )
             #expect(
                 abs(

@@ -521,11 +521,26 @@ struct HotkeyManagerTests {
         #expect(!manager.hasCallbackContext)
 
         let port = try makeMachPort()
-        manager.eventTapCreator = { _, _, _ in port }
+        weak var sourceFailureBox: HotkeyManager.HotkeyCallbackBox?
+        var sourceAdds = 0
+        var sourceEnables = 0
+        manager.eventTapCreator = { _, _, context in
+            if let context {
+                sourceFailureBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                    .fromOpaque(context)
+                    .takeUnretainedValue()
+            }
+            return port
+        }
         manager.runLoopSourceCreator = { _ in nil }
+        manager.runLoopSourceAdder = { _ in sourceAdds += 1 }
+        manager.eventTapEnabler = { _, _ in sourceEnables += 1 }
         #expect(!manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
         #expect(!manager.hasConflict)
         #expect(!manager.hasCallbackContext)
+        #expect(sourceFailureBox == nil)
+        #expect(sourceAdds == 0)
+        #expect(sourceEnables == 0)
     }
 
     @Test("global hotkey 重注册与注销平衡 source、tap 和 context")

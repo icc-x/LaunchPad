@@ -59,18 +59,35 @@ public final class AccessibilityObserver: @unchecked Sendable {
 
     private let notificationCenter: NotificationCenter
     private let settingsProvider: @Sendable () -> AccessibilitySettings
+    private let observerRemover: (NSObjectProtocol) -> Void
     private let callback: ChangeCallback
+    private let observerLock = NSLock()
     private var observer: NSObjectProtocol?
 
-    public init(
+    public convenience init(
         notificationCenter: NotificationCenter = .default,
         settingsProvider: @escaping @Sendable () -> AccessibilitySettings = {
             AccessibilitySettings.current()
         },
         callback: @escaping ChangeCallback
     ) {
+        self.init(
+            notificationCenter: notificationCenter,
+            settingsProvider: settingsProvider,
+            observerRemover: { notificationCenter.removeObserver($0) },
+            callback: callback
+        )
+    }
+
+    init(
+        notificationCenter: NotificationCenter,
+        settingsProvider: @escaping @Sendable () -> AccessibilitySettings,
+        observerRemover: @escaping (NSObjectProtocol) -> Void,
+        callback: @escaping ChangeCallback
+    ) {
         self.notificationCenter = notificationCenter
         self.settingsProvider = settingsProvider
+        self.observerRemover = observerRemover
         self.callback = callback
         #if canImport(AppKit)
         self.observer = notificationCenter.addObserver(
@@ -89,9 +106,13 @@ public final class AccessibilityObserver: @unchecked Sendable {
     }
 
     public func stop() {
+        let observer = observerLock.withLock {
+            let observer = self.observer
+            self.observer = nil
+            return observer
+        }
         guard let observer else { return }
-        notificationCenter.removeObserver(observer)
-        self.observer = nil
+        observerRemover(observer)
     }
 }
 

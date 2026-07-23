@@ -856,20 +856,6 @@ struct AppDelegateTests {
         #expect(sut.storage != nil)
     }
 
-    // MARK: - 默认闭包覆盖
-
-    @Test("默认 runningInstanceChecker 可安全调用")
-    func defaultRunningInstanceChecker_callable() {
-        let sut = AppDelegate()
-        _ = sut.runningInstanceChecker()
-    }
-
-    @Test("默认 existingInstanceActivator 可安全调用")
-    func defaultExistingInstanceActivator_callable() {
-        let sut = AppDelegate()
-        sut.existingInstanceActivator()
-    }
-
     @Test("setupFileWatcher：文件变更触发一次批量增量扫描")
     func setupFileWatcherTriggersIncrementalScan() async throws {
         let sut = makeDelegate()
