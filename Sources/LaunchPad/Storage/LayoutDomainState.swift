@@ -26,6 +26,7 @@ struct LayoutNode: Equatable, Sendable {
 /// Records persistence side effects implied by an otherwise pure mutation.
 struct LayoutMutationEffects: Equatable {
     var folderIDsToDelete: Set<Int64> = []
+    var appIDsToDelete: Set<Int64> = []
     var createdFolderTitle: String?
 }
 
@@ -142,6 +143,9 @@ struct LayoutDomainState: Equatable {
         case .deleteFolder(let folderID):
             try validateTopLevelFolder(folderID)
             _ = try folderChildren(folderID)
+
+        case .deleteApp(let itemID):
+            try validateTopLevelApp(itemID)
         }
     }
 
@@ -299,6 +303,15 @@ struct LayoutDomainState: Equatable {
             topLevelItems.insert(contentsOf: children, at: folderIndex)
             childrenByFolderID.removeValue(forKey: folderID)
             effects.folderIDsToDelete.insert(folderID)
+
+        case .deleteApp(let itemID):
+            guard let itemIndex = topLevelItems.firstIndex(where: {
+                $0.id == itemID
+            }) else {
+                throw LayoutDomainError.missingItem(itemID)
+            }
+            topLevelItems.remove(at: itemIndex)
+            effects.appIDsToDelete.insert(itemID)
         }
 
         return effects

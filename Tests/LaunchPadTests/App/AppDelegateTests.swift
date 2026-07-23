@@ -117,6 +117,7 @@ struct AppDelegateTests {
         }
         sut.hotkeyManagerFactory = { hotkeyManager }
         sut.workspaceURLOpener = { _ in }
+        sut.applicationOpener = { _ in }
         sut.hotkeyToggleRunner = { action in
             MainActor.assumeIsolated { action() }
         }
@@ -152,7 +153,8 @@ struct AppDelegateTests {
             iconCache: iconCache,
             searchEngine: searchEngine,
             dragController: dragController,
-            folderController: folderController
+            folderController: folderController,
+            applicationOpener: { _ in }
         )
     }
 
@@ -469,9 +471,34 @@ struct AppDelegateTests {
         let sut = makeDelegate()
         sut.setupServices()
         sut.setupControllers()
+        guard let lifecycle = sut.lifecycle,
+              let windowController = sut.windowController else {
+            Issue.record("controllers should be installed")
+            return
+        }
+        var animationCompletions: [() -> Void] = []
+        windowController.mainActorDispatcher = { operation in
+            MainActor.assumeIsolated { operation() }
+        }
+        windowController.mainAsyncRunner = { $0() }
+        windowController.targetScreenFrameProvider = { _ in
+            NSRect(x: 0, y: 0, width: 800, height: 600)
+        }
+        windowController.runAnimated = { _, animations, completion in
+            animations()
+            animationCompletions.append(completion)
+        }
+
+        lifecycle.handleToggle()
+        #expect(lifecycle.state == .opening)
+        try #require(animationCompletions.count == 1)
+        animationCompletions.removeFirst()()
+        #expect(lifecycle.state == .visible)
 
         sut.viewController?.onClose?()
-        #expect(true)
+
+        #expect(lifecycle.state == .closing)
+        #expect(animationCompletions.count == 1)
     }
 
     // MARK: - setupMenuBar
@@ -551,12 +578,25 @@ struct AppDelegateTests {
     func toggleLoginItem_throws() {
         let sut = makeDelegate()
         var calls = 0
+        var unregisterCalls = 0
+        var failures: [NSError] = []
         sut.loginItemStatusProvider = { calls += 1; return calls <= 2 ? .enabled : .notRegistered }
-        sut.loginItemUnregister = { throw NSError(domain: "sm", code: 3) }
+        sut.loginItemUnregister = {
+            unregisterCalls += 1
+            throw NSError(domain: "sm", code: 3)
+        }
+        sut.loginItemFailureLogger = { failures.append($0 as NSError) }
         sut.setupMenuBar()
 
         sut.toggleLoginItem()
-        #expect(true)
+
+        let loginItem = sut.statusItem?.menu?.items.first {
+            $0.action == #selector(AppDelegate.toggleLoginItem)
+        }
+        #expect(unregisterCalls == 1)
+        #expect(failures.map(\.domain) == ["sm"])
+        #expect(failures.map(\.code) == [3])
+        #expect(loginItem?.state == .on)
     }
 
     // MARK: - setupHotkey
@@ -825,10 +865,20 @@ struct AppDelegateTests {
     @Test("statusItemClicked 切换窗口")
     func statusItemClicked_toggles() throws {
         let sut = makeDelegate()
-        sut.windowController = LaunchPadWindowController(lifecycle: WindowLifecycle(), viewController: try! makeViewController())
+        let lifecycle = WindowLifecycle()
+        let windowController = LaunchPadWindowController(
+            lifecycle: lifecycle,
+            viewController: try makeViewController()
+        )
+        windowController.mainActorDispatcher = { operation in
+            MainActor.assumeIsolated { operation() }
+        }
+        windowController.targetScreenFrameProvider = { _ in nil }
+        sut.windowController = windowController
 
         sut.statusItemClicked()
-        #expect(true)
+
+        #expect(lifecycle.state == .opening)
     }
 
     @Test("setupServices 仅转发注入的安全数据库路径")
@@ -958,9 +1008,20 @@ struct AppDelegateTests {
     @Test("默认 storageFactory 可安全调用 - 真实 :memory: 数据库")
     func defaultStorageFactory_callable() throws {
         let sut = AppDelegate()
-        // 默认 storageFactory 调用 :memory: 真实 SQLite
         let storage = try sut.storageFactory(":memory:")
-        #expect(storage != nil)
+        let expected = TestDataFactory.makePageItem(
+            id: 0,
+            uuid: "default-storage-factory-page",
+            type: .page,
+            ordering: 0
+        )
+
+        let insertedID = try storage.insertItem(expected)
+        let roots = try storage.fetchAllItems(parentId: nil)
+
+        #expect(insertedID > 0)
+        #expect(roots.map(\.id) == [insertedID])
+        #expect(roots.map(\.uuid) == [expected.uuid])
     }
 
     // MARK: - weak self 防御分支（guard let self else）
@@ -1040,6 +1101,73 @@ struct AppDelegateTests {
         _ = viewController.view
         sut.performIncrementalScan()
         #expect(reloads == 1)
+    }
+
+    @Test("根目录读取失败禁止 destructive sync，后续完整扫描可恢复")
+    func incompleteRootDiscoverySkipsWriteAndAcceptsLaterCompleteScan() throws {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        let fileSystem = makeFileSystemWithApps(count: 1)
+        fileSystem.shouldThrowOnContentsOfDirectory = true
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+        let viewController = try makeViewController()
+        _ = viewController.view
+        sut.viewController = viewController
+        var reloads = 0
+        var categories: [String] = []
+        sut.viewControllerReloader = { _ in reloads += 1 }
+        sut.scanFailureLogger = { categories.append($0) }
+
+        sut.performIncrementalScan()
+
+        #expect(writer.receivedApps.isEmpty)
+        #expect(reloads == 0)
+        #expect(categories == ["app-discovery-incomplete"])
+
+        fileSystem.shouldThrowOnContentsOfDirectory = false
+        sut.performIncrementalScan()
+
+        #expect(writer.receivedApps.map { $0.map(\.bundleId) } == [["com.test.app0"]])
+        #expect(reloads == 1)
+        #expect(categories == ["app-discovery-incomplete"])
+    }
+
+    @Test("已枚举 app 的 plist 不可读禁止 destructive sync，后续完整扫描可恢复")
+    func unreadableBundleDiscoverySkipsWriteAndAcceptsLaterCompleteScan() throws {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        let fileSystem = MockFileSystemService()
+        let root = URL(fileURLWithPath: "/Applications")
+        let appURL = root.appendingPathComponent("Existing.app")
+        fileSystem.directoryContentsMap[root] = [appURL]
+        fileSystem.unreadableBundleURLs = [appURL]
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+        let viewController = try makeViewController()
+        _ = viewController.view
+        sut.viewController = viewController
+        var reloads = 0
+        var categories: [String] = []
+        sut.viewControllerReloader = { _ in reloads += 1 }
+        sut.scanFailureLogger = { categories.append($0) }
+
+        sut.performIncrementalScan()
+
+        #expect(writer.receivedApps.isEmpty)
+        #expect(reloads == 0)
+        #expect(categories == ["app-discovery-incomplete"])
+
+        fileSystem.bundleInfos[appURL] = [
+            "CFBundleName": "Existing",
+            "CFBundleIdentifier": "com.test.existing",
+        ]
+        fileSystem.unreadableBundleURLs = []
+        sut.performIncrementalScan()
+
+        #expect(writer.receivedApps.map { $0.map(\.bundleId) } == [["com.test.existing"]])
+        #expect(reloads == 1)
+        #expect(categories == ["app-discovery-incomplete"])
     }
 
     @Test("批事务失败不刷新并只记录固定分类")

@@ -151,10 +151,11 @@ struct IntegrationTests {
         let scanner = AppScanner(fileSystemService: mockFS)
         let storage = try StorageManager(dbPath: ":memory:")
 
-        let scanned = scanner.scanDirectories([appDir])
-        #expect(scanned.count == 2)
+        let discovery = scanner.scanDirectories([appDir])
+        #expect(discovery.apps.count == 2)
+        #expect(discovery.isComplete)
 
-        _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 35)
+        _ = try storage.synchronizeInstalledApps(discovery.apps, initialPageCapacity: 35)
 
         let allItems = try storage.fetchAllItems(parentId: nil)
         // 应有 1 个 page + 2 个 app = 3 个 items（但 app 在 page 下，所以顶层只有 page）
@@ -276,10 +277,11 @@ struct IntegrationTests {
             "CFBundleIdentifier": "com.test.excluded",
         ]
 
-        let scanned = scanner.scanDirectories([appDirectory])
-        #expect(scanned.map(\.bundleId) == ["com.test.visible"])
+        let discovery = scanner.scanDirectories([appDirectory])
+        #expect(discovery.apps.map(\.bundleId) == ["com.test.visible"])
+        #expect(discovery.isComplete)
 
-        _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 35)
+        _ = try storage.synchronizeInstalledApps(discovery.apps, initialPageCapacity: 35)
 
         let pages = try storage.fetchAllItems(parentId: nil)
             .filter { $0.type == .page }
@@ -531,7 +533,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 3
         )
+        weak let previousBeforeItemManager = storage
         storage = nil
+        #expect(
+            previousBeforeItemManager == nil,
+            "cross-page before-item manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -555,7 +562,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 3
         )
+        weak let previousBlankAppendManager = storage
         storage = nil
+        #expect(
+            previousBlankAppendManager == nil,
+            "cross-page blank-append manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -616,7 +628,12 @@ struct IntegrationTests {
                 $0.group?.title == "Work"
             }?.id
         )
+        weak let previousCreateFolderManager = storage
         storage = nil
+        #expect(
+            previousCreateFolderManager == nil,
+            "create-folder manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -630,7 +647,12 @@ struct IntegrationTests {
             #expect(snapshot.folderChildren[folderID]?.map(\.ordering) == [0, 1])
         }
         try storage!.apply(.deleteFolder(folderID: folderID), pageCapacity: 2)
+        weak let previousNChildDeleteManager = storage
         storage = nil
+        #expect(
+            previousNChildDeleteManager == nil,
+            "N-child safe-delete manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -701,7 +723,12 @@ struct IntegrationTests {
             .addToFolder(itemID: thirdID, folderID: folderID),
             pageCapacity: 4
         )
+        weak let previousAddToFolderManager = storage
         storage = nil
+        #expect(
+            previousAddToFolderManager == nil,
+            "add-to-folder manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -724,7 +751,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 4
         )
+        weak let previousReorderFolderManager = storage
         storage = nil
+        #expect(
+            previousReorderFolderManager == nil,
+            "reorder-folder-item manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -747,7 +779,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 4
         )
+        weak let previousRemoveFromFolderManager = storage
         storage = nil
+        #expect(
+            previousRemoveFromFolderManager == nil,
+            "remove-from-folder manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -770,7 +807,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 4
         )
+        weak let previousAutoDissolveManager = storage
         storage = nil
+        #expect(
+            previousAutoDissolveManager == nil,
+            "auto-dissolve manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {
@@ -804,7 +846,12 @@ struct IntegrationTests {
                 hasChild: false
             )
             try storage!.apply(.deleteFolder(folderID: fixture.folderID), pageCapacity: 3)
+            weak let previousZeroChildDeleteManager = storage
             storage = nil
+            #expect(
+                previousZeroChildDeleteManager == nil,
+                "zero-child safe-delete manager must release before reopen"
+            )
 
             storage = try StorageManager(dbPath: path)
             do {
@@ -835,7 +882,12 @@ struct IntegrationTests {
             )
             let childID = try #require(fixture.childID)
             try storage!.apply(.deleteFolder(folderID: fixture.folderID), pageCapacity: 3)
+            weak let previousOneChildDeleteManager = storage
             storage = nil
+            #expect(
+                previousOneChildDeleteManager == nil,
+                "one-child safe-delete manager must release before reopen"
+            )
 
             storage = try StorageManager(dbPath: path)
             do {
@@ -877,7 +929,12 @@ struct IntegrationTests {
             ),
             pageCapacity: 3
         )
+        weak let previousOnlyChildRemovalManager = storage
         storage = nil
+        #expect(
+            previousOnlyChildRemovalManager == nil,
+            "only-child removal manager must release before reopen"
+        )
 
         storage = try StorageManager(dbPath: path)
         do {

@@ -43,8 +43,29 @@ public protocol DataStoring: ItemReading, ItemWriting, ImageStoring {}
 
 /// 测试时可注入 mock 目录内容
 public protocol AppScanning: Sendable {
-    func scanDirectories(_ directories: [URL]) -> [ScannedApp]
+    func scanDirectories(_ directories: [URL]) -> AppDiscoveryResult
     func isExcluded(bundleId: String) -> Bool
+}
+
+/// 完整描述一次应用发现结果；任何读取失败都禁止 destructive sync。
+public struct AppDiscoveryResult: Sendable, Equatable {
+    public let apps: [ScannedApp]
+    public let failedRootPaths: [String]
+    public let failedBundlePaths: [String]
+
+    public init(
+        apps: [ScannedApp],
+        failedRootPaths: [String] = [],
+        failedBundlePaths: [String] = []
+    ) {
+        self.apps = apps
+        self.failedRootPaths = failedRootPaths
+        self.failedBundlePaths = failedBundlePaths
+    }
+
+    public var isComplete: Bool {
+        failedRootPaths.isEmpty && failedBundlePaths.isEmpty
+    }
 }
 
 /// AppScanner 返回的中间结构
@@ -76,7 +97,7 @@ public protocol IconProviding: Sendable {
 public protocol FileSystemService: Sendable {
     func contentsOfDirectory(at url: URL) throws -> [URL]
     func fileExists(at url: URL) -> Bool
-    func bundleInfo(at bundleURL: URL) -> [String: any Sendable]?
+    func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable]
 }
 
 // MARK: - 图标缓存协议

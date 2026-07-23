@@ -57,30 +57,41 @@ final class AppScanner: AppScanning {
         return excludedBundleIds.contains(bundleId)
     }
 
-    func scanDirectories(_ directories: [URL]) -> [ScannedApp] {
+    func scanDirectories(_ directories: [URL]) -> AppDiscoveryResult {
         var apps: [ScannedApp] = []
+        var failedRootPaths: [String] = []
+        var failedBundlePaths: [String] = []
 
         for directory in directories {
             let contents: [URL]
             do {
                 contents = try fileSystemService.contentsOfDirectory(at: directory)
             } catch {
+                failedRootPaths.append(directory.path)
                 continue
             }
 
             for url in contents {
                 guard url.pathExtension == "app" else { continue }
-                if let app = scanApp(at: url) {
-                    apps.append(app)
+                do {
+                    if let app = try scanApp(at: url) {
+                        apps.append(app)
+                    }
+                } catch {
+                    failedBundlePaths.append(url.path)
                 }
             }
         }
 
-        return deduplicated(apps)
+        return AppDiscoveryResult(
+            apps: deduplicated(apps),
+            failedRootPaths: failedRootPaths,
+            failedBundlePaths: failedBundlePaths
+        )
     }
 
-    private func scanApp(at url: URL) -> ScannedApp? {
-        guard let plist = fileSystemService.bundleInfo(at: url) else { return nil }
+    private func scanApp(at url: URL) throws -> ScannedApp? {
+        let plist = try fileSystemService.bundleInfo(at: url)
 
         guard let name = plist["CFBundleName"] as? String, !name.isEmpty else { return nil }
 

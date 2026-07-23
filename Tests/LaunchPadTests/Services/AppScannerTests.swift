@@ -28,11 +28,11 @@ struct AppScannerTests {
 
         func fileExists(at url: URL) -> Bool { url == validApp }
 
-        func bundleInfo(at bundleURL: URL) -> [String: any Sendable]? {
+        func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable] {
             bundleURL == validApp ? [
                 "CFBundleName": "Good",
                 "CFBundleIdentifier": "com.test.good",
-            ] : nil
+            ] : [:]
         }
     }
 
@@ -46,7 +46,9 @@ struct AppScannerTests {
         )
         let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
             .scanDirectories([firstDirectory, secondDirectory])
-        #expect(result.map(\.bundleId) == ["com.test.good"])
+        #expect(result.apps.map(\.bundleId) == ["com.test.good"])
+        #expect(result.failedRootPaths == [firstDirectory.path])
+        #expect(result.failedBundlePaths.isEmpty)
     }
 
     @Test("非应用、缺 plist、缺或空名称、LSUIElement、缺 ID 与 excluded 全部跳过")
@@ -61,6 +63,7 @@ struct AppScannerTests {
         let excluded = app("Excluded")
         let valid = app("Valid")
         fileSystem.directoryContentsMap[firstDirectory] = [nonApp, missingPlist, missingName, emptyName, agent, missingID, excluded, valid]
+        fileSystem.unreadableBundleURLs = [missingPlist]
         fileSystem.bundleInfos[missingName] = ["CFBundleIdentifier": "com.test.missing-name"]
         fileSystem.bundleInfos[emptyName] = ["CFBundleName": "", "CFBundleIdentifier": "com.test.empty-name"]
         fileSystem.bundleInfos[agent] = ["CFBundleName": "Agent", "CFBundleIdentifier": "com.test.agent", "LSUIElement": true]
@@ -69,7 +72,9 @@ struct AppScannerTests {
         fileSystem.bundleInfos[valid] = info("Valid", "com.test.valid")
         let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: ["com.test.excluded"])
             .scanDirectories([firstDirectory])
-        #expect(result.map(\.bundleId) == ["com.test.valid"])
+        #expect(result.apps.map(\.bundleId) == ["com.test.valid"])
+        #expect(result.failedRootPaths.isEmpty)
+        #expect(result.failedBundlePaths == [missingPlist.path])
     }
 
     @Test("有效 bundle 与跨目录重复 ID 保持第一个稳定出现")
@@ -85,8 +90,9 @@ struct AppScannerTests {
         fileSystem.bundleInfos[other] = info("Other", "com.test.other")
         let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
             .scanDirectories([firstDirectory, secondDirectory])
-        #expect(result.map(\.name) == ["First", "Other"])
-        #expect(result.map(\.bundleId) == ["com.test.same", "com.test.other"])
+        #expect(result.apps.map(\.name) == ["First", "Other"])
+        #expect(result.apps.map(\.bundleId) == ["com.test.same", "com.test.other"])
+        #expect(result.isComplete)
     }
 
     @Test("排除清单只解析 hidden string bundle ID")

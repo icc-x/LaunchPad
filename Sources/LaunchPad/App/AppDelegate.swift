@@ -86,6 +86,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 登录项注册（默认 SMAppService.mainApp.register，测试注入）
     var loginItemRegister: () throws -> Void = { try SMAppService.mainApp.register() }
 
+    /// 登录项切换失败记录边界；测试可观察精确错误而不依赖系统日志。
+    var loginItemFailureLogger: (any Error) -> Void = { error in
+        NSLog("[AppDelegate] Failed to toggle login item: \(error)")
+    }
+
     /// 状态栏图标工厂（默认创建真实 item，测试返回纯协议实现）。
     var statusItemFactory: () -> any StatusItemManaging = {
         NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
@@ -106,6 +111,15 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 系统设置 URL 打开边界（测试可注入）
     var workspaceURLOpener: (URL) -> Void = {
         _ = NSWorkspace.shared.open($0)
+    }
+
+    /// 应用启动边界；由 AppDelegate 统一持有生产 NSWorkspace 适配器。
+    var applicationOpener: (URL) -> Void = { url in
+        let configuration = NSWorkspace.OpenConfiguration()
+        NSWorkspace.shared.openApplication(
+            at: url,
+            configuration: configuration
+        )
     }
 
     /// 热键切换交付器（测试可同步执行）
@@ -228,7 +242,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             iconCache: iconCache,
             searchEngine: searchEngine,
             dragController: dragController,
-            folderController: folderController
+            folderController: folderController,
+            applicationOpener: applicationOpener
         )
         viewController = vc
 
@@ -289,7 +304,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 item.state = loginItemStatusProvider() == .enabled ? .on : .off
             }
         } catch {
-            NSLog("[AppDelegate] Failed to toggle login item: \(error)")
+            loginItemFailureLogger(error)
         }
     }
 
@@ -393,14 +408,18 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func performScan() {
         let directories = watchedPaths.map { URL(fileURLWithPath: $0) }
-        let scanned = appScanner.scanDirectories(directories)
+        let discovery = appScanner.scanDirectories(directories)
+        guard discovery.isComplete else {
+            scanFailureLogger("app-discovery-incomplete")
+            return
+        }
         let viewport = LaunchPadViewController.gridViewportSize(
             forWindowContentSize: targetWindowContentSizeProvider()
         )
         let capacity = GridLayoutCalculator.calculate(viewportSize: viewport).itemsPerPage
         do {
             let result = try scanBatchWriter.synchronizeInstalledApps(
-                scanned,
+                discovery.apps,
                 initialPageCapacity: capacity
             )
             guard result.isSuccessful else {
@@ -442,11 +461,14 @@ struct SystemFileSystemService: FileSystemService {
         FileManager.default.fileExists(atPath: url.path)
     }
 
-    func bundleInfo(at bundleURL: URL) -> [String: any Sendable]? {
+    func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable] {
         let plistURL = bundleURL.appendingPathComponent("Contents/Info.plist")
-        guard let data = FileManager.default.contents(atPath: plistURL.path),
-              let plist = try? PropertyListSerialization.propertyList(from: data, format: nil) as? [String: any Sendable] else {
-            return nil
+        let data = try Data(contentsOf: plistURL)
+        guard let plist = try PropertyListSerialization.propertyList(
+            from: data,
+            format: nil
+        ) as? [String: any Sendable] else {
+            throw CocoaError(.propertyListReadCorrupt)
         }
         return plist
     }

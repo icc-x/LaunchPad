@@ -77,7 +77,8 @@ struct LaunchPadWindowControllerTests {
             layoutMutator: MockLayoutMutator(),
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController
+            folderController: folderController,
+            applicationOpener: { _ in }
         )
         let lifecycle = WindowLifecycle()
         let notificationCenter = NotificationCenter()
@@ -416,12 +417,15 @@ struct LaunchPadWindowControllerTests {
         let sut = makeSUT()
         // 替换 window 的 contentView 为普通 NSView（不是 NSVisualEffectView）
         let plainView = NSView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
+        plainView.alphaValue = 0.42
         sut.controller.window?.contentView = plainView
-        // 不应崩溃
+
         sut.controller.applyAccessibilitySettings(
             AccessibilitySettings(reduceMotion: false, reduceTransparency: false, increaseContrast: false)
         )
-        #expect(true)
+
+        #expect(sut.controller.window?.contentView === plainView)
+        #expect(plainView.alphaValue == 0.42)
     }
 
     @Test("showWindowAnimated: target frame 缺失时跳过动画")

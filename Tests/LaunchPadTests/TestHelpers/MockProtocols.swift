@@ -117,6 +117,7 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var directoryContentsMap: [URL: [URL]] = [:]
     var directoryContents: [URL] = []
     var bundleInfos: [URL: [String: any Sendable]] = [:]
+    var unreadableBundleURLs: Set<URL> = []
     var existingFiles: Set<URL> = []
     var shouldThrowOnContentsOfDirectory = false
 
@@ -129,8 +130,9 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
         return existingFiles.contains(url)
     }
 
-    func bundleInfo(at bundleURL: URL) -> [String: any Sendable]? {
-        return bundleInfos[bundleURL]
+    func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable] {
+        if unreadableBundleURLs.contains(bundleURL) { throw TestError.generic }
+        return bundleInfos[bundleURL] ?? [:]
     }
 }
 

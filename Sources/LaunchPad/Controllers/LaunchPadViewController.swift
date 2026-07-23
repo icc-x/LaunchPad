@@ -48,6 +48,10 @@ struct LayoutDropFailureEvent: Sendable, Equatable {
             kind = "delete_folder"
             sourceID = folderID
             relatedIDs = []
+        case .deleteApp(let itemID):
+            kind = "delete_app"
+            sourceID = itemID
+            relatedIDs = []
         }
     }
 }
@@ -79,6 +83,7 @@ public class LaunchPadViewController: NSViewController {
     let keyboardNavigator: KeyboardNavigator
     let dragController: DragController
     private let folderController: FolderController
+    private let applicationOpener: (URL) -> Void
     private let searchScheduler: Scheduler
     private(set) var gridInteractionCoordinator: AppGridInteractionCoordinator?
 
@@ -163,6 +168,7 @@ public class LaunchPadViewController: NSViewController {
     public private(set) var selectedItemID: Int64?
     private(set) var currentSearchResults: [PageItem] = []
     private(set) var currentSearchQuery: String = ""
+    private(set) var searchRequestGeneration = 0
     private var pageControlViewModel = PageControlViewModel()
     private var searchDebouncer: SearchDebouncer!
     private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
@@ -214,6 +220,7 @@ public class LaunchPadViewController: NSViewController {
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
         dragController: DragController,
         folderController: FolderController,
+        applicationOpener: @escaping (URL) -> Void,
         searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
         self.storage = storage
@@ -223,6 +230,7 @@ public class LaunchPadViewController: NSViewController {
         self.keyboardNavigator = keyboardNavigator
         self.dragController = dragController
         self.folderController = folderController
+        self.applicationOpener = applicationOpener
         self.searchScheduler = searchScheduler
         super.init(nibName: nil, bundle: nil)
     }
@@ -602,7 +610,11 @@ public class LaunchPadViewController: NSViewController {
             let layout = try LayoutPersistence.loadLayout(reader: storage)
             allPages = layout.pages
             itemsByPage = layout.itemsByPage
-            reloadProjectedLayout(preserving: selectedItemID)
+            if currentSearchQuery.isEmpty {
+                reloadProjectedLayout(preserving: selectedItemID)
+            } else {
+                scheduleSearch(query: currentSearchQuery)
+            }
             return true
         } catch {
             if logRawError {
@@ -638,25 +650,27 @@ public class LaunchPadViewController: NSViewController {
         synchronizeDragAvailability()
 
         if query.isEmpty {
+            searchRequestGeneration += 1
             emptyStateView.hide()
             resultCountLabel.isHidden = true
             currentSearchResults = []
             reloadProjectedLayout(preserving: selectedItemID)
         } else {
-            // 在主线程拷贝数据，避免 @MainActor 属性跨线程访问
-            // 同样使用 compactMap（LayoutPersistence 已保证所有 page.id 都有 key）
-            let allItems: [PageItem] = allPages.compactMap { page -> [PageItem]? in
-                itemsByPage[page.id]
-            }.flatMap { $0 }
-            let capturedQuery = query
-            let capturedSearchQuery = currentSearchQuery
-            searchRunner(allItems, capturedQuery) { [weak self] results in
-                self?.applySearchResults(
-                    results,
-                    query: capturedQuery,
-                    expectedQuery: capturedSearchQuery
-                )
-            }
+            scheduleSearch(query: query)
+        }
+    }
+
+    /// 以当前权威布局发起搜索，并为相同 query 的乱序完成分配唯一代次。
+    private func scheduleSearch(query: String) {
+        searchRequestGeneration += 1
+        let generation = searchRequestGeneration
+        let allItems = allPages.flatMap { itemsByPage[$0.id] ?? [] }
+        searchRunner(allItems, query) { [weak self] results in
+            self?.applySearchResults(
+                results,
+                expectedQuery: query,
+                expectedGeneration: generation
+            )
         }
     }
 
@@ -666,8 +680,13 @@ public class LaunchPadViewController: NSViewController {
     }
 
     /// 应用搜索结果到 UI（抽出便于同步测试，覆盖过期守卫与结果展示）
-    func applySearchResults(_ results: [PageItem], query: String, expectedQuery: String) {
-        guard currentSearchQuery == expectedQuery else { return }
+    func applySearchResults(
+        _ results: [PageItem],
+        expectedQuery: String,
+        expectedGeneration: Int
+    ) {
+        guard currentSearchQuery == expectedQuery,
+              searchRequestGeneration == expectedGeneration else { return }
         currentSearchResults = results
         if results.isEmpty {
             emptyStateView.show()
@@ -778,13 +797,9 @@ public class LaunchPadViewController: NSViewController {
             guard confirmFolderDeletion(item) else { return }
             _ = applyDropIntent(.deleteFolder(folderID: item.id))
         case .app:
-            do {
-                try storage.deleteItem(id: item.id)
+            if applyDropIntent(.deleteApp(itemID: item.id)) {
                 dragController.handleCancel()
                 updateJiggleState()
-                loadData()
-            } catch {
-                NSLog("[LaunchPadViewController] Failed to delete item")
             }
         case .page:
             return
@@ -870,10 +885,9 @@ public class LaunchPadViewController: NSViewController {
         launchApplication(at: url)
     }
 
-    /// 实际启动应用（抽出便于测试：传入任意 URL 即覆盖 NSWorkspace 调用行，无需真实可启动应用）
+    /// 将已解析的应用 URL 交付给进程边界；生产实现由 AppDelegate 注入。
     func launchApplication(at url: URL) {
-        let config = NSWorkspace.OpenConfiguration()
-        NSWorkspace.shared.openApplication(at: url, configuration: config)
+        applicationOpener(url)
     }
 
     func openFolder(_ folderItem: PageItem) {

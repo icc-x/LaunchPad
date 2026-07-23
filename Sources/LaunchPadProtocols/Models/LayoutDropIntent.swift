@@ -37,4 +37,6 @@ public enum LayoutDropIntent: Sendable, Equatable {
     )
     /// Deletes a folder.
     case deleteFolder(folderID: Int64)
+    /// Deletes an ordinary top-level application.
+    case deleteApp(itemID: Int64)
 }

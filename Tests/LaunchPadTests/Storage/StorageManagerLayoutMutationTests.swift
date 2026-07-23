@@ -355,6 +355,57 @@ struct StorageManagerLayoutMutationTests {
         })
     }
 
+    @Test("delete app 原子压密页面并在 manager 释放后重开持久")
+    func deleteAppCompactsPagesAndSurvivesReopen() throws {
+        let directory = URL(fileURLWithPath: NSTemporaryDirectory())
+            .appendingPathComponent("launchpad-delete-app-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("layout.sqlite3").path
+        var storage: StorageManager? = try StorageManager(dbPath: path)
+        let (removedID, expectedIDs): (Int64, [Int64]) = try {
+            let manager = try #require(storage)
+            _ = try manager.synchronizeInstalledApps([
+                ScannedApp(name: "A", bundleId: "com.test.delete.a", path: "/A.app"),
+                ScannedApp(name: "B", bundleId: "com.test.delete.b", path: "/B.app"),
+                ScannedApp(name: "C", bundleId: "com.test.delete.c", path: "/C.app"),
+            ], initialPageCapacity: 2)
+            let before = try manager.persistedLayoutSnapshot()
+            let removedID = before.flattenedTopLevelIDs[1]
+            try manager.apply(.deleteApp(itemID: removedID), pageCapacity: 2)
+            return (
+                removedID,
+                [before.flattenedTopLevelIDs[0], before.flattenedTopLevelIDs[2]]
+            )
+        }()
+        weak let previousManager = storage
+        storage = nil
+        #expect(previousManager == nil, "delete-app manager 必须在 reopen 前释放")
+        let reopened = try StorageManager(dbPath: path)
+        let snapshot = try reopened.persistedLayoutSnapshot()
+        #expect(snapshot.flattenedTopLevelIDs == expectedIDs)
+        #expect(snapshot.pages.map(\.ordering) == [0])
+        #expect(snapshot.pageChildren.values.first?.map(\.ordering) == [0, 1])
+        #expect(snapshot.allItems.contains { $0.id == removedID } == false)
+    }
+
+    @Test("delete app statement fault 回滚完整快照")
+    func deleteAppFaultRollsBackCompleteSnapshot() throws {
+        let (sut, ids, script) = try makeTwoPageLayout()
+        let before = try sut.persistedLayoutSnapshot()
+        script.failNext(.step(.deleteLayoutItem), code: SQLITE_IOERR)
+
+        #expect(throws: StorageError.deleteFailed) {
+            try sut.apply(.deleteApp(itemID: ids.second), pageCapacity: 2)
+        }
+
+        #expect(script.invocationCount(for: .rollback) == 1)
+        #expect(try sut.persistedLayoutSnapshot() == before)
+    }
+
     @Test("same-page after 使用 anchor 当前数据库位置")
     func moveTopLevelPersistsSamePageAfter() throws {
         let (sut, ids, _) = try makeTwoPageLayout()

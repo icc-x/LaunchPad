@@ -113,7 +113,8 @@ struct LaunchPadViewControllerTests {
 
     private func makeSUT(
         dragScheduler: Scheduler = DispatchQueueScheduler(),
-        layoutMutator: LayoutMutating = MockLayoutMutator()
+        layoutMutator: LayoutMutating = MockLayoutMutator(),
+        applicationOpener: @escaping (URL) -> Void = { _ in }
     ) -> (LaunchPadViewController, DragController, MockDataStore) {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
@@ -125,9 +126,22 @@ struct LaunchPadViewControllerTests {
             layoutMutator: layoutMutator,
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController
+            folderController: folderController,
+            applicationOpener: applicationOpener
         )
         return (sut, dragController, storage)
+    }
+
+    private func makeSUT(storage: StorageManager) -> LaunchPadViewController {
+        let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
+        return LaunchPadViewController(
+            storage: storage,
+            layoutMutator: storage,
+            iconCache: iconCache,
+            dragController: DragController(),
+            folderController: FolderController(itemWriter: storage),
+            applicationOpener: { _ in }
+        )
     }
 
     /// 注入 searchScheduler 的 SUT 工厂，用于测试搜索防抖逻辑
@@ -147,6 +161,7 @@ struct LaunchPadViewControllerTests {
             iconCache: iconCache,
             dragController: dragController,
             folderController: folderController,
+            applicationOpener: { _ in },
             searchScheduler: searchScheduler
         )
         return (sut, dragController, storage)
@@ -388,7 +403,7 @@ struct LaunchPadViewControllerTests {
         ])
     }
 
-    @Test("六种 layout intent 映射完整且不记录 folder title")
+    @Test("七种 layout intent 映射完整且不记录 folder title")
     func layoutDropFailureEventMappingIsExhaustive() {
         let title = "sensitive-folder-title"
         let intents: [LayoutDropIntent] = [
@@ -406,6 +421,7 @@ struct LaunchPadViewControllerTests {
                 placement: .beforeItem(itemID: 12)
             ),
             .deleteFolder(folderID: 13),
+            .deleteApp(itemID: 14),
         ]
         let events = intents.map(LayoutDropFailureEvent.init(intent:))
 
@@ -432,6 +448,10 @@ struct LaunchPadViewControllerTests {
             ),
             LayoutDropFailureEvent(
                 kind: "delete_folder", sourceID: 13,
+                relatedIDs: [], category: "mutation_failed"
+            ),
+            LayoutDropFailureEvent(
+                kind: "delete_app", sourceID: 14,
                 relatedIDs: [], category: "mutation_failed"
             ),
         ])
@@ -1197,7 +1217,10 @@ struct LaunchPadViewControllerTests {
         let (_, dragController, _) = makeSUT()
         var direction: DragPageDirection?
         dragController.onPageChange = { dir in direction = dir }
-        #expect(dragController.onPageChange != nil)
+
+        dragController.onPageChange?(.forward)
+
+        #expect(direction == .forward)
     }
 
     // MARK: - 反射辅助
@@ -1590,18 +1613,109 @@ struct LaunchPadViewControllerTests {
         #expect(searchScheduler.scheduledActions.isEmpty)
     }
 
+    @Test("权威 reload 以新布局重算 active search 的新增删除与重命名")
+    func authoritativeReloadRecomputesActiveSearchFromLatestLayout() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let first = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: 1,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "Match One")
+        )
+        let second = TestDataFactory.makePageItem(
+            id: 20,
+            type: .app,
+            ordering: 1,
+            parentId: 1,
+            app: TestDataFactory.makeAppInfo(id: 20, title: "Match Two")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [first]]
+        layout(sut)
+        sut.searchRunner = { items, query, completion in
+            completion(items.filter {
+                $0.app?.title.localizedCaseInsensitiveContains(query) == true
+            })
+        }
+        sut.handleSearch(query: "match")
+        #expect(sut.currentSearchResults.map(\.id) == [first.id])
+
+        storage.childrenByPage[page.id] = [first, second]
+        sut.loadData()
+        #expect(sut.currentSearchResults.map(\.id) == [first.id, second.id])
+
+        storage.childrenByPage[page.id] = [second]
+        sut.loadData()
+        #expect(sut.currentSearchResults.map(\.id) == [second.id])
+
+        let renamed = TestDataFactory.makePageItem(
+            id: second.id,
+            uuid: second.uuid,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: second.id, title: "Other")
+        )
+        storage.childrenByPage[page.id] = [renamed]
+        sut.loadData()
+
+        #expect(sut.currentSearchQuery == "match")
+        #expect(sut.currentSearchResults.isEmpty)
+        #expect(sut.resultCountLabel.stringValue == "0 results")
+    }
+
+    @Test("相同 query 的旧 completion 不覆盖较新权威 reload")
+    func sameQueryStaleCompletionCannotOverwriteNewerReload() throws {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let old = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "Match Old")
+        )
+        let latest = TestDataFactory.makePageItem(
+            id: 20,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: 20, title: "Match Latest")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [old]]
+        layout(sut)
+        var requests: [([PageItem], ([PageItem]) -> Void)] = []
+        sut.searchRunner = { items, _, completion in
+            requests.append((items, completion))
+        }
+
+        sut.handleSearch(query: "match")
+        storage.childrenByPage[page.id] = [latest]
+        sut.loadData()
+
+        try #require(requests.count == 2)
+        requests[1].1(requests[1].0)
+        #expect(sut.currentSearchResults.map(\.id) == [latest.id])
+        requests[0].1(requests[0].0)
+        #expect(sut.currentSearchResults.map(\.id) == [latest.id])
+        #expect(sut.currentSearchQuery == "match")
+    }
+
     // MARK: - 编辑模式删除 / 文件夹重命名（通过 collectionView 回调）
 
-    @Test("onItemDelete 调用 storage 删除并退出编辑模式")
-    func onItemDelete_deletesItemAndExitsEditMode() {
-        let (sut, _, storage) = makeSUT()
+    @Test("onItemDelete 仅提交 typed layout intent 并退出编辑模式")
+    func onItemDeleteAppliesAtomicLayoutIntentAndExitsEditMode() {
+        let mutator = MockLayoutMutator()
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, parentId: 1,
                                                 app: TestDataFactory.makeAppInfo(id: 10, title: "App"))
         storage.pages = [page]
         storage.childrenByPage = [1: [app]]
-        _ = sut.view
-        sut.loadData()
+        layout(sut)
         guard let cv = extractCollectionView(from: sut) else {
             Issue.record("collectionView not accessible via reflection")
             return
@@ -1609,9 +1723,131 @@ struct LaunchPadViewControllerTests {
 
         cv.onItemDelete?(app)
 
-        #expect(storage.deletedIds == [10])
+        #expect(mutator.appliedIntents == [.deleteApp(itemID: 10)])
+        #expect(storage.deletedIds.isEmpty)
         // handleItemDelete → dragController.handleCancel → idle
         #expect(sut.dragController.state == .idle)
+    }
+
+    @Test("普通 app 删除通过布局事务压密同页 ordering")
+    func appDeleteCompactsPersistedOrdering() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let pageID = try storage.insertItem(
+            TestDataFactory.makePageItem(id: 0, uuid: "delete-page", type: .page)
+        )
+        let apps = try (0..<3).map { index in
+            let item = TestDataFactory.makePageItem(
+                id: 0,
+                uuid: "delete-app-\(index)",
+                type: .app,
+                ordering: index,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    title: "Delete \(index)",
+                    bundleId: "com.test.delete.\(index)"
+                )
+            )
+            let id = try storage.insertItem(item)
+            return PageItem(
+                id: id,
+                uuid: item.uuid,
+                type: item.type,
+                ordering: item.ordering,
+                parentId: item.parentId,
+                app: item.app,
+                group: item.group
+            )
+        }
+        let sut = makeSUT(storage: storage)
+        layout(sut)
+
+        sut.handleItemDelete(apps[1])
+
+        let snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.flattenedTopLevelIDs == [apps[0].id, apps[2].id])
+        #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1])
+    }
+
+    @Test("普通 app 删除清理非唯一空末页")
+    func appDeleteRemovesObsoleteLastPage() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let firstPageID = try storage.insertItem(
+            TestDataFactory.makePageItem(id: 0, uuid: "delete-first-page", type: .page, ordering: 0)
+        )
+        let lastPageID = try storage.insertItem(
+            TestDataFactory.makePageItem(id: 0, uuid: "delete-last-page", type: .page, ordering: 1)
+        )
+        _ = try storage.insertItem(TestDataFactory.makePageItem(
+            id: 0,
+            uuid: "delete-retained-app",
+            type: .app,
+            ordering: 0,
+            parentId: firstPageID,
+            app: TestDataFactory.makeAppInfo(bundleId: "com.test.delete.retained")
+        ))
+        let removedTemplate = TestDataFactory.makePageItem(
+            id: 0,
+            uuid: "delete-obsolete-app",
+            type: .app,
+            ordering: 0,
+            parentId: lastPageID,
+            app: TestDataFactory.makeAppInfo(bundleId: "com.test.delete.obsolete")
+        )
+        let removedID = try storage.insertItem(removedTemplate)
+        let removed = PageItem(
+            id: removedID,
+            uuid: removedTemplate.uuid,
+            type: removedTemplate.type,
+            ordering: removedTemplate.ordering,
+            parentId: removedTemplate.parentId,
+            app: removedTemplate.app,
+            group: removedTemplate.group
+        )
+        let sut = makeSUT(storage: storage)
+        layout(sut)
+
+        sut.handleItemDelete(removed)
+
+        let snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.pages.map(\.id) == [firstPageID])
+        #expect(snapshot.pages.map(\.ordering) == [0])
+        #expect(snapshot.pageChildren[lastPageID] == nil)
+    }
+
+    @Test("普通 app 删除全布局最后一项后保留唯一空页")
+    func appDeletePreservesOneEmptyPage() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let pageID = try storage.insertItem(
+            TestDataFactory.makePageItem(id: 0, uuid: "delete-only-page", type: .page)
+        )
+        let item = TestDataFactory.makePageItem(
+            id: 0,
+            uuid: "delete-only-app",
+            type: .app,
+            ordering: 0,
+            parentId: pageID,
+            app: TestDataFactory.makeAppInfo(bundleId: "com.test.delete.only")
+        )
+        let itemID = try storage.insertItem(item)
+        let persistedItem = PageItem(
+            id: itemID,
+            uuid: item.uuid,
+            type: item.type,
+            ordering: item.ordering,
+            parentId: item.parentId,
+            app: item.app,
+            group: item.group
+        )
+        let sut = makeSUT(storage: storage)
+        layout(sut)
+
+        sut.handleItemDelete(persistedItem)
+
+        let snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.pages.map(\.id) == [pageID])
+        #expect(snapshot.pages.map(\.ordering) == [0])
+        #expect(snapshot.pageChildren[pageID] == [])
+        #expect(snapshot.allItems.map(\.id) == [pageID])
     }
 
     @Test("onFolderRenamed 将新标题写入存储")
@@ -1698,7 +1934,11 @@ struct LaunchPadViewControllerTests {
         sut.searchRunner = { _, _, _ in }
         sut.handleSearch(query: "app")
         sut.keyboardNavigator.mode = .search(query: "app")
-        sut.applySearchResults(matchingItems, query: "app", expectedQuery: "app")
+        sut.applySearchResults(
+            matchingItems,
+            expectedQuery: "app",
+            expectedGeneration: sut.searchRequestGeneration
+        )
 
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
         sut.viewDidLayout()
@@ -1751,7 +1991,11 @@ struct LaunchPadViewControllerTests {
         sut.searchRunner = { _, _, _ in }
         sut.handleSearch(query: "missing")
 
-        sut.applySearchResults([], query: "missing", expectedQuery: "missing")
+        sut.applySearchResults(
+            [],
+            expectedQuery: "missing",
+            expectedGeneration: sut.searchRequestGeneration
+        )
 
         #expect(sut.visualPages == [[]])
         #expect(sut.gridSnapshot.sectionIdentifiers == [.searchPage(0)])
@@ -1767,7 +2011,11 @@ struct LaunchPadViewControllerTests {
         layout(sut)
         sut.searchRunner = { _, _, _ in }
         sut.handleSearch(query: "app")
-        sut.applySearchResults(apps, query: "app", expectedQuery: "app")
+        sut.applySearchResults(
+            apps,
+            expectedQuery: "app",
+            expectedGeneration: sut.searchRequestGeneration
+        )
 
         sut.handleSearch(query: "")
 
@@ -2072,7 +2320,11 @@ struct LaunchPadViewControllerTests {
         _ = sut.view
         sut.handleSearch(query: "xyz") // 设置 currentSearchQuery = "xyz"
         let apps = TestDataFactory.makeAppItems(count: 2, titlePrefix: "App")
-        sut.applySearchResults(apps, query: "xyz", expectedQuery: "xyz")
+        sut.applySearchResults(
+            apps,
+            expectedQuery: "xyz",
+            expectedGeneration: sut.searchRequestGeneration
+        )
         #expect(sut.resultCountLabel.isHidden == false)
         #expect(sut.resultCountLabel.stringValue == "2 results")
     }
@@ -2187,32 +2439,80 @@ struct LaunchPadViewControllerTests {
 
     @Test("launchApp 无效 bundleId 安全返回")
     func launchApp_invalidBundle_returns() {
-        let (sut, _, _) = makeSUT()
+        var openedURLs: [URL] = []
+        let (sut, _, _) = makeSUT(applicationOpener: { openedURLs.append($0) })
+        sut.bundleURLResolver = { _ in nil }
         sut.launchApp(bundleId: "com.test.definitely.invalid.bundle")
+        #expect(openedURLs.isEmpty)
     }
 
-    @Test("launchApp 解析到 URL 时调用 launchApplication")
-    func launchApp_withResolvedURL_callsLaunchApplication() {
-        let (sut, _, _) = makeSUT()
-        sut.bundleURLResolver = { _ in URL(fileURLWithPath: "/tmp/launchpad-fake.app") }
+    @Test("launchApp 将解析到的 exact URL 交付 opener 一次")
+    func launchAppWithResolvedURLCallsInjectedOpenerExactlyOnce() {
+        let expectedURL = URL(fileURLWithPath: "/tmp/launchpad-fake.app")
+        var openedURLs: [URL] = []
+        let (sut, _, _) = makeSUT(applicationOpener: { openedURLs.append($0) })
+        sut.bundleURLResolver = { bundleID in
+            #expect(bundleID == "com.any.bundle")
+            return expectedURL
+        }
         sut.launchApp(bundleId: "com.any.bundle")
+        #expect(openedURLs == [expectedURL])
     }
 
-    @Test("launchApplication 对任意 URL 执行 NSWorkspace 调用（不真实启动）")
-    func launchApplication_withFakeURL() {
-        let (sut, _, _) = makeSUT()
-        sut.launchApplication(at: URL(fileURLWithPath: "/tmp/launchpad-nonexistent-app.app"))
+    @Test("launchApplication 将 exact URL 交付 opener 一次")
+    func launchApplicationCallsInjectedOpenerExactlyOnce() {
+        let expectedURL = URL(fileURLWithPath: "/tmp/launchpad-nonexistent-app.app")
+        var openedURLs: [URL] = []
+        let (sut, _, _) = makeSUT(applicationOpener: { openedURLs.append($0) })
+        sut.launchApplication(at: expectedURL)
+        #expect(openedURLs == [expectedURL])
     }
 
     // MARK: - 错误分支（catch）
 
-    @Test("handleItemDelete 删除失败时记录错误不崩溃")
-    func handleItemDelete_throws_logs() {
-        let (sut, _, storage) = makeSUT()
-        storage.shouldThrowOnDelete = true
-        let app = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
-                                               app: TestDataFactory.makeAppInfo(id: 10, title: "A"))
+    @Test("handleItemDelete app 失败提交一次 typed intent 并刷新权威布局")
+    func handleItemDeleteFailureUsesAtomicIntentAndReloads() {
+        let mutator = MockLayoutMutator()
+        mutator.applyError = TestError.generic
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        let page = TestDataFactory.makePageItem(
+            id: 1,
+            type: .page,
+            ordering: 0
+        )
+        let app = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "A")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [app]]
+        layout(sut)
+        var events: [LayoutDropFailureEvent] = []
+        var announcements: [String] = []
+        sut.layoutDropFailureLogger = { events.append($0) }
+        sut.transientMessageView.postAnnouncement = { message, _ in
+            announcements.append(message)
+        }
+        let readsBefore = storage.fetchAllItemsCallCount
+
         sut.handleItemDelete(app)
+
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.attemptedIntents == [.deleteApp(itemID: app.id)])
+        #expect(mutator.appliedIntents.isEmpty)
+        #expect(storage.deletedIds.isEmpty)
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(events == [LayoutDropFailureEvent(
+            kind: "delete_app",
+            sourceID: app.id,
+            relatedIDs: [],
+            category: "mutation_failed"
+        )])
+        #expect(announcements == ["无法更新布局，请重试"])
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
     }
 
     @Test("openFolder 读取失败时记录错误不崩溃")
@@ -2244,11 +2544,16 @@ struct LaunchPadViewControllerTests {
         let apps = TestDataFactory.makeAppItems(count: 3, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
-        _ = sut.view
-        sut.loadData()
+        layout(sut)
+        sut.searchRunner = { items, _, completion in completion(items) }
+        sut.handleSearch(query: "app")
+        #expect(sut.currentSearchResults.map(\.id) == apps.map(\.id))
 
         sut.handleSearch(query: "")
-        #expect(true)
+
+        #expect(sut.currentSearchQuery.isEmpty)
+        #expect(sut.currentSearchResults.isEmpty)
+        #expect(sut.gridSnapshot.itemIdentifiers.map(\.id) == apps.map(\.id))
     }
 
     @Test("handleSearch 非空查询在有数据时 flatMap itemsByPage")
@@ -2260,9 +2565,20 @@ struct LaunchPadViewControllerTests {
         storage.childrenByPage = [1: apps]
         _ = sut.view
         sut.loadData()
+        var receivedItemIDs: [Int64] = []
+        var receivedQueries: [String] = []
+        sut.searchRunner = { items, query, completion in
+            receivedItemIDs = items.map(\.id)
+            receivedQueries.append(query)
+            completion(Array(items.reversed()))
+        }
 
         sut.handleSearch(query: "alpha")
-        #expect(true)
+
+        #expect(receivedItemIDs == apps.map(\.id))
+        #expect(receivedQueries == ["alpha"])
+        #expect(sut.currentSearchQuery == "alpha")
+        #expect(sut.currentSearchResults.map(\.id) == apps.reversed().map(\.id))
     }
 
     // MARK: - openFolder 多子项排序
@@ -2271,6 +2587,9 @@ struct LaunchPadViewControllerTests {
     func openFolder_multipleChildren_sorted() {
         let (sut, _, storage) = makeSUT()
         _ = sut.view
+        sut.folderOverlay.folderViewportSizeProvider = {
+            CGSize(width: 800, height: 624)
+        }
         let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
                                                    parentId: 1,
                                                    group: TestDataFactory.makeGroupInfo(id: 100, title: "Folder"))
@@ -2281,7 +2600,20 @@ struct LaunchPadViewControllerTests {
         storage.childrenByPage = [100: [child1, child2]]
 
         sut.openFolder(folder)
-        #expect(true)
+
+        #expect(sut.folderOverlay.currentFolderID == folder.id)
+        #expect(sut.folderOverlay.isHidden == false)
+        #expect(sut.folderOverlay.numberOfSections(in: NSCollectionView()) == 1)
+        #expect(
+            sut.folderOverlay.collectionView(
+                NSCollectionView(),
+                numberOfItemsInSection: 0
+            ) == 2
+        )
+        #expect(
+            sut.folderOverlay.emptyPlacement(inVisualPage: 0)
+                == .afterItem(itemID: child1.id)
+        )
     }
 
     // MARK: - executeAction .launchFirstMatch
@@ -2338,7 +2670,11 @@ struct LaunchPadViewControllerTests {
         let (sut, _, _) = makeSUT()
         _ = sut.view
         sut.handleSearch(query: "xyz") // 设置 currentSearchQuery = "xyz"
-        sut.applySearchResults([], query: "xyz", expectedQuery: "xyz")
+        sut.applySearchResults(
+            [],
+            expectedQuery: "xyz",
+            expectedGeneration: sut.searchRequestGeneration
+        )
         #expect(sut.resultCountLabel.isHidden == false)
         #expect(sut.resultCountLabel.stringValue == "0 results")
     }
@@ -2349,7 +2685,11 @@ struct LaunchPadViewControllerTests {
         _ = sut.view
         sut.handleSearch(query: "new") // 设置 currentSearchQuery = "new"
         // 使用旧的 expectedQuery 调用，此时 currentSearchQuery != expectedQuery → guard 失败
-        sut.applySearchResults([], query: "old", expectedQuery: "old")
+        sut.applySearchResults(
+            [],
+            expectedQuery: "old",
+            expectedGeneration: sut.searchRequestGeneration
+        )
         // resultCountLabel 应保持隐藏（未被更新）
         #expect(sut.resultCountLabel.stringValue == "")
     }
@@ -2380,14 +2720,21 @@ struct LaunchPadViewControllerTests {
         // visibleJiggleIndexPathsProvider 返回有效 indexPath
         sut.visibleJiggleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
         // jiggleCellProvider 始终返回 nil → ?? 假分支 → 走 collectionView.item(at:) 但也是 nil → continue
-        sut.jiggleCellProvider = { _ in nil }
+        var requestedIndexPaths: [IndexPath] = []
+        sut.jiggleCellProvider = {
+            requestedIndexPaths.append($0)
+            return nil
+        }
 
         dragController.handlePressBegan(at: .zero)
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
-        // 不应崩溃
+        #expect(sut.keyboardNavigator.mode == .idle)
         sut.updateJiggleState()
-        #expect(true)
+
+        #expect(requestedIndexPaths == [IndexPath(item: 0, section: 0)])
+        #expect(sut.keyboardNavigator.mode == .edit)
+        #expect(dragController.state == .jiggling)
     }
 
     @Test("updateJiggleState: jiggleCellProvider nil 且 collectionView.item 也 nil 时跳过（覆盖 L280 as? 假分支）")
@@ -2397,13 +2744,21 @@ struct LaunchPadViewControllerTests {
         _ = sut.view
         // jiggleCellProvider 始终返回 nil（默认）→ ?? 假分支
         // collectionView.item(at:) 在空 collectionView 上也返回 nil
-        sut.visibleJiggleIndexPathsProvider = { [IndexPath(item: 0, section: 0)] }
         // jiggleCellProvider 保持 nil
+        var visibleProviderCalls = 0
+        sut.visibleJiggleIndexPathsProvider = {
+            visibleProviderCalls += 1
+            return [IndexPath(item: 0, section: 0)]
+        }
         dragController.handlePressBegan(at: .zero)
         scheduler.advance(by: 0.5)
         #expect(dragController.state == .jiggling)
+        #expect(sut.keyboardNavigator.mode == .idle)
         sut.updateJiggleState()
-        #expect(true)
+
+        #expect(visibleProviderCalls == 1)
+        #expect(sut.keyboardNavigator.mode == .edit)
+        #expect(dragController.state == .jiggling)
     }
 
     @Test("空 snapshot 的 Down 清除稳定 ID 选择")
@@ -2790,20 +3145,29 @@ struct LaunchPadViewControllerTests {
         #expect(storage.deletedIds.isEmpty)
     }
 
-    @Test("page 删除严格 no-op 且 app 删除仍保留原 writer")
-    func pageDeleteIsNoOpAndAppDeleteRemainsUnchanged() {
+    @Test("page 删除严格 no-op，top-level app 删除仅提交 typed intent")
+    func pageDeleteIsNoOpAndAppDeleteUsesTypedIntent() {
         let mutator = MockLayoutMutator()
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
-        let app = makeFolderChild(id: 10, ordering: 0)
+        let app = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "App")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [app]]
+        layout(sut)
 
         sut.handleItemDelete(page)
         #expect(mutator.applyAttemptCount == 0)
         #expect(storage.deletedIds.isEmpty)
 
         sut.handleItemDelete(app)
-        #expect(mutator.applyAttemptCount == 0)
-        #expect(storage.deletedIds == [10])
+        #expect(mutator.appliedIntents == [.deleteApp(itemID: app.id)])
+        #expect(storage.deletedIds.isEmpty)
     }
 
     @Test("folder cell 随 edit mode 显隐且 app cell 行为保持")

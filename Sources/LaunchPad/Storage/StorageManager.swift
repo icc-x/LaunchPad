@@ -182,7 +182,8 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
                      .addToFolder,
                      .reorderFolderItem,
                      .removeFromFolder,
-                     .deleteFolder:
+                     .deleteFolder,
+                     .deleteApp:
                     nil
                 }
 
@@ -206,6 +207,12 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
                 for folderID in effects.folderIDsToDelete.sorted() {
                     try deleteLayoutItem(
                         itemID: folderID,
+                        database: database
+                    )
+                }
+                for appID in effects.appIDsToDelete.sorted() {
+                    try deleteLayoutItem(
+                        itemID: appID,
                         database: database
                     )
                 }

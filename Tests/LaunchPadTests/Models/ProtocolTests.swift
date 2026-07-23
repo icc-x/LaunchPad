@@ -1,5 +1,6 @@
 import Testing
 import Dispatch
+import Foundation
 @testable import LaunchPad
 import LaunchPadProtocols
 
@@ -55,34 +56,71 @@ struct ProtocolTests {
         )
     }
 
-    @Test("MockImageStore 遵循 ImageStoring")
-    func mockImageStore_conformsToImageStoring() {
+    @Test("ImageStoring existential 转发 exact image payload")
+    func mockImageStore_conformsToImageStoring() throws {
         let store: ImageStoring = MockImageStore()
-        #expect(store is ImageStoring)
+        let icon1x = Data([1, 2, 3])
+        let icon2x = Data([4, 5, 6])
+
+        try store.saveImage(itemId: 42, icon1x: icon1x, icon2x: icon2x)
+        let fetched = try #require(try store.fetchImage(itemId: 42))
+
+        #expect(fetched.0 == icon1x)
+        #expect(fetched.1 == icon2x)
     }
 
-    @Test("MockFileSystemService 遵循 FileSystemService")
-    func mockFS_conformsToFileSystemService() {
-        let fs: FileSystemService = MockFileSystemService()
-        #expect(fs is FileSystemService)
+    @Test("FileSystemService existential 转发目录与存在性查询")
+    func mockFS_conformsToFileSystemService() throws {
+        let root = URL(fileURLWithPath: "/Applications")
+        let app = root.appendingPathComponent("Observed.app")
+        let mock = MockFileSystemService()
+        mock.directoryContentsMap[root] = [app]
+        mock.existingFiles = [app]
+        let fs: FileSystemService = mock
+
+        #expect(try fs.contentsOfDirectory(at: root) == [app])
+        #expect(fs.fileExists(at: app))
     }
 
-    @Test("MockIconProvider 遵循 IconProviding")
+    @Test("IconProviding existential 转发 exact modification date")
     func mockIconProvider_conformsToIconProviding() {
-        let provider: IconProviding = MockIconProvider()
-        #expect(provider is IconProviding)
+        let path = "/Applications/Observed.app"
+        let expectedDate = Date(timeIntervalSince1970: 1_234)
+        let mock = MockIconProvider()
+        mock.modificationDates[path] = expectedDate
+        let provider: IconProviding = mock
+
+        #expect(provider.modificationDate(forPath: path) == expectedDate)
     }
 
-    @Test("MockHotkeyManager 遵循 HotkeyManaging")
+    @Test("HotkeyManaging existential 转发注册与注销")
     func mockHotkey_conformsToHotkeyManaging() {
-        let hk: HotkeyManaging = MockHotkeyManager()
-        #expect(hk is HotkeyManaging)
+        let mock = MockHotkeyManager()
+        let hotkey: HotkeyManaging = mock
+
+        let registered = hotkey.registerGlobalHotkey(
+            keyCode: 49,
+            modifiers: []
+        )
+        hotkey.unregisterGlobalHotkey()
+
+        #expect(registered)
+        #expect(mock.registerCallCount == 1)
+        #expect(mock.unregisterCallCount == 1)
     }
 
-    @Test("MockScheduler 遵循 Scheduler")
+    @Test("Scheduler existential 转发并执行 exact action")
     func mockScheduler_conformsToScheduler() {
-        let s: Scheduler = MockScheduler()
-        #expect(s is Scheduler)
+        let mock = MockScheduler()
+        let scheduler: Scheduler = mock
+        var values: [String] = []
+
+        scheduler.schedule(after: 0.25) { values.append("fired") }
+        mock.advance(by: 0.24)
+        #expect(values.isEmpty)
+        mock.advance(by: 0.01)
+
+        #expect(values == ["fired"])
     }
 
     @Test("真实 scheduler 的延迟 action 在 MainActor 执行")

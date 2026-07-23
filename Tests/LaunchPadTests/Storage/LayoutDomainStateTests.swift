@@ -517,6 +517,45 @@ struct LayoutDomainStateTests {
         )
     }
 
+    @Test("删除顶层 app 保留全局顺序并记录精确删除副作用")
+    func deleteAppRemovesOnlyRequestedTopLevelApp() throws {
+        var sut = state(
+            top: [node(1), node(7, .group), node(2), node(3)],
+            folders: [7: [node(70)]]
+        )
+
+        let effects = try sut.apply(.deleteApp(itemID: 2))
+
+        #expect(sut.topLevelItems.map(\.id) == [1, 7, 3])
+        #expect(sut.childrenByFolderID[7]?.map(\.id) == [70])
+        #expect(effects.appIDsToDelete == [2])
+        #expect(effects.folderIDsToDelete.isEmpty)
+    }
+
+    @Test("删除 app 拒绝 stale、folder 与 folder child 且保持原状态")
+    func deleteAppRejectsNonTopLevelAppTargets() {
+        let original = state(
+            top: [node(1), node(7, .group)],
+            folders: [7: [node(70)]]
+        )
+
+        expectApplyFailure(
+            .deleteApp(itemID: 99),
+            in: original,
+            expected: .missingItem(99)
+        )
+        expectApplyFailure(
+            .deleteApp(itemID: 7),
+            in: original,
+            expected: .invalidType(7)
+        )
+        expectApplyFailure(
+            .deleteApp(itemID: 70),
+            in: original,
+            expected: .missingItem(70)
+        )
+    }
+
     @Test("page plan 复用、创建、删除并保留唯一空页")
     func pagePlanCoversEveryCardinality() throws {
         let overflow = state(

@@ -149,15 +149,40 @@ struct AppGridCollectionViewTests {
 
     // MARK: - Update Layout
 
-    @Test func updateLayout_smallScreen_7Columns() {
+    @Test func updateLayout_smallScreen_7Columns() throws {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
+        let item = TestDataFactory.makePageItem(
+            id: 1,
+            type: .app,
+            ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 1, title: "Layout")
+        )
         collectionView.updateLayout(screenWidth: 1280)
-        if let layout = collectionView.collectionViewLayout as? AppGridFlowLayout {
-            // 1280 screen → 7 columns
-            let params = GridLayoutCalculator.calculate(screenWidth: 1280)
-            #expect((params.columns) == (7))
-        }
+        collectionView.reload(
+            pages: [[item]],
+            searchResults: nil,
+            searchQuery: nil,
+            animatingDifferences: false,
+            animateEntrance: false
+        )
+
+        let expected = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1280, height: 620)
+        )
+        let layout = try #require(
+            collectionView.collectionViewLayout as? AppGridFlowLayout
+        )
+        layout.prepare()
+        let attributes = try #require(
+            layout.layoutAttributesForItem(at: IndexPath(item: 0, section: 0))
+        )
+
+        #expect(collectionView.gridMetrics == expected)
+        #expect(expected.columns == 7)
+        #expect(attributes.frame.size == expected.itemSize)
+        #expect(attributes.frame.origin.x == expected.sectionInsets.left)
+        #expect(attributes.frame.origin.y == expected.sectionInsets.top)
     }
 
     @Test func updateLayout_mediumScreen_9Columns() {
@@ -252,17 +277,36 @@ struct AppGridCollectionViewTests {
     @Test func onItemDelete_callbackIsSettable() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        var called = false
-        collectionView.onItemDelete = { _ in called = true }
-        #expect((collectionView.onItemDelete) != nil)
+        let expected = TestDataFactory.makePageItem(
+            id: 42,
+            type: .app,
+            app: TestDataFactory.makeAppInfo(id: 42, title: "Delete")
+        )
+        var receivedIDs: [Int64] = []
+        collectionView.onItemDelete = { receivedIDs.append($0.id) }
+
+        collectionView.onItemDelete?(expected)
+
+        #expect(receivedIDs == [expected.id])
     }
 
     @Test func onFolderRenamed_callbackIsSettable() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        var called = false
-        collectionView.onFolderRenamed = { _, _ in called = true }
-        #expect((collectionView.onFolderRenamed) != nil)
+        let expected = TestDataFactory.makePageItem(
+            id: 73,
+            type: .group,
+            group: TestDataFactory.makeGroupInfo(id: 73, title: "Before")
+        )
+        var received: [(id: Int64, title: String)] = []
+        collectionView.onFolderRenamed = {
+            received.append(($0.id, $1))
+        }
+
+        collectionView.onFolderRenamed?(expected, "After")
+
+        #expect(received.map(\.id) == [expected.id])
+        #expect(received.map(\.title) == ["After"])
     }
 
     // MARK: - Mixed Content
@@ -375,8 +419,6 @@ struct AppGridCollectionViewTests {
     // MARK: - Init(coder:)
 
     @Test func init_coder_returnsNil() {
-        let fixture = makeSUT()
-        let collectionView = fixture.collectionView
         // NSCoding 不支持，init?(coder:) 应返回 nil（可测且不崩溃）
         let coder = NSKeyedUnarchiver(forReadingWith: Data())
         let view = AppGridCollectionView(coder: coder)
