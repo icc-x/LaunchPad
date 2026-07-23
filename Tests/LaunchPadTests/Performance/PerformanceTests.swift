@@ -6,172 +6,274 @@ import LaunchPadProtocols
 import AppKit
 #endif
 
+private let sampleCount = 11
+
+private func durations<T>(
+    warmupCount: Int = 3,
+    operation: () -> T
+) -> (samples: [Duration], last: T) {
+    precondition(sampleCount > 0)
+
+    for _ in 0..<warmupCount {
+        _ = operation()
+    }
+
+    let clock = ContinuousClock()
+    var samples: [Duration] = []
+
+    let firstStart = clock.now
+    var last = operation()
+    samples.append(firstStart.duration(to: clock.now))
+
+    for _ in 1..<sampleCount {
+        let start = clock.now
+        last = operation()
+        samples.append(start.duration(to: clock.now))
+    }
+
+    return (samples.sorted(), last)
+}
+
+private func median(_ samples: [Duration]) -> Duration {
+    samples[samples.count / 2]
+}
+
+private func percentile95(_ samples: [Duration]) -> Duration {
+    let index = min(
+        samples.count - 1,
+        Int(ceil(Double(samples.count) * 0.95)) - 1
+    )
+    return samples[index]
+}
+
+private func deterministicIndices(
+    count: Int,
+    upperBound: Int,
+    seed: UInt64 = 0x4C41554E43485041
+) -> [Int] {
+    precondition(upperBound > 0)
+
+    var state = seed
+    return (0..<count).map { _ in
+        state = state &* 6_364_136_223_846_793_005 &+ 1
+        return Int(state % UInt64(upperBound))
+    }
+}
+
 @Suite("性能基准测试")
 struct PerformanceTests {
 
-    @Test("1000 个 PageItem 生成 + SearchEngine 搜索 < 50ms")
+    @Test("SearchEngine 1000 项无缓存 median/p95 < 50ms")
     func search_1000items_under50ms() {
-        let items = (0..<1000).map { i in
+        let items = (0..<1000).map { index in
             TestDataFactory.makePageItem(
-                id: Int64(i),
-                uuid: "perf-\(i)",
-                ordering: i,
+                id: Int64(index),
+                uuid: "perf-\(index)",
+                ordering: index,
                 app: TestDataFactory.makeAppInfo(
-                    id: Int64(i),
-                    title: "Application \(i)",
-                    bundleId: "com.test.app\(i)"
+                    id: Int64(index),
+                    title: "Application \(index)",
+                    bundleId: "com.test.app\(index)"
                 )
             )
         }
-
         let engine = SearchEngine()
 
-        let start = Date()
-        let results = engine.cachedSearch(items: items, query: "app")
-        let elapsed = Date().timeIntervalSince(start)
+        let measurement = durations {
+            engine.search(items: items, query: "app")
+        }
 
-        #expect(results.count > 0)
-        #expect(elapsed < 0.05) // < 50ms
+        #expect(measurement.last.count == 1000)
+        #expect(median(measurement.samples) < .milliseconds(50))
+        #expect(percentile95(measurement.samples) < .milliseconds(50))
     }
 
-    @Test("SearchEngine 重复搜索命中缓存 < 1ms")
+    @Test("SearchEngine 缓存命中 median/p95 < 1ms")
     func search_cached_under1ms() {
-        let items = (0..<1000).map { i in
+        let items = (0..<1000).map { index in
             TestDataFactory.makePageItem(
-                id: Int64(i),
-                uuid: "cache-\(i)",
-                ordering: i,
+                id: Int64(index),
+                uuid: "cache-\(index)",
+                ordering: index,
                 app: TestDataFactory.makeAppInfo(
-                    id: Int64(i),
-                    title: "App \(i)",
-                    bundleId: "com.test.cache\(i)"
+                    id: Int64(index),
+                    title: "App \(index)",
+                    bundleId: "com.test.cache\(index)"
                 )
             )
         }
+        let counter = MatchCounter()
+        let engine = SearchEngine(matchCounter: counter)
 
-        let engine = SearchEngine()
-
-        // 第一次搜索（填充缓存）
         _ = engine.cachedSearch(items: items, query: "test")
+        #expect(counter.count == 1000)
 
-        // 第二次搜索（命中缓存）
-        let start = Date()
-        let results = engine.cachedSearch(items: items, query: "test")
-        let elapsed = Date().timeIntervalSince(start)
+        let measurement = durations {
+            engine.cachedSearch(items: items, query: "test")
+        }
 
-        #expect(results.count > 0)
-        #expect(elapsed < 0.001) // < 1ms（缓存命中）
+        #expect(measurement.last.count == 1000)
+        #expect(counter.count == 1000)
+        #expect(median(measurement.samples) < .milliseconds(1))
+        #expect(percentile95(measurement.samples) < .milliseconds(1))
     }
 
-    @Test("DiffableDataSource Snapshot 构建 1000 项 < 10ms")
+    @Test("Diffable snapshot 1002 项 median/p95 < 10ms")
     func snapshot_1000items_under10ms() {
-        let pages = (0..<3).map { pageIdx in
-            (0..<334).map { i in
-                let globalIdx = pageIdx * 334 + i
+        let pages = (0..<3).map { pageIndex in
+            (0..<334).map { itemIndex in
+                let global = pageIndex * 334 + itemIndex
                 return TestDataFactory.makePageItem(
-                    id: Int64(globalIdx),
-                    uuid: "snap-\(globalIdx)",
-                    ordering: i,
+                    id: Int64(global),
+                    uuid: "snap-\(global)",
+                    ordering: itemIndex,
                     app: TestDataFactory.makeAppInfo(
-                        id: Int64(globalIdx),
-                        title: "App \(globalIdx)",
-                        bundleId: "com.test.snap\(globalIdx)"
+                        id: Int64(global),
+                        title: "App \(global)",
+                        bundleId: "com.test.snap\(global)"
                     )
                 )
             }
         }
 
-        let start = Date()
-        let snapshot = DiffableDataSourceBuilder.buildSnapshot(
-            pages: pages,
-            searchResults: nil,
-            searchQuery: nil
-        )
-        let elapsed = Date().timeIntervalSince(start)
+        let measurement = durations {
+            DiffableDataSourceBuilder.buildSnapshot(
+                pages: pages,
+                searchResults: nil,
+                searchQuery: nil
+            )
+        }
 
-        #expect(snapshot.numberOfItems > 900)
-        #expect(elapsed < 0.01) // < 10ms
+        #expect(measurement.last.numberOfItems == 1002)
+        #expect(measurement.last.numberOfSections == 3)
+        for pageIndex in pages.indices {
+            #expect(
+                measurement.last.itemIdentifiers(inSection: .page(pageIndex)).count == 334
+            )
+        }
+        #expect(median(measurement.samples) < .milliseconds(10))
+        #expect(percentile95(measurement.samples) < .milliseconds(10))
     }
 
-    @Test("GridLayoutCalculator 三种屏幕宽度计算 < 1ms")
+    @Test("动态 GridMetrics 三种 viewport median/p95 < 1ms")
     func gridCalculation_under1ms() {
-        let widths: [CGFloat] = [1440, 1728, 2560]
+        let sizes = [
+            CGSize(width: 1440, height: 620),
+            CGSize(width: 1728, height: 620),
+            CGSize(width: 2560, height: 620),
+        ]
+        let expected = [
+            (columns: 7, rows: 5, itemsPerPage: 35),
+            (columns: 9, rows: 5, itemsPerPage: 45),
+            (columns: 10, rows: 5, itemsPerPage: 50),
+        ]
 
-        let start = Date()
-        for width in widths {
-            let params = GridLayoutCalculator.calculate(screenWidth: width)
-            #expect(params.itemsPerPage > 0)
+        let measurement = durations {
+            sizes.map { GridLayoutCalculator.calculate(viewportSize: $0) }
         }
-        let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 0.001)
+        #expect(measurement.last.count == expected.count)
+        for index in expected.indices {
+            let metrics = measurement.last[index]
+            let expectedMetrics = expected[index]
+            #expect(metrics.columns == expectedMetrics.columns)
+            #expect(metrics.rows == expectedMetrics.rows)
+            #expect(metrics.itemsPerPage == expectedMetrics.itemsPerPage)
+            #expect(metrics.pageWidth == sizes[index].width)
+        }
+        #expect(median(measurement.samples) < .milliseconds(1))
+        #expect(percentile95(measurement.samples) < .milliseconds(1))
     }
 
     // MARK: - IconCache
 
     #if canImport(AppKit)
-    @Test("IconCache 1000 次随机访问性能")
+    @Test("IconCache 1000 次内存命中 median/p95 < 300ms")
     func iconCache_1000randomAccess_perf() {
         let provider = MockIconProvider()
         let store = MockImageStore()
-        // 不设置 modificationDateResult → IconCache 走 "no current modification date" 分支 → isStillValid=true
-        // 首次访问磁盘命中后写入内存，后续访问纯内存命中
         let image = NSImage(size: NSSize(width: 16, height: 16))
-        provider.iconResult = image
-        let tiffData = image.tiffRepresentation ?? Data()
+        let data = image.tiffRepresentation ?? Data()
         let itemCount = 50
-        for i in 0..<itemCount {
-            store.storedImages[Int64(i)] = (icon1x: tiffData, icon2x: tiffData)
-        }
-
-        let cache = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 100)
+        let fixedModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
         let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
 
-        // 预填充内存缓存
-        for (i, path) in paths.enumerated() {
-            _ = cache.icon(forItemId: Int64(i), path: path)
+        provider.iconResult = image
+        for (index, path) in paths.enumerated() {
+            store.storedImages[Int64(index)] = (data, data)
+            provider.modificationDates[path] = fixedModificationDate
         }
 
-        // 1000 次随机访问（纯内存命中）
-        let start = Date()
-        for _ in 0..<1000 {
-            let idx = Int.random(in: 0..<paths.count)
-            _ = cache.icon(forItemId: Int64(idx), path: paths[idx])
+        let cache = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            memoryLimit: 100
+        )
+        for (index, path) in paths.enumerated() {
+            _ = cache.icon(forItemId: Int64(index), path: path)
         }
-        let elapsed = Date().timeIntervalSince(start)
 
-        #expect(elapsed < 0.3)  // 1000 次内存命中应远低于 300ms
+        let indices = deterministicIndices(
+            count: 1000,
+            upperBound: itemCount
+        )
+        let storeFetchCountBeforeMeasurement = store.fetchCallCount
+        let storeSaveCountBeforeMeasurement = store.saveCallCount
+        let providerFetchCountBeforeMeasurement = provider.fetchCallCount
+
+        let measurement = durations {
+            var last: NSImage?
+            for index in indices {
+                last = cache.icon(
+                    forItemId: Int64(index),
+                    path: paths[index]
+                )
+            }
+            return last
+        }
+
+        #expect(measurement.last != nil)
+        #expect(store.fetchCallCount == storeFetchCountBeforeMeasurement)
+        #expect(store.saveCallCount == storeSaveCountBeforeMeasurement)
+        #expect(provider.fetchCallCount == providerFetchCountBeforeMeasurement)
+        #expect(median(measurement.samples) < .milliseconds(300))
+        #expect(percentile95(measurement.samples) < .milliseconds(300))
     }
 
     @Test("IconCache 1000 次访问后无磁盘重复写入")
     func iconCache_1000access_noDiskWriteLeak() {
         let provider = MockIconProvider()
         let store = MockImageStore()
-        // 不设置 modificationDateResult → 磁盘校验恒为 valid → 不触发 storeToDisk
         let image = NSImage(size: NSSize(width: 16, height: 16))
-        provider.iconResult = image
-        let tiffData = image.tiffRepresentation ?? Data()
+        let data = image.tiffRepresentation ?? Data()
         let itemCount = 50
-        for i in 0..<itemCount {
-            store.storedImages[Int64(i)] = (icon1x: tiffData, icon2x: tiffData)
-        }
-
-        let cache = IconCache(iconProvider: provider, imageStore: store, memoryLimit: itemCount)
+        let fixedModificationDate = Date(timeIntervalSince1970: 1_700_000_000)
         let paths = (0..<itemCount).map { "/Applications/App-\($0).app" }
 
-        // 预填充：首次访问磁盘命中 → 写入内存
-        for (i, path) in paths.enumerated() {
-            _ = cache.icon(forItemId: Int64(i), path: path)
+        provider.iconResult = image
+        for (index, path) in paths.enumerated() {
+            store.storedImages[Int64(index)] = (data, data)
+            provider.modificationDates[path] = fixedModificationDate
+        }
+
+        let cache = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            memoryLimit: itemCount
+        )
+        for (index, path) in paths.enumerated() {
+            _ = cache.icon(forItemId: Int64(index), path: path)
         }
         let saveCountAfterPrefill = store.saveCallCount
+        let indices = deterministicIndices(count: 1000, upperBound: itemCount)
 
-        // 1000 次随机访问（内存命中，不触发磁盘写入）
-        for _ in 0..<1000 {
-            let idx = Int.random(in: 0..<paths.count)
-            _ = cache.icon(forItemId: Int64(idx), path: paths[idx])
+        #expect(indices.count == 1000)
+        #expect(indices.allSatisfy { (0..<itemCount).contains($0) })
+        for index in indices {
+            _ = cache.icon(forItemId: Int64(index), path: paths[index])
         }
 
-        #expect(store.saveCallCount == saveCountAfterPrefill)  // 无重复磁盘写入
+        #expect(store.saveCallCount == saveCountAfterPrefill)
     }
     #endif
 }
