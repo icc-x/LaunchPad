@@ -1,126 +1,234 @@
-import XCTest
+import Foundation
+import Testing
 @testable import LaunchPad
 
 #if canImport(AppKit)
 import AppKit
 
-/// Tests for AccessibilitySettings and AccessibilityObserver (0% → target 100%)
-final class AccessibilitySettingsTests: XCTestCase {
+@MainActor
+@Suite("AccessibilitySettings")
+struct AccessibilitySettingsTests {
 
-    // MARK: - AccessibilitySettings
+    @Test("注入 source 返回完整设置快照")
+    func current_returnsValidSettings() {
+        let settings = LaunchPad.AccessibilitySettings.current(
+            source: AccessibilitySettingsSource(
+                reduceMotion: { true },
+                reduceTransparency: { false },
+                increaseContrast: { true }
+            )
+        )
 
-    func testCurrent_returnsValidSettings() {
-        let settings = AccessibilitySettings.current()
-        // Should not crash; returns system values
-        XCTAssertNotNil(settings)
+        #expect(settings.reduceMotion)
+        #expect(!settings.reduceTransparency)
+        #expect(settings.increaseContrast)
     }
 
-    func testCurrent_reduceMotion_isBool() {
-        let settings = AccessibilitySettings.current()
-        // Just verify it's accessible (true or false)
-        _ = settings.reduceMotion
+    @Test("注入 source 返回 reduce motion")
+    func current_reduceMotion_isBool() {
+        let settings = LaunchPad.AccessibilitySettings.current(
+            source: AccessibilitySettingsSource(
+                reduceMotion: { true },
+                reduceTransparency: { false },
+                increaseContrast: { false }
+            )
+        )
+
+        #expect(settings.reduceMotion)
     }
 
-    func testCurrent_reduceTransparency_isBool() {
-        let settings = AccessibilitySettings.current()
-        _ = settings.reduceTransparency
+    @Test("注入 source 返回 reduce transparency")
+    func current_reduceTransparency_isBool() {
+        let settings = LaunchPad.AccessibilitySettings.current(
+            source: AccessibilitySettingsSource(
+                reduceMotion: { false },
+                reduceTransparency: { true },
+                increaseContrast: { false }
+            )
+        )
+
+        #expect(settings.reduceTransparency)
     }
 
-    func testCurrent_increaseContrast_isBool() {
-        let settings = AccessibilitySettings.current()
-        _ = settings.increaseContrast
+    @Test("注入 source 返回 increase contrast")
+    func current_increaseContrast_isBool() {
+        let settings = LaunchPad.AccessibilitySettings.current(
+            source: AccessibilitySettingsSource(
+                reduceMotion: { false },
+                reduceTransparency: { false },
+                increaseContrast: { true }
+            )
+        )
+
+        #expect(settings.increaseContrast)
     }
 
-    func testInit_withExplicitValues() {
+    @Test("显式值按字段保存")
+    func init_withExplicitValues() {
         let settings = AccessibilitySettings(
             reduceMotion: true,
             reduceTransparency: false,
             increaseContrast: true
         )
-        XCTAssertTrue(settings.reduceMotion)
-        XCTAssertFalse(settings.reduceTransparency)
-        XCTAssertTrue(settings.increaseContrast)
+
+        #expect(settings.reduceMotion)
+        #expect(!settings.reduceTransparency)
+        #expect(settings.increaseContrast)
     }
 
-    func testInit_allFalse() {
+    @Test("全 false 值按字段保存")
+    func init_allFalse() {
         let settings = AccessibilitySettings(
             reduceMotion: false,
             reduceTransparency: false,
             increaseContrast: false
         )
-        XCTAssertFalse(settings.reduceMotion)
-        XCTAssertFalse(settings.reduceTransparency)
-        XCTAssertFalse(settings.increaseContrast)
+
+        #expect(!settings.reduceMotion)
+        #expect(!settings.reduceTransparency)
+        #expect(!settings.increaseContrast)
     }
 
-    func testInit_allTrue() {
+    @Test("全 true 值按字段保存")
+    func init_allTrue() {
         let settings = AccessibilitySettings(
             reduceMotion: true,
             reduceTransparency: true,
             increaseContrast: true
         )
-        XCTAssertTrue(settings.reduceMotion)
-        XCTAssertTrue(settings.reduceTransparency)
-        XCTAssertTrue(settings.increaseContrast)
+
+        #expect(settings.reduceMotion)
+        #expect(settings.reduceTransparency)
+        #expect(settings.increaseContrast)
     }
 
-    // MARK: - AnimationFallback
-
-    func testAnimationFallback_reduceMotion_returnsFadeOrInstant() {
-        let fallback = AnimationFallback.strategy(reduceMotion: true, springDamping: 0.8)
-        XCTAssertEqual(fallback, .fadeOrInstant)
+    @Test("reduce motion 使用 fade 或 instant")
+    func animationFallback_reduceMotion_returnsFadeOrInstant() {
+        let fallback = AnimationFallback.strategy(
+            reduceMotion: true,
+            springDamping: 0.8
+        )
+        #expect(fallback == .fadeOrInstant)
     }
 
-    func testAnimationFallback_normalMotion_returnsSpring() {
-        let fallback = AnimationFallback.strategy(reduceMotion: false, springDamping: 0.75)
-        XCTAssertEqual(fallback, .spring(damping: 0.75))
+    @Test("normal motion 使用 spring")
+    func animationFallback_normalMotion_returnsSpring() {
+        let fallback = AnimationFallback.strategy(
+            reduceMotion: false,
+            springDamping: 0.75
+        )
+        #expect(fallback == .spring(damping: 0.75))
     }
 
-    // MARK: - BackgroundMaterial
-
-    func testBackgroundMaterial_reduceTransparency_returnsSolidColor() {
-        let material = BackgroundMaterial.strategy(reduceTransparency: true)
-        XCTAssertEqual(material, .solidColor)
+    @Test("reduce transparency 使用 solid color")
+    func backgroundMaterial_reduceTransparency_returnsSolidColor() {
+        #expect(
+            BackgroundMaterial.strategy(reduceTransparency: true)
+                == .solidColor
+        )
     }
 
-    func testBackgroundMaterial_normalTransparency_returnsHudWindow() {
-        let material = BackgroundMaterial.strategy(reduceTransparency: false)
-        XCTAssertEqual(material, .hudWindow)
+    @Test("normal transparency 使用 hud window")
+    func backgroundMaterial_normalTransparency_returnsHudWindow() {
+        #expect(
+            BackgroundMaterial.strategy(reduceTransparency: false)
+                == .hudWindow
+        )
     }
 
-    // MARK: - ContrastFallback
-
-    func testContrastFallback_increaseContrast_returnsHighContrast() {
-        let fallback = ContrastFallback.strategy(increaseContrast: true)
-        XCTAssertEqual(fallback, .highContrastColors)
+    @Test("increase contrast 使用高对比色")
+    func contrastFallback_increaseContrast_returnsHighContrast() {
+        #expect(
+            ContrastFallback.strategy(increaseContrast: true)
+                == .highContrastColors
+        )
     }
 
-    func testContrastFallback_normalContrast_returnsSystemColors() {
-        let fallback = ContrastFallback.strategy(increaseContrast: false)
-        XCTAssertEqual(fallback, .systemColors)
+    @Test("normal contrast 使用系统色")
+    func contrastFallback_normalContrast_returnsSystemColors() {
+        #expect(
+            ContrastFallback.strategy(increaseContrast: false)
+                == .systemColors
+        )
     }
 }
 
-/// Tests for AccessibilityObserver (0% → target 80%+)
-final class AccessibilityObserverTests: XCTestCase {
+@MainActor
+@Suite("AccessibilityObserver")
+struct AccessibilityObserverTests {
 
-    func testInit_doesNotCrash() {
-        let observer = AccessibilityObserver { _ in }
-        XCTAssertNotNil(observer)
-        observer.stop()
+    @Test("初始化后接收局部通知一次")
+    func init_doesNotCrash() {
+        let center = NotificationCenter()
+        var callbacks = 0
+        let observer = AccessibilityObserver(
+            notificationCenter: center,
+            settingsProvider: {
+                AccessibilitySettings(
+                    reduceMotion: false,
+                    reduceTransparency: false,
+                    increaseContrast: false
+                )
+            }
+        ) { _ in callbacks += 1 }
+        defer { observer.stop() }
+
+        center.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+
+        #expect(callbacks == 1)
     }
 
-    func testStop_multipleCalls_doesNotCrash() {
-        let observer = AccessibilityObserver { _ in }
+    @Test("重复 stop 后局部通知不再回调")
+    func stop_multipleCalls_doesNotCrash() {
+        let center = NotificationCenter()
+        var callbacks = 0
+        let observer = AccessibilityObserver(
+            notificationCenter: center,
+            settingsProvider: {
+                AccessibilitySettings(
+                    reduceMotion: false,
+                    reduceTransparency: false,
+                    increaseContrast: false
+                )
+            }
+        ) { _ in callbacks += 1 }
+
         observer.stop()
-        observer.stop() // Second call should be safe
+        observer.stop()
+        center.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+
+        #expect(callbacks == 0)
     }
 
-    func testDeinit_doesNotCrash() {
-        autoreleasepool {
-            let observer = AccessibilityObserver { _ in }
-            // observer goes out of scope, deinit should call stop()
-        }
+    @Test("析构移除局部通知 token")
+    func deinit_doesNotCrash() {
+        let center = NotificationCenter()
+        var callbacks = 0
+        var observer: AccessibilityObserver? = AccessibilityObserver(
+            notificationCenter: center,
+            settingsProvider: {
+                AccessibilitySettings(
+                    reduceMotion: false,
+                    reduceTransparency: false,
+                    increaseContrast: false
+                )
+            }
+        ) { _ in callbacks += 1 }
+        #expect(observer != nil)
+
+        observer = nil
+        center.post(
+            name: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+            object: nil
+        )
+
+        #expect(callbacks == 0)
     }
 }
 #endif

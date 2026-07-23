@@ -47,4 +47,20 @@ Task 20 temporarily placed the UUID host proof in `FileWatcherLifecycleTests` wh
 - Controlled host focused run: 14/14 passed; the real UUID-directory case passed after 1.074 seconds.
 - Production baseline: `git diff --exit-code 5461d8d..HEAD -- Sources` must remain empty after both migration commits.
 
-Final 30/30 discovery, static and full-suite gates are pending.
+### Accessibility migration boundary
+
+- Focused run: 16/16 passed across `AccessibilitySettingsTests` and `AccessibilityObserverTests`.
+- All four `current_*` mappings use `AccessibilitySettingsSource`; no migrated test reads `NSWorkspace.shared`.
+- All three observer mappings use their own `NotificationCenter` and constant injected settings provider.
+
+### Qualified mapping gate
+
+- Report old column: 30 lines.
+- Report new column: 30 lines.
+- Current qualified discovery: 30 lines.
+- Baseline discovery versus report old column: empty diff.
+- Report new column versus current discovery: empty diff.
+- Legacy framework/static scan of both migrated files: empty output.
+- `5461d8d..working tree` production diff: empty.
+
+The final focused/full-suite and residue gates are recorded in the Task 21 execution report.
