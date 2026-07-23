@@ -10,20 +10,16 @@ pid_is_gone() {
 }
 
 wait_for_pidfiles() {
-  local first=$1 second=$2 third=$3
-  local attempt
+  local attempt pidfile ready
   for attempt in {1..500}; do
-    [[ -s $first && -s $second && -s $third ]] && return 0
-    /bin/sleep 0.01
-  done
-  return 1
-}
-
-wait_for_two_pidfiles() {
-  local first=$1 second=$2
-  local attempt
-  for attempt in {1..500}; do
-    [[ -s $first && -s $second ]] && return 0
+    ready=1
+    for pidfile in "$@"; do
+      if [[ ! -s $pidfile ]]; then
+        ready=0
+        break
+      fi
+    done
+    (( ready == 1 )) && return 0
     /bin/sleep 0.01
   done
   return 1
@@ -40,6 +36,9 @@ run_command() {
   shift
   local supervisor_pid=0 supervisor_ready=0 forwarded_status=0 wait_status=0
   local ready_file=$(mktemp /tmp/launchpad-supervisor-ready.XXXXXX)
+  if [[ -n ${RUN_TIMEOUT_WRAPPER_PIDFILE:-} ]]; then
+    print -r -- $$ > "$RUN_TIMEOUT_WRAPPER_PIDFILE" || return 125
+  fi
   trap 'forwarded_status=129; (( supervisor_ready == 1 )) && kill -HUP "$supervisor_pid" 2>/dev/null || true' HUP
   trap 'forwarded_status=130; (( supervisor_ready == 1 )) && kill -INT "$supervisor_pid" 2>/dev/null || true' INT
   trap 'forwarded_status=143; (( supervisor_ready == 1 )) && kill -TERM "$supervisor_pid" 2>/dev/null || true' TERM
@@ -78,6 +77,11 @@ run_command() {
       close $handle or die "close pidfile failed: $!";
     }
     if (my $pidfile = $ENV{RUN_TIMEOUT_CHILD_PIDFILE}) {
+      open my $handle, ">", $pidfile or die "open pidfile failed: $!";
+      print {$handle} $pid;
+      close $handle or die "close pidfile failed: $!";
+    }
+    if (my $pidfile = $ENV{RUN_TIMEOUT_PROCESS_GROUP_PIDFILE}) {
       open my $handle, ">", $pidfile or die "open pidfile failed: $!";
       print {$handle} $pid;
       close $handle or die "close pidfile failed: $!";
@@ -160,21 +164,33 @@ run_command() {
   return "$wait_status"
 }
 
+process_group_is_gone() {
+  local process_group=$1
+  ! kill -0 -- "-$process_group" 2>/dev/null
+}
+
 assert_tree_gone() {
-  local wrapper=$1 supervisor_file=$2 child_file=$3 descendant_file=$4
+  local wrapper=$1 wrapper_file=$2 supervisor_file=$3 child_file=$4
+  local process_group_file=$5 descendant_file=${6:-}
+  local recorded_wrapper=$(<"$wrapper_file")
   local supervisor=$(<"$supervisor_file")
   local child=$(<"$child_file")
-  local descendant=$(<"$descendant_file")
-  pid_is_gone "$wrapper" \
+  local process_group=$(<"$process_group_file")
+  [[ $recorded_wrapper == $wrapper ]] \
+    && pid_is_gone "$wrapper" \
     && pid_is_gone "$supervisor" \
     && pid_is_gone "$child" \
-    && pid_is_gone "$descendant"
+    && process_group_is_gone "$process_group" \
+    && { [[ -z $descendant_file ]] || pid_is_gone "$(<"$descendant_file")"; }
 }
 
 start_tree() {
-  local seconds=$1 supervisor_file=$2 child_file=$3 descendant_file=$4
+  local seconds=$1 wrapper_file=$2 supervisor_file=$3 child_file=$4
+  local process_group_file=$5 descendant_file=$6
+  RUN_TIMEOUT_WRAPPER_PIDFILE=$wrapper_file \
   RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_file \
     RUN_TIMEOUT_CHILD_PIDFILE=$child_file \
+    RUN_TIMEOUT_PROCESS_GROUP_PIDFILE=$process_group_file \
     "$SELF" "$seconds" -- /bin/zsh -c '
       /bin/sleep 30 &
       print -r -- $! > "$1"
@@ -183,20 +199,40 @@ start_tree() {
   REPLY=$!
 }
 
+self_test_normal() {
+  local directory=$(mktemp -d /tmp/launchpad-normal.XXXXXX)
+  trap "rm -rf ${(q)directory}" EXIT
+  RUN_TIMEOUT_WRAPPER_PIDFILE="$directory/wrapper" \
+    RUN_TIMEOUT_SUPERVISOR_PIDFILE="$directory/supervisor" \
+    RUN_TIMEOUT_CHILD_PIDFILE="$directory/child" \
+    RUN_TIMEOUT_PROCESS_GROUP_PIDFILE="$directory/process-group" \
+    "$SELF" 5 -- /usr/bin/true &
+  local wrapper=$! exit_code=0
+  wait "$wrapper" || exit_code=$?
+  [[ $exit_code -eq 0 ]] || return 1
+  wait_for_pidfiles "$directory/wrapper" "$directory/supervisor" \
+    "$directory/child" "$directory/process-group" || return 1
+  assert_tree_gone "$wrapper" "$directory/wrapper" \
+    "$directory/supervisor" "$directory/child" \
+    "$directory/process-group"
+}
+
 self_test_timeout() {
   local directory=$(mktemp -d /tmp/launchpad-timeout.XXXXXX)
   trap "rm -rf ${(q)directory}" EXIT
-  start_tree 1 "$directory/supervisor" "$directory/child" "$directory/descendant"
+  start_tree 1 "$directory/wrapper" "$directory/supervisor" \
+    "$directory/child" "$directory/process-group" "$directory/descendant"
   local wrapper=$REPLY exit_code=0
-  if ! wait_for_pidfiles "$directory/supervisor" "$directory/child" \
-      "$directory/descendant"; then
+  if ! wait_for_pidfiles "$directory/wrapper" "$directory/supervisor" \
+      "$directory/child" "$directory/process-group" "$directory/descendant"; then
     stop_wrapper "$wrapper"
     return 1
   fi
   wait "$wrapper" || exit_code=$?
   [[ $exit_code -eq 124 ]] || return 1
-  assert_tree_gone "$wrapper" "$directory/supervisor" \
-    "$directory/child" "$directory/descendant"
+  assert_tree_gone "$wrapper" "$directory/wrapper" \
+    "$directory/supervisor" "$directory/child" \
+    "$directory/process-group" "$directory/descendant"
 }
 
 self_test_signal() {
@@ -206,12 +242,15 @@ self_test_signal() {
     expected=${pair##*:}
     race_directory=$(mktemp -d /tmp/launchpad-signal-ready.XXXXXX)
     trap "rm -rf ${(q)race_directory}" EXIT
-    RUN_TIMEOUT_SUPERVISOR_PIDFILE="$race_directory/supervisor" \
+    RUN_TIMEOUT_WRAPPER_PIDFILE="$race_directory/wrapper" \
+      RUN_TIMEOUT_SUPERVISOR_PIDFILE="$race_directory/supervisor" \
       RUN_TIMEOUT_CHILD_PIDFILE="$race_directory/child" \
+      RUN_TIMEOUT_PROCESS_GROUP_PIDFILE="$race_directory/process-group" \
       "$SELF" 30 -- /bin/sleep 30 &
     race_wrapper=$!
-    if ! wait_for_two_pidfiles "$race_directory/supervisor" \
-        "$race_directory/child"; then
+    if ! wait_for_pidfiles "$race_directory/wrapper" \
+        "$race_directory/supervisor" "$race_directory/child" \
+        "$race_directory/process-group"; then
       stop_wrapper "$race_wrapper"
       return 1
     fi
@@ -219,18 +258,18 @@ self_test_signal() {
     exit_code=0
     wait "$race_wrapper" || exit_code=$?
     [[ $exit_code -eq $expected ]] || return 1
-    pid_is_gone "$race_wrapper" \
-      && pid_is_gone "$(<"$race_directory/supervisor")" \
-      && pid_is_gone "$(<"$race_directory/child")" || return 1
+    assert_tree_gone "$race_wrapper" "$race_directory/wrapper" \
+      "$race_directory/supervisor" "$race_directory/child" \
+      "$race_directory/process-group" || return 1
     rm -rf "$race_directory"
 
     directory=$(mktemp -d /tmp/launchpad-signal.XXXXXX)
     trap "rm -rf ${(q)directory}" EXIT
-    start_tree 30 "$directory/supervisor" "$directory/child" \
-      "$directory/descendant"
+    start_tree 30 "$directory/wrapper" "$directory/supervisor" \
+      "$directory/child" "$directory/process-group" "$directory/descendant"
     wrapper=$REPLY
-    if ! wait_for_pidfiles "$directory/supervisor" "$directory/child" \
-        "$directory/descendant"; then
+    if ! wait_for_pidfiles "$directory/wrapper" "$directory/supervisor" \
+        "$directory/child" "$directory/process-group" "$directory/descendant"; then
       stop_wrapper "$wrapper"
       return 1
     fi
@@ -238,8 +277,9 @@ self_test_signal() {
     exit_code=0
     wait "$wrapper" || exit_code=$?
     [[ $exit_code -eq $expected ]] || return 1
-    assert_tree_gone "$wrapper" "$directory/supervisor" \
-      "$directory/child" "$directory/descendant" || return 1
+    assert_tree_gone "$wrapper" "$directory/wrapper" \
+      "$directory/supervisor" "$directory/child" \
+      "$directory/process-group" "$directory/descendant" || return 1
     rm -rf "$directory"
   done
 }
@@ -249,9 +289,13 @@ self_test_nonzero() {
   trap "rm -rf ${(q)directory}" EXIT
   local supervisor_file="$directory/supervisor"
   local child_file="$directory/child"
+  local wrapper_file="$directory/wrapper"
+  local process_group_file="$directory/process-group"
   local descendant_file="$directory/descendant"
-  RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_file \
+  RUN_TIMEOUT_WRAPPER_PIDFILE=$wrapper_file \
+    RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_file \
     RUN_TIMEOUT_CHILD_PIDFILE=$child_file \
+    RUN_TIMEOUT_PROCESS_GROUP_PIDFILE=$process_group_file \
     "$SELF" 30 -- /bin/zsh -c '
       /bin/sleep 30 &
       print -r -- $! > "$1"
@@ -260,14 +304,15 @@ self_test_nonzero() {
   local wrapper=$! exit_code=0
   wait "$wrapper" || exit_code=$?
   [[ $exit_code -eq 17 ]] || return 1
-  assert_tree_gone "$wrapper" "$supervisor_file" \
-    "$child_file" "$descendant_file" || return 1
+  assert_tree_gone "$wrapper" "$wrapper_file" "$supervisor_file" \
+    "$child_file" "$process_group_file" "$descendant_file" || return 1
   exit_code=0
   "$SELF" 5 -- /definitely/missing/launchpad-command || exit_code=$?
   [[ $exit_code -eq 127 ]] || return 1
 }
 
 case ${1:-} in
+  --self-test-normal) self_test_normal; exit $? ;;
   --self-test-timeout) self_test_timeout; exit $? ;;
   --self-test-signal) self_test_signal; exit $? ;;
   --self-test-nonzero) self_test_nonzero; exit $? ;;

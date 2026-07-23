@@ -282,15 +282,16 @@ assert_watchdog() {
   [[ -x "$WATCHDOG" ]]
 }
 
-capture_and_assert_provenance() {
-  local branch_file="$ARTIFACT_DIR/git-branch.txt"
-  local head_file="$ARTIFACT_DIR/git-head.txt"
-  local status_file="$ARTIFACT_DIR/git-status.txt"
-  local controlled_status_file="$ARTIFACT_DIR/controlled-status.txt"
-  local controlled_files_file="$ARTIFACT_DIR/controlled-files.list"
-  local controlled_hashes_file="$ARTIFACT_DIR/controlled-files.sha256"
-  local controlled_hash_file="$ARTIFACT_DIR/controlled-tree.sha256"
-  local path
+capture_provenance() {
+  local prefix=$1
+  local branch_file="$ARTIFACT_DIR/${prefix}-git-branch.txt"
+  local head_file="$ARTIFACT_DIR/${prefix}-git-head.txt"
+  local status_file="$ARTIFACT_DIR/${prefix}-git-status.txt"
+  local controlled_status_file="$ARTIFACT_DIR/${prefix}-controlled-status.txt"
+  local controlled_files_file="$ARTIFACT_DIR/${prefix}-controlled-files.list"
+  local controlled_hashes_file="$ARTIFACT_DIR/${prefix}-controlled-files.sha256"
+  local controlled_hash_file="$ARTIFACT_DIR/${prefix}-controlled-tree.sha256"
+  local controlled_path
 
   git branch --show-current > "$branch_file" || return 1
   git rev-parse HEAD > "$head_file" || return 1
@@ -302,17 +303,32 @@ capture_and_assert_provenance() {
   [[ -s "$controlled_files_file" ]] || return 1
 
   : > "$controlled_hashes_file"
-  while IFS= read -r path; do
-    [[ -f "$path" ]] || return 1
-    /usr/bin/shasum -a 256 "$path" >> "$controlled_hashes_file" || return 1
+  while IFS= read -r controlled_path; do
+    [[ -f "$controlled_path" ]] || return 1
+    /usr/bin/shasum -a 256 "$controlled_path" \
+      >> "$controlled_hashes_file" || return 1
   done < "$controlled_files_file"
   /usr/bin/shasum -a 256 "$controlled_hashes_file" > "$controlled_hash_file" || return 1
+}
 
-  [[ $(<"$branch_file") == release-readiness ]] || return 1
-  [[ $(<"$head_file") == "$HEAD_AT_START" ]] || return 1
-  [[ ! -s "$controlled_status_file" ]] || return 1
-  [[ $(wc -l < "$controlled_files_file" | tr -d ' ') \
-      -eq $(wc -l < "$controlled_hashes_file" | tr -d ' ') ]]
+assert_start_provenance() {
+  capture_provenance start || return $?
+  [[ $(<"$ARTIFACT_DIR/start-git-branch.txt") == release-readiness ]] || return 1
+  [[ $(<"$ARTIFACT_DIR/start-git-head.txt") == "$HEAD_AT_START" ]] || return 1
+  [[ ! -s "$ARTIFACT_DIR/start-controlled-status.txt" ]] || return 1
+  [[ $(wc -l < "$ARTIFACT_DIR/start-controlled-files.list" | tr -d ' ') \
+      -eq $(wc -l < "$ARTIFACT_DIR/start-controlled-files.sha256" | tr -d ' ') ]]
+}
+
+capture_and_compare_end_provenance() {
+  local name
+  capture_provenance end || return $?
+  for name in git-branch.txt git-head.txt git-status.txt \
+      controlled-status.txt controlled-files.list \
+      controlled-files.sha256 controlled-tree.sha256; do
+    cmp -s "$ARTIFACT_DIR/start-${name}" "$ARTIFACT_DIR/end-${name}" \
+      || return 1
+  done
 }
 
 assert_no_matches() {
@@ -343,6 +359,7 @@ assert_no_matches() {
 assert_static_policy() {
   local legacy_pattern='import XCTest|XCTestCase|XCTAssert[A-Za-z]*|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:'
   local trait_pattern='XCTSkip|\.disabled\(|\.enabled\(if:'
+  local constant_expect_pattern='#expect[[:space:]]*\([[:space:]]*true[[:space:]]*\)'
   local fixed_wait_pattern='Task\.sleep|Thread\.sleep|RunLoop\.(main|current)\.run|(?<![A-Za-z0-9_.])(sleep|usleep)\s*\('
   local system_boundary_pattern='UserDefaults\.standard\.(set|removeObject)\s*\(|SMAppService\.mainApp\.(register|unregister)\s*\(|NSWorkspace\.shared\.(open|openApplication)\s*\(|NSRunningApplication.*\.activate\s*\(|NSEvent\.addLocalMonitor|CGEvent\.tapCreate|CFRunLoopAddSource|NSStatusBar\.system'
   local user_database_pattern='FileManager\.default\.urls\(\s*for:\s*\.applicationSupportDirectory|NSSearchPathForDirectoriesInDomains\(\s*\.applicationSupportDirectory|[/~]Library/Application Support'
@@ -357,6 +374,8 @@ assert_static_policy() {
     -n --glob '*.swift' "$legacy_pattern" Tests || return $?
   assert_no_matches test-trait 'skip test trait detected' \
     -n --glob '*.swift' "$trait_pattern" Tests || return $?
+  assert_no_matches constant-expect 'literal constant expectation detected' \
+    -n --glob '*.swift' "$constant_expect_pattern" Tests || return $?
   assert_no_matches fixed-wait 'fixed-wait API detected' \
     -n --pcre2 --glob '*.swift' "$fixed_wait_pattern" Tests || return $?
   assert_no_matches host-boundary 'real host mutation or acquisition detected' \
@@ -416,79 +435,139 @@ capture_related_pids() {
   LC_ALL=C sort -u "$raw_destination" > "$destination" || return $?
 }
 
-assert_invocation_gone() {
-  local label=$1 supervisor_file=$2 child_file=$3 baseline_file=$4 after_file=$5
-  local delta_file=$6
-  local pid_file pid exact_pid_status=0 enumeration_status=0 delta_status=0
+capture_token_pids() {
+  local destination=$1 token=$2
+  local snapshot="${destination}.ps"
+  LC_ALL=C /bin/ps eww -axo pid=,command= > "$snapshot" || return 1
+  /usr/bin/awk \
+    -v marker="LAUNCHPAD_RELEASE_INVOCATION_TOKEN=${token}" \
+    'index($0, marker) { print $1 }' "$snapshot" \
+    | LC_ALL=C sort -u > "$destination"
+}
 
-  for pid_file in "$supervisor_file" "$child_file"; do
+assert_invocation_gone() {
+  local label=$1 token=$2 wrapper_file=$3 supervisor_file=$4 child_file=$5
+  local process_group_file=$6 token_after_file=$7 related_after_file=$8
+  local conflict_file=$9
+  local pid_file pid process_group child exact_pid_status=0 process_group_status=0
+  local token_enumeration_status=0 token_residue_status=0
+  local environment_enumeration_status=0 environment_conflict_status=0
+
+  for pid_file in "$wrapper_file" "$supervisor_file" "$child_file"; do
     if [[ ! -s "$pid_file" ]]; then
       exact_pid_status=1
       break
     fi
     pid=$(<"$pid_file")
-    if [[ "$pid" != <-> ]]; then
-      exact_pid_status=1
-      break
-    fi
-    if kill -0 "$pid" 2>/dev/null; then
+    if [[ "$pid" != <-> ]] || kill -0 "$pid" 2>/dev/null; then
       exact_pid_status=1
       break
     fi
   done
   print -r -- "command.${label}.exact_pid_status=${exact_pid_status}" >> "$MANIFEST"
-  if (( exact_pid_status != 0 )); then
-    print -r -- "command.${label}.after_enumeration_status=not-run" >> "$MANIFEST"
-    print -r -- "command.${label}.delta_status=not-run" >> "$MANIFEST"
-    return 1
-  fi
 
-  capture_related_pids "$after_file" && enumeration_status=0 || enumeration_status=$?
-  print -r -- "command.${label}.after_enumeration_status=${enumeration_status}" \
+  if [[ ! -s "$process_group_file" || ! -s "$child_file" ]]; then
+    process_group_status=1
+  else
+    process_group=$(<"$process_group_file")
+    child=$(<"$child_file")
+    if [[ "$process_group" != <-> || "$process_group" != "$child" ]] \
+        || kill -0 -- "-$process_group" 2>/dev/null; then
+      process_group_status=1
+    fi
+  fi
+  print -r -- "command.${label}.process_group_status=${process_group_status}" \
     >> "$MANIFEST"
-  if (( enumeration_status != 0 )); then
-    print -r -- "command.${label}.delta_status=not-run" >> "$MANIFEST"
-    return "$enumeration_status"
-  fi
 
-  LC_ALL=C comm -13 "$baseline_file" "$after_file" > "$delta_file" \
-    && delta_status=0 || delta_status=$?
-  print -r -- "command.${label}.delta_status=${delta_status}" >> "$MANIFEST"
-  (( delta_status == 0 )) || return "$delta_status"
-  [[ ! -s "$delta_file" ]]
+  capture_token_pids "$token_after_file" "$token" \
+    || token_enumeration_status=$?
+  if (( token_enumeration_status == 0 )) && [[ -s "$token_after_file" ]]; then
+    token_residue_status=1
+  fi
+  print -r -- \
+    "command.${label}.token_enumeration_status=${token_enumeration_status}" \
+    >> "$MANIFEST"
+  print -r -- "command.${label}.token_residue_status=${token_residue_status}" \
+    >> "$MANIFEST"
+
+  capture_related_pids "$related_after_file" \
+    || environment_enumeration_status=$?
+  if (( environment_enumeration_status == 0 )); then
+    LC_ALL=C comm -23 "$related_after_file" "$token_after_file" \
+      > "$conflict_file" || environment_enumeration_status=$?
+  fi
+  if (( environment_enumeration_status == 0 )) && [[ -s "$conflict_file" ]]; then
+    environment_conflict_status=1
+  fi
+  print -r -- \
+    "command.${label}.environment_after_enumeration_status=${environment_enumeration_status}" \
+    >> "$MANIFEST"
+  print -r -- \
+    "command.${label}.environment_conflict_status=${environment_conflict_status}" \
+    >> "$MANIFEST"
+
+  (( exact_pid_status == 0 \
+      && process_group_status == 0 \
+      && token_enumeration_status == 0 \
+      && token_residue_status == 0 \
+      && environment_enumeration_status == 0 \
+      && environment_conflict_status == 0 ))
 }
 
 run_watchdog() {
   local label=$1 timeout=$2
   shift 2
 
+  local wrapper_file="$ARTIFACT_DIR/${label}.wrapper.pid"
   local supervisor_file="$ARTIFACT_DIR/${label}.supervisor.pid"
   local child_file="$ARTIFACT_DIR/${label}.child.pid"
-  local baseline_file="$ARTIFACT_DIR/${label}.baseline-pids"
-  local after_file="$ARTIFACT_DIR/${label}.after-pids"
-  local delta_file="$ARTIFACT_DIR/${label}.residue-pids"
-  local command_status=0 residue_status=0 baseline_status=0
+  local process_group_file="$ARTIFACT_DIR/${label}.process-group.pid"
+  local environment_before_file="$ARTIFACT_DIR/${label}.environment-before.pids"
+  local environment_after_file="$ARTIFACT_DIR/${label}.environment-after.pids"
+  local environment_conflict_file="$ARTIFACT_DIR/${label}.environment-conflict.pids"
+  local token_after_file="$ARTIFACT_DIR/${label}.token-residue.pids"
+  local token="${label}-$(/usr/bin/uuidgen)"
+  local command_status=0 residue_status=0 environment_enumeration_status=0
+  local environment_conflict_status=0
 
-  capture_related_pids "$baseline_file" && baseline_status=0 || baseline_status=$?
-  print -r -- "command.${label}.baseline_enumeration_status=${baseline_status}" \
+  capture_related_pids "$environment_before_file" \
+    || environment_enumeration_status=$?
+  if (( environment_enumeration_status == 0 )) \
+      && [[ -s "$environment_before_file" ]]; then
+    environment_conflict_status=1
+  fi
+  print -r -- \
+    "command.${label}.environment_before_enumeration_status=${environment_enumeration_status}" \
     >> "$MANIFEST"
-  if (( baseline_status != 0 )); then
+  print -r -- \
+    "command.${label}.environment_conflict_status=${environment_conflict_status}" \
+    >> "$MANIFEST"
+  if (( environment_enumeration_status != 0 \
+      || environment_conflict_status != 0 )); then
     record_status "$label" 'not-run'
     print -r -- "command.${label}.residue_status=not-run" >> "$MANIFEST"
-    return "$baseline_status"
+    return 1
   fi
+  print -r -- "command.${label}.invocation_token=${token}" >> "$MANIFEST"
   set +e
-  RUN_TIMEOUT_SUPERVISOR_PIDFILE="$supervisor_file" \
+  LAUNCHPAD_RELEASE_INVOCATION_TOKEN="$token" \
+    RUN_TIMEOUT_WRAPPER_PIDFILE="$wrapper_file" \
+    RUN_TIMEOUT_SUPERVISOR_PIDFILE="$supervisor_file" \
     RUN_TIMEOUT_CHILD_PIDFILE="$child_file" \
+    RUN_TIMEOUT_PROCESS_GROUP_PIDFILE="$process_group_file" \
     "$WATCHDOG" "$timeout" -- /usr/bin/env \
+      -u RUN_TIMEOUT_WRAPPER_PIDFILE \
       -u RUN_TIMEOUT_SUPERVISOR_PIDFILE \
       -u RUN_TIMEOUT_CHILD_PIDFILE \
+      -u RUN_TIMEOUT_PROCESS_GROUP_PIDFILE \
       "$@"
   command_status=$?
   set -e
 
-  assert_invocation_gone "$label" "$supervisor_file" "$child_file" \
-    "$baseline_file" "$after_file" "$delta_file" || residue_status=$?
+  assert_invocation_gone "$label" "$token" "$wrapper_file" \
+    "$supervisor_file" "$child_file" "$process_group_file" \
+    "$token_after_file" "$environment_after_file" \
+    "$environment_conflict_file" || residue_status=$?
   record_status "$label" "$command_status"
   print -r -- "command.${label}.residue_status=${residue_status}" >> "$MANIFEST"
 
@@ -545,10 +624,117 @@ compare_artifacts() {
   cmp -s "$1" "$2"
 }
 
+probe_provenance_mutation() {
+  local original_directory=$PWD
+  local repository=$(mktemp -d /tmp/launchpad-provenance-probe.XXXXXX)
+  local probe_status=0 comparison_status=0
+
+  mkdir -p "$repository/Sources" "$repository/Tests" \
+    "$repository/scripts" "$repository/Resources" || probe_status=$?
+  if (( probe_status == 0 )); then
+    print -r -- 'let value = 1' > "$repository/Sources/probe.swift" \
+      || probe_status=$?
+    print -r -- '// test' > "$repository/Tests/probe.swift" \
+      || probe_status=$?
+    print -r -- '#!/bin/zsh' > "$repository/scripts/probe.sh" \
+      || probe_status=$?
+    print -r -- '// package' > "$repository/Package.swift" \
+      || probe_status=$?
+    print -r -- 'resource' > "$repository/Resources/probe.txt" \
+      || probe_status=$?
+  fi
+  if (( probe_status == 0 )); then
+    cd "$repository" || probe_status=$?
+    git init -q -b release-readiness || probe_status=$?
+    git config user.name 'LaunchPad Probe' || probe_status=$?
+    git config user.email 'launchpad-probe@example.invalid' || probe_status=$?
+    git add Sources Tests scripts Package.swift Resources || probe_status=$?
+    git commit -q -m baseline || probe_status=$?
+    HEAD_AT_START=$(git rev-parse HEAD) || probe_status=$?
+    assert_start_provenance || probe_status=$?
+  fi
+  if (( probe_status == 0 )); then
+    print -r -- 'let mutation = 2' >> Sources/probe.swift || probe_status=$?
+    set +e
+    capture_and_compare_end_provenance
+    comparison_status=$?
+    set -e
+    [[ $comparison_status -ne 0 ]] || probe_status=1
+    cmp -s "$ARTIFACT_DIR/start-git-branch.txt" \
+      "$ARTIFACT_DIR/end-git-branch.txt" || probe_status=1
+    cmp -s "$ARTIFACT_DIR/start-git-head.txt" \
+      "$ARTIFACT_DIR/end-git-head.txt" || probe_status=1
+    if cmp -s "$ARTIFACT_DIR/start-git-status.txt" \
+        "$ARTIFACT_DIR/end-git-status.txt"; then
+      probe_status=1
+    fi
+    if cmp -s "$ARTIFACT_DIR/start-controlled-files.sha256" \
+        "$ARTIFACT_DIR/end-controlled-files.sha256"; then
+      probe_status=1
+    fi
+  fi
+  cd "$original_directory" || return 1
+  rm -rf "$repository"
+  return "$probe_status"
+}
+
+probe_invocation_ownership() {
+  local probe_exit_code=0 unrelated_pid=0
+
+  run_watchdog probe-token-normal 10 /bin/zsh -c \
+    '[[ -n ${LAUNCHPAD_RELEASE_INVOCATION_TOKEN:-} ]]' || return $?
+
+  if run_watchdog probe-token-nonzero 10 /bin/zsh -c 'exit 17'; then
+    probe_exit_code=0
+  else
+    probe_exit_code=$?
+  fi
+  [[ $probe_exit_code -eq 17 ]] || return 1
+  rg -q '^command\.probe-token-nonzero\.residue_status=0$' "$MANIFEST" \
+    || return 1
+
+  if run_watchdog probe-token-timeout 1 /bin/sleep 30; then
+    probe_exit_code=0
+  else
+    probe_exit_code=$?
+  fi
+  [[ $probe_exit_code -eq 124 ]] || return 1
+  rg -q '^command\.probe-token-timeout\.residue_status=0$' "$MANIFEST" \
+    || return 1
+
+  ARGV0=swiftpm-testing-helper /bin/sleep 30 &
+  unrelated_pid=$!
+  if run_watchdog probe-environment-conflict 10 /usr/bin/true; then
+    probe_exit_code=0
+  else
+    probe_exit_code=$?
+  fi
+  kill "$unrelated_pid" 2>/dev/null || true
+  wait "$unrelated_pid" 2>/dev/null || true
+  [[ $probe_exit_code -ne 0 ]] || return 1
+  rg -q \
+    '^command\.probe-environment-conflict\.environment_conflict_status=1$' \
+    "$MANIFEST" || return 1
+  rg -q '^command\.probe-environment-conflict\.residue_status=not-run$' \
+    "$MANIFEST" || return 1
+}
+
+case ${1:-} in
+  --probe-provenance-mutation)
+    probe_provenance_mutation
+    exit $?
+    ;;
+  --probe-invocation-ownership)
+    probe_invocation_ownership
+    exit $?
+    ;;
+esac
+
 record_check watchdog-executable assert_watchdog
 record_check syntax zsh -n "$WATCHDOG" "$0"
-record_check provenance capture_and_assert_provenance
+record_check provenance-start assert_start_provenance
 record_check static-policy assert_static_policy
+run_watchdog self-test-normal 60 "$WATCHDOG" --self-test-normal
 run_watchdog self-test-timeout 60 "$WATCHDOG" --self-test-timeout
 run_watchdog self-test-signal 60 "$WATCHDOG" --self-test-signal
 run_watchdog self-test-nonzero 60 "$WATCHDOG" --self-test-nonzero
@@ -602,6 +788,7 @@ print 'release gate: release build'
 run_watchdog release-build 900 /bin/zsh -o pipefail -c \
   'swift build -c release --product LaunchPadApp 2>&1 | tee "$1"' \
   _ "$ARTIFACT_DIR/release-build.log"
+record_check provenance-end capture_and_compare_end_provenance
 print -r -- 'result=passed' >> "$MANIFEST"
 print -r -- 'passed' > "$RESULT_STATUS_TEMP"
 /bin/mv -f "$RESULT_STATUS_TEMP" "$RESULT_STATUS"
