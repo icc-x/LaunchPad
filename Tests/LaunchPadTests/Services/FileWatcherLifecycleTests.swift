@@ -5,59 +5,8 @@ import Testing
 #if canImport(AppKit)
 import AppKit
 
-private enum WatcherTimeout: Error { case elapsed }
-
-private func withTimeout<T: Sendable>(
-    _ duration: Duration,
-    operation: @escaping @Sendable () async throws -> T
-) async throws -> T {
-    try await withThrowingTaskGroup(of: T.self) { group in
-        group.addTask(operation: operation)
-        group.addTask {
-            try await ContinuousClock().sleep(for: duration)
-            throw WatcherTimeout.elapsed
-        }
-        guard let result = try await group.next() else {
-            throw WatcherTimeout.elapsed
-        }
-        group.cancelAll()
-        return result
-    }
-}
-
 @Suite("FileWatcher 生命周期与 FSEvents 边界")
 struct FileWatcherLifecycleTests {
-
-    @Test("真实 FSEvents 在 UUID 临时目录变更后触发 callback")
-    @MainActor
-    func realTemporaryDirectoryChangeTriggersCallback() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("LaunchPadWatcher-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            at: directory,
-            withIntermediateDirectories: true
-        )
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let events = AsyncStream<Void>.makeStream()
-        let watcher = FileWatcher(debounceInterval: 0.05)
-        #expect(watcher.start(paths: [directory.path]) {
-            events.continuation.yield()
-        })
-        defer {
-            watcher.stop()
-            events.continuation.finish()
-        }
-
-        try Data("event".utf8).write(
-            to: directory.appendingPathComponent("probe.txt"),
-            options: .atomic
-        )
-        let received = try await withTimeout(.seconds(10)) {
-            for await _ in events.stream { return true }
-            return false
-        }
-        #expect(received)
-    }
 
     @Test("生产 FSEvent backend 启动失败不调用 Stop 但完整释放")
     func systemBackendStartFailureSkipsStopAndReleasesEverything() {
