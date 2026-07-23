@@ -196,62 +196,78 @@ struct FileWatcherLifecycleTests {
 
     @Test("CallbackBox 在全部创建和释放分支恰好释放闭包捕获")
     func callbackBoxReleasesCapturedLifetimeProbeOnEveryExitPath() {
-        final class LifetimeProbe: @unchecked Sendable {}
+        final class DeinitCounter: @unchecked Sendable {
+            private let lock = NSLock()
+            private var value = 0
+
+            func increment() {
+                lock.withLock {
+                    value += 1
+                }
+            }
+
+            func currentValue() -> Int {
+                lock.withLock { value }
+            }
+        }
+        final class LifetimeProbe: @unchecked Sendable {
+            let counter: DeinitCounter
+            init(counter: DeinitCounter) { self.counter = counter }
+            deinit { counter.increment() }
+        }
+        func callback(retaining counter: DeinitCounter) -> @Sendable () -> Void {
+            let probe = LifetimeProbe(counter: counter)
+            return { _ = probe }
+        }
         let fakeStream: FSEventStreamRef = unsafeBitCast(UInt(1), to: FSEventStreamRef.self)
 
-        weak var createNilProbe: LifetimeProbe?
-        do {
-            let probe = LifetimeProbe()
-            createNilProbe = probe
-            let stream = SystemFileEventStream(functions: FSEventStreamFunctions(
-                create: { _, _, _, _, _, _ in nil },
-                setDispatchQueue: { _, _ in }, start: { _ in true },
-                stop: { _ in }, invalidate: { _ in }, release: { _ in }
-            ))
-            #expect(!stream.start(paths: ["/Applications"]) { _ = probe })
-        }
-        #expect(createNilProbe == nil)
+        let createNilCounter = DeinitCounter()
+        var createNilCallback: (@Sendable () -> Void)? = callback(retaining: createNilCounter)
+        let createNilStream = SystemFileEventStream(functions: FSEventStreamFunctions(
+            create: { _, _, _, _, _, _ in nil },
+            setDispatchQueue: { _, _ in }, start: { _ in true },
+            stop: { _ in }, invalidate: { _ in }, release: { _ in }
+        ))
+        #expect(!createNilStream.start(paths: ["/Applications"], onEvents: createNilCallback!))
+        createNilCallback = nil
+        #expect(createNilCounter.currentValue() == 1)
 
-        weak var startFailureProbe: LifetimeProbe?
-        do {
-            let probe = LifetimeProbe()
-            startFailureProbe = probe
-            let stream = SystemFileEventStream(functions: FSEventStreamFunctions(
-                create: { _, _, _, _, _, _ in fakeStream },
-                setDispatchQueue: { _, _ in }, start: { _ in false },
-                stop: { _ in }, invalidate: { _ in }, release: { _ in }
-            ))
-            #expect(!stream.start(paths: ["/Applications"]) { _ = probe })
-        }
-        #expect(startFailureProbe == nil)
+        let startFailureCounter = DeinitCounter()
+        var startFailureCallback: (@Sendable () -> Void)? = callback(retaining: startFailureCounter)
+        let startFailureStream = SystemFileEventStream(functions: FSEventStreamFunctions(
+            create: { _, _, _, _, _, _ in fakeStream },
+            setDispatchQueue: { _, _ in }, start: { _ in false },
+            stop: { _ in }, invalidate: { _ in }, release: { _ in }
+        ))
+        #expect(!startFailureStream.start(paths: ["/Applications"], onEvents: startFailureCallback!))
+        startFailureCallback = nil
+        #expect(startFailureCounter.currentValue() == 1)
 
-        weak var stopProbe: LifetimeProbe?
-        do {
-            let probe = LifetimeProbe()
-            stopProbe = probe
-            let stream = SystemFileEventStream(functions: FSEventStreamFunctions(
-                create: { _, _, _, _, _, _ in fakeStream },
-                setDispatchQueue: { _, _ in }, start: { _ in true },
-                stop: { _ in }, invalidate: { _ in }, release: { _ in }
-            ))
-            #expect(stream.start(paths: ["/Applications"]) { _ = probe })
-            stream.stop()
-        }
-        #expect(stopProbe == nil)
+        let stopCounter = DeinitCounter()
+        var stopCallback: (@Sendable () -> Void)? = callback(retaining: stopCounter)
+        let stopStream = SystemFileEventStream(functions: FSEventStreamFunctions(
+            create: { _, _, _, _, _, _ in fakeStream },
+            setDispatchQueue: { _, _ in }, start: { _ in true },
+            stop: { _ in }, invalidate: { _ in }, release: { _ in }
+        ))
+        #expect(stopStream.start(paths: ["/Applications"], onEvents: stopCallback!))
+        stopCallback = nil
+        stopStream.stop()
+        #expect(stopCounter.currentValue() == 1)
+        stopStream.stop()
+        #expect(stopCounter.currentValue() == 1)
 
-        weak var deinitProbe: LifetimeProbe?
-        do {
-            let probe = LifetimeProbe()
-            deinitProbe = probe
-            var stream: SystemFileEventStream? = SystemFileEventStream(functions: FSEventStreamFunctions(
-                create: { _, _, _, _, _, _ in fakeStream },
-                setDispatchQueue: { _, _ in }, start: { _ in true },
-                stop: { _ in }, invalidate: { _ in }, release: { _ in }
-            ))
-            #expect(stream?.start(paths: ["/Applications"]) { _ = probe } == true)
-            stream = nil
-        }
-        #expect(deinitProbe == nil)
+        let deinitCounter = DeinitCounter()
+        var deinitCallback: (@Sendable () -> Void)? = callback(retaining: deinitCounter)
+        var deinitStream: SystemFileEventStream? = SystemFileEventStream(functions: FSEventStreamFunctions(
+            create: { _, _, _, _, _, _ in fakeStream },
+            setDispatchQueue: { _, _ in }, start: { _ in true },
+            stop: { _ in }, invalidate: { _ in }, release: { _ in }
+        ))
+        #expect(deinitStream?.start(paths: ["/Applications"], onEvents: deinitCallback!) == true)
+        deinitCallback = nil
+        deinitStream = nil
+        #expect(deinitCounter.currentValue() == 1)
     }
 
     @Test("空路径不启动；重复启动先停止旧 backend")
