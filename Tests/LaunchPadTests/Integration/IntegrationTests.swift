@@ -7,6 +7,60 @@ import LaunchPadProtocols
 @Suite("Integration Tests — 跨模块集成验证")
 struct IntegrationTests {
 
+    private struct FolderCardinalityFixture {
+        let pageID: Int64
+        let leftID: Int64
+        let folderID: Int64
+        let childID: Int64?
+        let rightID: Int64
+
+        init(
+            storage: StorageManager,
+            prefix: String,
+            hasChild: Bool
+        ) throws {
+            pageID = try storage.insertItem(
+                TestDataFactory.makePageItem(uuid: "\(prefix)-page", type: .page)
+            )
+            leftID = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "\(prefix)-left",
+                type: .app,
+                ordering: 0,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.\(prefix).left"
+                )
+            ))
+            folderID = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "\(prefix)-folder",
+                type: .group,
+                ordering: 1,
+                parentId: pageID,
+                group: TestDataFactory.makeGroupInfo(title: prefix)
+            ))
+            childID = hasChild ? try storage.insertItem(
+                TestDataFactory.makePageItem(
+                    uuid: "\(prefix)-child",
+                    type: .app,
+                    ordering: 0,
+                    parentId: folderID,
+                    app: TestDataFactory.makeAppInfo(
+                        bundleId: "com.test.\(prefix).child"
+                    )
+                )
+            ) : nil
+            rightID = try storage.insertItem(TestDataFactory.makePageItem(
+                uuid: "\(prefix)-right",
+                type: .app,
+                ordering: 2,
+                parentId: pageID,
+                app: TestDataFactory.makeAppInfo(
+                    bundleId: "com.test.\(prefix).right"
+                )
+            ))
+        }
+    }
+
     private func temporaryLayoutDirectory(_ prefix: String) throws -> URL {
         let directory = URL(fileURLWithPath: NSTemporaryDirectory())
             .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
@@ -478,12 +532,12 @@ struct IntegrationTests {
             #expect(snapshot.flattenedTopLevelIDs == [
                 thirdID, firstID, secondID, fourthID,
             ])
-            #expect(snapshot.pageChildren[firstPageID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[firstPageID]?.map(\.id) == [
                 thirdID, firstID, secondID,
             ])
-            #expect(snapshot.pageChildren[firstPageID]!.map(\.ordering) == [0, 1, 2])
-            #expect(snapshot.pageChildren[secondPageID]!.map(\.id) == [fourthID])
-            #expect(snapshot.pageChildren[secondPageID]!.map(\.ordering) == [0])
+            #expect(snapshot.pageChildren[firstPageID]?.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.pageChildren[secondPageID]?.map(\.id) == [fourthID])
+            #expect(snapshot.pageChildren[secondPageID]?.map(\.ordering) == [0])
         }
         try storage!.apply(
             .moveTopLevel(
@@ -502,12 +556,12 @@ struct IntegrationTests {
             #expect(snapshot.flattenedTopLevelIDs == [
                 firstID, secondID, fourthID, thirdID,
             ])
-            #expect(snapshot.pageChildren[firstPageID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[firstPageID]?.map(\.id) == [
                 firstID, secondID, fourthID,
             ])
-            #expect(snapshot.pageChildren[firstPageID]!.map(\.ordering) == [0, 1, 2])
-            #expect(snapshot.pageChildren[secondPageID]!.map(\.id) == [thirdID])
-            #expect(snapshot.pageChildren[secondPageID]!.map(\.ordering) == [0])
+            #expect(snapshot.pageChildren[firstPageID]?.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.pageChildren[secondPageID]?.map(\.id) == [thirdID])
+            #expect(snapshot.pageChildren[secondPageID]?.map(\.ordering) == [0])
         }
         storage = nil
     }
@@ -561,10 +615,10 @@ struct IntegrationTests {
             #expect(snapshot.pages.map(\.id) == [pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
             #expect(snapshot.flattenedTopLevelIDs == [folderID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [folderID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0])
-            #expect(snapshot.folderChildren[folderID]!.map(\.id) == [firstID, secondID])
-            #expect(snapshot.folderChildren[folderID]!.map(\.ordering) == [0, 1])
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [folderID])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0])
+            #expect(snapshot.folderChildren[folderID]?.map(\.id) == [firstID, secondID])
+            #expect(snapshot.folderChildren[folderID]?.map(\.ordering) == [0, 1])
         }
         try storage!.apply(.deleteFolder(folderID: folderID), pageCapacity: 2)
         storage = nil
@@ -575,8 +629,8 @@ struct IntegrationTests {
             #expect(snapshot.pages.map(\.id) == [pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
             #expect(snapshot.flattenedTopLevelIDs == [firstID, secondID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [firstID, secondID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1])
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [firstID, secondID])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1])
             #expect(snapshot.allItems.contains { $0.id == folderID } == false)
             #expect(snapshot.folderChildren[folderID] == nil)
         }
@@ -646,12 +700,12 @@ struct IntegrationTests {
             #expect(snapshot.pages.map(\.id) == [pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
             #expect(snapshot.flattenedTopLevelIDs == [folderID, fourthID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [folderID, fourthID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1])
-            #expect(snapshot.folderChildren[folderID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [folderID, fourthID])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1])
+            #expect(snapshot.folderChildren[folderID]?.map(\.id) == [
                 firstID, secondID, thirdID,
             ])
-            #expect(snapshot.folderChildren[folderID]!.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.folderChildren[folderID]?.map(\.ordering) == [0, 1, 2])
         }
         try storage!.apply(
             .reorderFolderItem(
@@ -669,12 +723,12 @@ struct IntegrationTests {
             #expect(snapshot.pages.map(\.id) == [pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
             #expect(snapshot.flattenedTopLevelIDs == [folderID, fourthID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [folderID, fourthID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1])
-            #expect(snapshot.folderChildren[folderID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [folderID, fourthID])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1])
+            #expect(snapshot.folderChildren[folderID]?.map(\.id) == [
                 thirdID, firstID, secondID,
             ])
-            #expect(snapshot.folderChildren[folderID]!.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.folderChildren[folderID]?.map(\.ordering) == [0, 1, 2])
         }
         try storage!.apply(
             .removeFromFolder(
@@ -692,12 +746,12 @@ struct IntegrationTests {
             #expect(snapshot.pages.map(\.id) == [pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
             #expect(snapshot.flattenedTopLevelIDs == [folderID, thirdID, fourthID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [
                 folderID, thirdID, fourthID,
             ])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1, 2])
-            #expect(snapshot.folderChildren[folderID]!.map(\.id) == [firstID, secondID])
-            #expect(snapshot.folderChildren[folderID]!.map(\.ordering) == [0, 1])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.folderChildren[folderID]?.map(\.id) == [firstID, secondID])
+            #expect(snapshot.folderChildren[folderID]?.map(\.ordering) == [0, 1])
         }
         try storage!.apply(
             .removeFromFolder(
@@ -717,10 +771,10 @@ struct IntegrationTests {
             #expect(snapshot.flattenedTopLevelIDs == [
                 firstID, secondID, thirdID, fourthID,
             ])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [
+            #expect(snapshot.pageChildren[pageID]?.map(\.id) == [
                 firstID, secondID, thirdID, fourthID,
             ])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1, 2, 3])
+            #expect(snapshot.pageChildren[pageID]?.map(\.ordering) == [0, 1, 2, 3])
             #expect(snapshot.allItems.contains { $0.id == folderID } == false)
             #expect(snapshot.folderChildren[folderID] == nil)
         }
@@ -733,49 +787,28 @@ struct IntegrationTests {
             let directory = try temporaryLayoutDirectory("LaunchPadSafeDeleteZero")
             defer { try? FileManager.default.removeItem(at: directory) }
             let path = directory.appendingPathComponent("layout.sqlite").path
-            var pageID: Int64 = 0
-            var leftID: Int64 = 0
-            var folderID: Int64 = 0
-            var rightID: Int64 = 0
 
             var storage: StorageManager? = try StorageManager(dbPath: path)
-            pageID = try storage!.insertItem(
-                TestDataFactory.makePageItem(uuid: "safe-zero-page", type: .page)
+            let fixture = try FolderCardinalityFixture(
+                storage: storage!,
+                prefix: "safe-zero",
+                hasChild: false
             )
-            leftID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-zero-left",
-                type: .app,
-                ordering: 0,
-                parentId: pageID,
-                app: TestDataFactory.makeAppInfo(bundleId: "com.test.safe.zero.left")
-            ))
-            folderID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-zero-folder",
-                type: .group,
-                ordering: 1,
-                parentId: pageID,
-                group: TestDataFactory.makeGroupInfo(title: "Empty")
-            ))
-            rightID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-zero-right",
-                type: .app,
-                ordering: 2,
-                parentId: pageID,
-                app: TestDataFactory.makeAppInfo(bundleId: "com.test.safe.zero.right")
-            ))
-            try storage!.apply(.deleteFolder(folderID: folderID), pageCapacity: 3)
+            try storage!.apply(.deleteFolder(folderID: fixture.folderID), pageCapacity: 3)
             storage = nil
 
             storage = try StorageManager(dbPath: path)
             do {
                 let snapshot = try storage!.persistedLayoutSnapshot()
-                #expect(snapshot.pages.map(\.id) == [pageID])
+                #expect(snapshot.pages.map(\.id) == [fixture.pageID])
                 #expect(snapshot.pages.map(\.ordering) == [0])
-                #expect(snapshot.flattenedTopLevelIDs == [leftID, rightID])
-                #expect(snapshot.pageChildren[pageID]!.map(\.id) == [leftID, rightID])
-                #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1])
-                #expect(snapshot.allItems.contains { $0.id == folderID } == false)
-                #expect(snapshot.folderChildren[folderID] == nil)
+                #expect(snapshot.flattenedTopLevelIDs == [fixture.leftID, fixture.rightID])
+                #expect(snapshot.pageChildren[fixture.pageID]?.map(\.id) == [
+                    fixture.leftID, fixture.rightID,
+                ])
+                #expect(snapshot.pageChildren[fixture.pageID]?.map(\.ordering) == [0, 1])
+                #expect(snapshot.allItems.contains { $0.id == fixture.folderID } == false)
+                #expect(snapshot.folderChildren[fixture.folderID] == nil)
             }
             storage = nil
         }
@@ -784,59 +817,31 @@ struct IntegrationTests {
             let directory = try temporaryLayoutDirectory("LaunchPadSafeDeleteOne")
             defer { try? FileManager.default.removeItem(at: directory) }
             let path = directory.appendingPathComponent("layout.sqlite").path
-            var pageID: Int64 = 0
-            var leftID: Int64 = 0
-            var folderID: Int64 = 0
-            var childID: Int64 = 0
-            var rightID: Int64 = 0
 
             var storage: StorageManager? = try StorageManager(dbPath: path)
-            pageID = try storage!.insertItem(
-                TestDataFactory.makePageItem(uuid: "safe-one-page", type: .page)
+            let fixture = try FolderCardinalityFixture(
+                storage: storage!,
+                prefix: "safe-one",
+                hasChild: true
             )
-            leftID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-one-left",
-                type: .app,
-                ordering: 0,
-                parentId: pageID,
-                app: TestDataFactory.makeAppInfo(bundleId: "com.test.safe.one.left")
-            ))
-            folderID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-one-folder",
-                type: .group,
-                ordering: 1,
-                parentId: pageID,
-                group: TestDataFactory.makeGroupInfo(title: "One")
-            ))
-            childID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-one-child",
-                type: .app,
-                ordering: 0,
-                parentId: folderID,
-                app: TestDataFactory.makeAppInfo(bundleId: "com.test.safe.one.child")
-            ))
-            rightID = try storage!.insertItem(TestDataFactory.makePageItem(
-                uuid: "safe-one-right",
-                type: .app,
-                ordering: 2,
-                parentId: pageID,
-                app: TestDataFactory.makeAppInfo(bundleId: "com.test.safe.one.right")
-            ))
-            try storage!.apply(.deleteFolder(folderID: folderID), pageCapacity: 3)
+            let childID = try #require(fixture.childID)
+            try storage!.apply(.deleteFolder(folderID: fixture.folderID), pageCapacity: 3)
             storage = nil
 
             storage = try StorageManager(dbPath: path)
             do {
                 let snapshot = try storage!.persistedLayoutSnapshot()
-                #expect(snapshot.pages.map(\.id) == [pageID])
+                #expect(snapshot.pages.map(\.id) == [fixture.pageID])
                 #expect(snapshot.pages.map(\.ordering) == [0])
-                #expect(snapshot.flattenedTopLevelIDs == [leftID, childID, rightID])
-                #expect(snapshot.pageChildren[pageID]!.map(\.id) == [
-                    leftID, childID, rightID,
+                #expect(snapshot.flattenedTopLevelIDs == [
+                    fixture.leftID, childID, fixture.rightID,
                 ])
-                #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1, 2])
-                #expect(snapshot.allItems.contains { $0.id == folderID } == false)
-                #expect(snapshot.folderChildren[folderID] == nil)
+                #expect(snapshot.pageChildren[fixture.pageID]?.map(\.id) == [
+                    fixture.leftID, childID, fixture.rightID,
+                ])
+                #expect(snapshot.pageChildren[fixture.pageID]?.map(\.ordering) == [0, 1, 2])
+                #expect(snapshot.allItems.contains { $0.id == fixture.folderID } == false)
+                #expect(snapshot.folderChildren[fixture.folderID] == nil)
             }
             storage = nil
         }
@@ -847,49 +852,19 @@ struct IntegrationTests {
         let directory = try temporaryLayoutDirectory("LaunchPadRemoveOnly")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("layout.sqlite").path
-        var pageID: Int64 = 0
-        var leftID: Int64 = 0
-        var folderID: Int64 = 0
-        var childID: Int64 = 0
-        var rightID: Int64 = 0
 
         var storage: StorageManager? = try StorageManager(dbPath: path)
-        pageID = try storage!.insertItem(
-            TestDataFactory.makePageItem(uuid: "only-page", type: .page)
+        let fixture = try FolderCardinalityFixture(
+            storage: storage!,
+            prefix: "only",
+            hasChild: true
         )
-        leftID = try storage!.insertItem(TestDataFactory.makePageItem(
-            uuid: "only-left",
-            type: .app,
-            ordering: 0,
-            parentId: pageID,
-            app: TestDataFactory.makeAppInfo(bundleId: "com.test.only.left")
-        ))
-        folderID = try storage!.insertItem(TestDataFactory.makePageItem(
-            uuid: "only-folder",
-            type: .group,
-            ordering: 1,
-            parentId: pageID,
-            group: TestDataFactory.makeGroupInfo(title: "Only")
-        ))
-        childID = try storage!.insertItem(TestDataFactory.makePageItem(
-            uuid: "only-child",
-            type: .app,
-            ordering: 0,
-            parentId: folderID,
-            app: TestDataFactory.makeAppInfo(bundleId: "com.test.only.child")
-        ))
-        rightID = try storage!.insertItem(TestDataFactory.makePageItem(
-            uuid: "only-right",
-            type: .app,
-            ordering: 2,
-            parentId: pageID,
-            app: TestDataFactory.makeAppInfo(bundleId: "com.test.only.right")
-        ))
+        let childID = try #require(fixture.childID)
         try storage!.apply(
             .removeFromFolder(
                 itemID: childID,
-                folderID: folderID,
-                placement: .afterItem(itemID: folderID)
+                folderID: fixture.folderID,
+                placement: .afterItem(itemID: fixture.folderID)
             ),
             pageCapacity: 3
         )
@@ -898,15 +873,17 @@ struct IntegrationTests {
         storage = try StorageManager(dbPath: path)
         do {
             let snapshot = try storage!.persistedLayoutSnapshot()
-            #expect(snapshot.pages.map(\.id) == [pageID])
+            #expect(snapshot.pages.map(\.id) == [fixture.pageID])
             #expect(snapshot.pages.map(\.ordering) == [0])
-            #expect(snapshot.flattenedTopLevelIDs == [leftID, childID, rightID])
-            #expect(snapshot.pageChildren[pageID]!.map(\.id) == [
-                leftID, childID, rightID,
+            #expect(snapshot.flattenedTopLevelIDs == [
+                fixture.leftID, childID, fixture.rightID,
             ])
-            #expect(snapshot.pageChildren[pageID]!.map(\.ordering) == [0, 1, 2])
-            #expect(snapshot.allItems.contains { $0.id == folderID } == false)
-            #expect(snapshot.folderChildren[folderID] == nil)
+            #expect(snapshot.pageChildren[fixture.pageID]?.map(\.id) == [
+                fixture.leftID, childID, fixture.rightID,
+            ])
+            #expect(snapshot.pageChildren[fixture.pageID]?.map(\.ordering) == [0, 1, 2])
+            #expect(snapshot.allItems.contains { $0.id == fixture.folderID } == false)
+            #expect(snapshot.folderChildren[fixture.folderID] == nil)
         }
         storage = nil
     }
