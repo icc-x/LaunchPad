@@ -133,12 +133,13 @@ struct LaunchPadViewControllerTests {
     /// 注入 searchScheduler 的 SUT 工厂，用于测试搜索防抖逻辑
     private func makeSUTWithSearchScheduler(
         searchScheduler: Scheduler,
+        dragScheduler: Scheduler = DispatchQueueScheduler(),
         layoutMutator: LayoutMutating = MockLayoutMutator()
     ) -> (LaunchPadViewController, DragController, MockDataStore) {
         let storage = MockDataStore()
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
-        let dragController = DragController()
+        let dragController = DragController(scheduler: dragScheduler)
         let folderController = FolderController(itemWriter: storage)
         let sut = LaunchPadViewController(
             storage: storage,
@@ -514,10 +515,12 @@ struct LaunchPadViewControllerTests {
 
     @Test("搜索 mode 与 current query 完整派生三层拖放门禁")
     func searchTransitionsSynchronizeAllDragBoundaries() throws {
-        let scheduler = MockScheduler()
+        let searchScheduler = MockScheduler()
+        let dragScheduler = MockScheduler()
         let mutator = MockLayoutMutator()
         let (sut, dragController, storage) = makeSUTWithSearchScheduler(
-            searchScheduler: scheduler,
+            searchScheduler: searchScheduler,
+            dragScheduler: dragScheduler,
             layoutMutator: mutator
         )
         loadViewWithData(sut, storage: storage)
@@ -526,12 +529,24 @@ struct LaunchPadViewControllerTests {
         #expect(coordinator.isDragEnabled)
         #expect(sut.folderOverlay.isDragEnabled)
 
+        var previewChanges: [Int64?] = []
+        dragController.onFolderCreationPreviewChanged = {
+            previewChanges.append($0)
+        }
         dragController.beginDrag(makeDragSession(itemID: 2))
+        dragController.updateDragHover(.item(itemID: 11, itemType: .app))
+        dragScheduler.advance(by: 0.8)
+        #expect(dragController.session?.folderCreationPreviewTargetID == 11)
+        dragController.handlePressBegan(at: .zero)
+        #expect(!dragScheduler.scheduledActions.isEmpty)
+
         #expect(sut.handleCharacterInput("s") == .enterSearchMode("s"))
         #expect(!coordinator.isDragEnabled)
         #expect(!sut.folderOverlay.isDragEnabled)
         #expect(dragController.session == nil)
-        #expect(scheduler.scheduledActions.count == 1)
+        #expect(dragScheduler.scheduledActions.isEmpty)
+        #expect(previewChanges.last == .some(nil))
+        #expect(searchScheduler.scheduledActions.count == 1)
         #expect(!sut.applyDropIntent(.deleteFolder(folderID: 8)))
         #expect(mutator.applyAttemptCount == 0)
 
@@ -816,7 +831,16 @@ struct LaunchPadViewControllerTests {
         loadViewWithData(sut, storage: storage)
         let coordinator = try #require(sut.gridInteractionCoordinator)
         let grid = try #require(extractCollectionView(from: sut))
-        dragController.beginDrag(makeDragSession())
+        var previewChanges: [Int64?] = []
+        dragController.onFolderCreationPreviewChanged = {
+            previewChanges.append($0)
+        }
+        dragController.beginDrag(makeDragSession(itemID: 10))
+        dragController.updateDragHover(.item(itemID: 11, itemType: .app))
+        scheduler.advance(by: 0.8)
+        #expect(dragController.session?.folderCreationPreviewTargetID == 11)
+        dragController.handlePressBegan(at: .zero)
+        #expect(!scheduler.scheduledActions.isEmpty)
         let cancelCountBefore = scheduler.cancelCallCount
         var closeCount = 0
         sut.onClose = { closeCount += 1 }
@@ -824,7 +848,10 @@ struct LaunchPadViewControllerTests {
         #expect(sut.handleKeyEvent(.escape) == .closeWindow)
         #expect(closeCount == 1)
         #expect(dragController.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
+        #expect(previewChanges.last == .some(nil))
         #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
+        let previewChangeCountAfterEscape = previewChanges.count
 
         coordinator.collectionView(
             grid,
@@ -833,6 +860,7 @@ struct LaunchPadViewControllerTests {
             dragOperation: []
         )
         #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
+        #expect(previewChanges.count == previewChangeCountAfterEscape)
     }
 
     // MARK: - ESC 退出编辑模式
@@ -841,14 +869,24 @@ struct LaunchPadViewControllerTests {
     func edit_esc_exitsEditMode() {
         let scheduler = MockScheduler()
         let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
-        dragController.handlePressBegan(at: CGPoint(x: 100, y: 100))
-        scheduler.advance(by: 0.5)
-        #expect(dragController.state == .jiggling)
+        var previewChanges: [Int64?] = []
+        dragController.onFolderCreationPreviewChanged = {
+            previewChanges.append($0)
+        }
+        dragController.beginDrag(makeDragSession(itemID: 10))
+        dragController.updateDragHover(.item(itemID: 11, itemType: .app))
+        scheduler.advance(by: 0.8)
+        #expect(dragController.session?.folderCreationPreviewTargetID == 11)
+        dragController.handlePressBegan(at: .zero)
+        #expect(!scheduler.scheduledActions.isEmpty)
         sut.keyboardNavigator.mode = .edit
 
-        _ = sut.handleKeyEvent(.escape)
+        #expect(sut.handleKeyEvent(.escape) == .exitEditMode)
 
         #expect(dragController.state == .idle)
+        #expect(dragController.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
+        #expect(previewChanges.last == .some(nil))
         #expect(sut.keyboardNavigator.mode == .idle)
     }
 
