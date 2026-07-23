@@ -4,12 +4,39 @@ import Testing
 import AppKit
 #endif
 
-private final class ObserverRemovalRecorder: @unchecked Sendable {
+/// Coordinates two stop calls at the exact point where the first removal is in flight.
+private final class BlockingObserverRemovalRecorder: @unchecked Sendable {
     private let lock = NSLock()
+    private let firstRemovalEnteredStream: AsyncStream<Void>
+    private let firstRemovalEnteredContinuation: AsyncStream<Void>.Continuation
+    private let firstRemovalRelease = DispatchSemaphore(value: 0)
     private var count = 0
 
-    func record() {
-        lock.withLock { count += 1 }
+    init() {
+        let firstRemovalEntered = AsyncStream<Void>.makeStream()
+        firstRemovalEnteredStream = firstRemovalEntered.stream
+        firstRemovalEnteredContinuation = firstRemovalEntered.continuation
+    }
+
+    func recordAndBlockFirstRemoval() {
+        let isFirstRemoval = lock.withLock {
+            count += 1
+            return count == 1
+        }
+        guard isFirstRemoval else { return }
+
+        firstRemovalEnteredContinuation.yield()
+        firstRemovalRelease.wait()
+        firstRemovalEnteredContinuation.finish()
+    }
+
+    func waitUntilFirstRemovalEnters() async {
+        var iterator = firstRemovalEnteredStream.makeAsyncIterator()
+        _ = await iterator.next()
+    }
+
+    func releaseFirstRemoval() {
+        firstRemovalRelease.signal()
     }
 
     var callCount: Int {
@@ -109,7 +136,7 @@ struct AccessibilityObserversTests {
     @Test("并发 stop 原子移除 observer token 一次")
     func concurrentStopsRemoveObserverOnce() async {
         let center = NotificationCenter()
-        let removals = ObserverRemovalRecorder()
+        let removals = BlockingObserverRemovalRecorder()
         let observer = AccessibilityObserver(
             notificationCenter: center,
             settingsProvider: {
@@ -120,16 +147,19 @@ struct AccessibilityObserversTests {
                 )
             },
             observerRemover: { token in
-                removals.record()
+                removals.recordAndBlockFirstRemoval()
                 center.removeObserver(token)
             }
         ) { _ in }
 
-        await withTaskGroup(of: Void.self) { group in
-            for _ in 0..<32 {
-                group.addTask { observer.stop() }
-            }
-        }
+        let firstStop = Task.detached { observer.stop() }
+        await removals.waitUntilFirstRemovalEnters()
+
+        let secondStop = Task.detached { observer.stop() }
+        await secondStop.value
+
+        removals.releaseFirstRemoval()
+        await firstStop.value
 
         #expect(removals.callCount == 1)
     }
