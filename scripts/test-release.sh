@@ -20,9 +20,14 @@ else
   ARTIFACT_DIR=$(mktemp -d "$ROOT_DIR/.superpowers/sdd/release-gate.XXXXXX")
 fi
 
+RESULT_STATUS="$ARTIFACT_DIR/result.status"
+RESULT_STATUS_TEMP="$ARTIFACT_DIR/result.status.passed"
+print -r -- 'failed' > "$RESULT_STATUS"
+
 MANIFEST="$ARTIFACT_DIR/manifest.txt"
+HEAD_AT_START=$(git rev-parse HEAD)
 {
-  print -r -- "head=$(git rev-parse HEAD)"
+  print -r -- "head=$HEAD_AT_START"
   print -r -- "start=$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
   print -r -- "uname=$(/usr/bin/uname -a)"
   print -r -- "configuration=three debug Swift Testing runs and one release product build"
@@ -34,6 +39,7 @@ MANIFEST="$ARTIFACT_DIR/manifest.txt"
 EVENT_PARSER="$ARTIFACT_DIR/event-parser.swift"
 /bin/cat > "$EVENT_PARSER" <<'SWIFT'
 import Foundation
+import CoreFoundation
 
 enum ParserError: Error, CustomStringConvertible {
     case invalidArguments
@@ -110,8 +116,11 @@ func parseEvents() throws {
         guard let event = object as? [String: Any],
               let kind = event["kind"] as? String,
               let payload = event["payload"] as? [String: Any],
-              let version = event["version"] as? NSNumber,
-              version.intValue == 0 else {
+              let versionValue = event["version"],
+              CFGetTypeID(versionValue as CFTypeRef) == CFNumberGetTypeID(),
+              let version = versionValue as? NSNumber,
+              !CFNumberIsFloatType(version),
+              version.int64Value == 0 else {
             throw ParserError.invalidEvent(index + 1)
         }
 
@@ -126,7 +135,10 @@ func parseEvents() throws {
                 throw ParserError.invalidEvent(index + 1)
             }
             try insertUnique(testID, into: &functionRecords)
-            if let testCases = payload["_testCases"] as? [[String: Any]] {
+            if payload.keys.contains("_testCases") {
+                guard let testCases = payload["_testCases"] as? [[String: Any]] else {
+                    throw ParserError.invalidEvent(index + 1)
+                }
                 for testCase in testCases {
                     guard let caseID = testCase["id"] as? String, !caseID.isEmpty else {
                         throw ParserError.invalidEvent(index + 1)
@@ -238,8 +250,8 @@ do {
 SWIFT
 
 record_status() {
-  local label=$1 status=$2
-  print -r -- "command.${label}.status=${status}" >> "$MANIFEST"
+  local label=$1 command_status=$2
+  print -r -- "command.${label}.status=${command_status}" >> "$MANIFEST"
 }
 
 record_check() {
@@ -248,78 +260,123 @@ record_check() {
 
   set +e
   "$@"
-  local status=$?
+  local command_status=$?
   set -e
-  record_status "$label" "$status"
-  return "$status"
+  record_status "$label" "$command_status"
+  return "$command_status"
 }
 
 assert_watchdog() {
   [[ -x "$WATCHDOG" ]]
 }
 
+capture_and_assert_provenance() {
+  local branch_file="$ARTIFACT_DIR/git-branch.txt"
+  local head_file="$ARTIFACT_DIR/git-head.txt"
+  local status_file="$ARTIFACT_DIR/git-status.txt"
+  local controlled_status_file="$ARTIFACT_DIR/controlled-status.txt"
+  local controlled_files_file="$ARTIFACT_DIR/controlled-files.list"
+  local controlled_hashes_file="$ARTIFACT_DIR/controlled-files.sha256"
+  local controlled_hash_file="$ARTIFACT_DIR/controlled-tree.sha256"
+  local path
+
+  git branch --show-current > "$branch_file" || return 1
+  git rev-parse HEAD > "$head_file" || return 1
+  git status --porcelain=v1 --branch --untracked-files=all > "$status_file" || return 1
+  git status --porcelain=v1 --untracked-files=all -- \
+    Sources Tests scripts Package.swift Resources > "$controlled_status_file" || return 1
+  git ls-files -- Sources Tests scripts Package.swift Resources \
+    > "$controlled_files_file" || return 1
+  [[ -s "$controlled_files_file" ]] || return 1
+
+  : > "$controlled_hashes_file"
+  while IFS= read -r path; do
+    [[ -f "$path" ]] || return 1
+    /usr/bin/shasum -a 256 "$path" >> "$controlled_hashes_file" || return 1
+  done < "$controlled_files_file"
+  /usr/bin/shasum -a 256 "$controlled_hashes_file" > "$controlled_hash_file" || return 1
+
+  [[ $(<"$branch_file") == release-readiness ]] || return 1
+  [[ $(<"$head_file") == "$HEAD_AT_START" ]] || return 1
+  [[ ! -s "$controlled_status_file" ]] || return 1
+  [[ $(wc -l < "$controlled_files_file" | tr -d ' ') \
+      -eq $(wc -l < "$controlled_hashes_file" | tr -d ' ') ]]
+}
+
+assert_no_matches() {
+  local label=$1 message=$2
+  shift 2
+  local output="$ARTIFACT_DIR/static-${label}.log"
+  local scan_status
+
+  rg "$@" > "$output" 2>&1 && scan_status=0 || scan_status=$?
+  print -r -- "command.static-${label}.scan_status=${scan_status}" >> "$MANIFEST"
+  case $scan_status in
+    0)
+      /bin/cat "$output" >&2
+      print -u2 "release gate: $message"
+      return 1
+      ;;
+    1)
+      return 0
+      ;;
+    *)
+      /bin/cat "$output" >&2
+      print -u2 "release gate: static scan failed (${label}, status ${scan_status})"
+      return "$scan_status"
+      ;;
+  esac
+}
+
 assert_static_policy() {
   local legacy_pattern='import XCTest|XCTestCase|XCTAssert[A-Za-z]*|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:'
-  local bypass_pattern='XCTSkip|\.disabled\(|\.enabled\(if:|Task\.sleep|RunLoop\.main\.run'
+  local trait_pattern='XCTSkip|\.disabled\(|\.enabled\(if:'
+  local fixed_wait_pattern='Task\.sleep|Thread\.sleep|RunLoop\.(main|current)\.run|(?<![A-Za-z0-9_.])(sleep|usleep)\s*\('
+  local system_boundary_pattern='UserDefaults\.standard\.(set|removeObject)\s*\(|SMAppService\.mainApp\.(register|unregister)\s*\(|NSWorkspace\.shared\.(open|openApplication)\s*\(|NSRunningApplication.*\.activate\s*\(|NSEvent\.addLocalMonitor|CGEvent\.tapCreate|CFRunLoopAddSource|NSStatusBar\.system'
+  local user_database_pattern='FileManager\.default\.urls\(\s*for:\s*\.applicationSupportDirectory|NSSearchPathForDirectoriesInDomains\(\s*\.applicationSupportDirectory|[/~]Library/Application Support'
   local grid_legacy_pattern='delegate[[:space:]]*=[[:space:]]*self|NSCollectionViewDelegate|onItemSelected|onSelectionChanged|dragController|pasteboardUUIDReader'
   local host_legacy_pattern='interactionBounds|pageItem\(uuid:|moveSnapshotItem\(|itemsByUUID|snapshotMoves'
   local environment_pattern='ProcessInfo\.processInfo\.'environment
-  local performance_skip_pattern='--ski''p[^[:space:]]*PerformanceTests'
+  local performance_skip_pattern='--ski''p(=|[[:space:]]+)[^[:space:]]*PerformanceTests'
   local performance_switch_pattern='retr''y|threshold[ _-]*multiplier'
   local own_supervisor_pattern='run_with_timeou''t\(\)|se''tpgrp|se''tpgid|(^|[[:space:];])tr''ap[[:space:]]+|/usr/bin/pe''rl'
 
-  if rg -n --glob '*.swift' "$legacy_pattern" Tests; then
-    print -u2 'release gate: legacy test framework residue detected'
-    return 1
-  fi
-  if rg -n --glob '*.swift' "$bypass_pattern" Tests; then
-    print -u2 'release gate: skip or fixed-wait API detected'
-    return 1
-  fi
-  if rg -n "$grid_legacy_pattern" \
-      Sources/LaunchPad/Views/AppGridCollectionView.swift; then
-    print -u2 'release gate: obsolete main-grid delegate API detected'
-    return 1
-  fi
-  if rg -n --glob 'AppGrid*.swift' '[Pp]roxy' \
-      Sources/LaunchPad/Views; then
-    print -u2 'release gate: main-grid proxy detected'
-    return 1
-  fi
-  if rg -n "$host_legacy_pattern" \
-      Sources/LaunchPad/Views/AppGridCollectionView.swift \
-      Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
-      Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
-      Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift; then
-    print -u2 'release gate: obsolete grid-host surface detected'
-    return 1
-  fi
-  if rg -n 'setCurrentVisualPageIndex' \
-      Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift; then
-    print -u2 'release gate: grid-host page mutation detected'
-    return 1
-  fi
-  if rg -n -U --pcre2 \
-      '\b([A-Za-z_][A-Za-z0-9_]*)\.collectionView\(\s*\1\s*,' \
-      Tests --glob '*.swift'; then
-    print -u2 'release gate: direct main-grid delegate bypass detected'
-    return 1
-  fi
-  if rg -n 'GridLayoutCalculator\.calculate\(screenWidth:' \
-      Tests/LaunchPadTests/Performance/PerformanceTests.swift; then
-    print -u2 'release gate: performance grid legacy API detected'
-    return 1
-  fi
-  if rg -n "$environment_pattern|$performance_skip_pattern|$performance_switch_pattern" \
-      Tests/LaunchPadTests/Performance/PerformanceTests.swift \
-      scripts/test-release.sh; then
-    print -u2 'release gate: performance bypass detected'
-    return 1
-  fi
-  if rg -n "$own_supervisor_pattern" scripts/test-release.sh; then
-    print -u2 'release gate: second timeout supervisor detected'
-    return 1
-  fi
+  assert_no_matches legacy-xctest 'legacy test framework residue detected' \
+    -n --glob '*.swift' "$legacy_pattern" Tests || return $?
+  assert_no_matches test-trait 'skip test trait detected' \
+    -n --glob '*.swift' "$trait_pattern" Tests || return $?
+  assert_no_matches fixed-wait 'fixed-wait API detected' \
+    -n --pcre2 --glob '*.swift' "$fixed_wait_pattern" Tests || return $?
+  assert_no_matches host-boundary 'real host mutation or acquisition detected' \
+    -n --pcre2 --glob '*.swift' "$system_boundary_pattern" Tests || return $?
+  assert_no_matches user-database 'user Application Support database path detected' \
+    -n -U --pcre2 --glob '*.swift' "$user_database_pattern" Tests || return $?
+  assert_no_matches grid-delegate 'obsolete main-grid delegate API detected' \
+    -n "$grid_legacy_pattern" Sources/LaunchPad/Views/AppGridCollectionView.swift \
+    || return $?
+  assert_no_matches grid-proxy 'main-grid proxy detected' \
+    -n --glob 'AppGrid*.swift' '[Pp]roxy' Sources/LaunchPad/Views || return $?
+  assert_no_matches grid-host 'obsolete grid-host surface detected' \
+    -n "$host_legacy_pattern" \
+    Sources/LaunchPad/Views/AppGridCollectionView.swift \
+    Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+    Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+    Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift || return $?
+  assert_no_matches grid-page-mutation 'grid-host page mutation detected' \
+    -n 'setCurrentVisualPageIndex' \
+    Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift || return $?
+  assert_no_matches grid-delegate-bypass 'direct main-grid delegate bypass detected' \
+    -n -U --pcre2 '\b([A-Za-z_][A-Za-z0-9_]*)\.collectionView\(\s*\1\s*,' \
+    Tests --glob '*.swift' || return $?
+  assert_no_matches performance-grid 'performance grid legacy API detected' \
+    -n 'GridLayoutCalculator\.calculate\(screenWidth:' \
+    Tests/LaunchPadTests/Performance/PerformanceTests.swift || return $?
+  assert_no_matches performance-bypass 'performance bypass detected' \
+    -n "$environment_pattern|$performance_skip_pattern|$performance_switch_pattern" \
+    Tests/LaunchPadTests/Performance/PerformanceTests.swift scripts/test-release.sh \
+    || return $?
+  assert_no_matches second-supervisor 'second timeout supervisor detected' \
+    -n --pcre2 "$own_supervisor_pattern" scripts/test-release.sh || return $?
 }
 
 append_process_matches() {
@@ -327,8 +384,9 @@ append_process_matches() {
   shift
 
   pgrep "$@" >> "$destination" && return 0
-  local status=$?
-  (( status == 1 ))
+  local command_status=$?
+  (( command_status == 1 )) && return 0
+  return "$command_status"
 }
 
 capture_related_pids() {
@@ -336,31 +394,55 @@ capture_related_pids() {
   local raw_destination="${destination}.raw"
 
   : > "$raw_destination"
-  append_process_matches "$raw_destination" -x swift-test || return 1
-  append_process_matches "$raw_destination" -x swiftpm-testing-helper || return 1
-  append_process_matches "$raw_destination" -x LaunchPadPackageTests || return 1
+  append_process_matches "$raw_destination" -x swift-test || return $?
+  append_process_matches "$raw_destination" -x swiftpm-testing-helper || return $?
+  append_process_matches "$raw_destination" -x LaunchPadPackageTests || return $?
   append_process_matches "$raw_destination" -f \
-    '(^|/)swiftpm-testing-helper([[:space:]]|$)' || return 1
+    '(^|/)swiftpm-testing-helper([[:space:]]|$)' || return $?
   append_process_matches "$raw_destination" -f \
-    '/LaunchPadPackageTests\.xctest/Contents/MacOS/LaunchPadPackageTests' || return 1
-  LC_ALL=C sort -un "$raw_destination" > "$destination"
+    '/LaunchPadPackageTests\.xctest/Contents/MacOS/LaunchPadPackageTests' || return $?
+  LC_ALL=C sort -un "$raw_destination" > "$destination" || return $?
 }
 
 assert_invocation_gone() {
-  local supervisor_file=$1 child_file=$2 baseline_file=$3 after_file=$4 delta_file=$5
-  local pid_file pid
+  local label=$1 supervisor_file=$2 child_file=$3 baseline_file=$4 after_file=$5
+  local delta_file=$6
+  local pid_file pid exact_pid_status=0 enumeration_status=0 delta_status=0
 
   for pid_file in "$supervisor_file" "$child_file"; do
-    [[ -s "$pid_file" ]] || return 1
+    if [[ ! -s "$pid_file" ]]; then
+      exact_pid_status=1
+      break
+    fi
     pid=$(<"$pid_file")
-    [[ "$pid" == <-> ]] || return 1
+    if [[ "$pid" != <-> ]]; then
+      exact_pid_status=1
+      break
+    fi
     if kill -0 "$pid" 2>/dev/null; then
-      return 1
+      exact_pid_status=1
+      break
     fi
   done
+  print -r -- "command.${label}.exact_pid_status=${exact_pid_status}" >> "$MANIFEST"
+  if (( exact_pid_status != 0 )); then
+    print -r -- "command.${label}.after_enumeration_status=not-run" >> "$MANIFEST"
+    print -r -- "command.${label}.delta_status=not-run" >> "$MANIFEST"
+    return 1
+  fi
 
-  capture_related_pids "$after_file"
-  comm -13 "$baseline_file" "$after_file" > "$delta_file"
+  capture_related_pids "$after_file" && enumeration_status=0 || enumeration_status=$?
+  print -r -- "command.${label}.after_enumeration_status=${enumeration_status}" \
+    >> "$MANIFEST"
+  if (( enumeration_status != 0 )); then
+    print -r -- "command.${label}.delta_status=not-run" >> "$MANIFEST"
+    return "$enumeration_status"
+  fi
+
+  comm -13 "$baseline_file" "$after_file" > "$delta_file" \
+    && delta_status=0 || delta_status=$?
+  print -r -- "command.${label}.delta_status=${delta_status}" >> "$MANIFEST"
+  (( delta_status == 0 )) || return "$delta_status"
   [[ ! -s "$delta_file" ]]
 }
 
@@ -373,38 +455,30 @@ run_watchdog() {
   local baseline_file="$ARTIFACT_DIR/${label}.baseline-pids"
   local after_file="$ARTIFACT_DIR/${label}.after-pids"
   local delta_file="$ARTIFACT_DIR/${label}.residue-pids"
-  local status=0 residue_status=0
+  local command_status=0 residue_status=0 baseline_status=0
 
-  if ! capture_related_pids "$baseline_file"; then
-    record_status "$label" 1
-    print -r -- "command.${label}.baseline_status=1" >> "$MANIFEST"
-    return 1
+  capture_related_pids "$baseline_file" && baseline_status=0 || baseline_status=$?
+  print -r -- "command.${label}.baseline_enumeration_status=${baseline_status}" \
+    >> "$MANIFEST"
+  if (( baseline_status != 0 )); then
+    record_status "$label" 'not-run'
+    print -r -- "command.${label}.residue_status=not-run" >> "$MANIFEST"
+    return "$baseline_status"
   fi
   set +e
   RUN_TIMEOUT_SUPERVISOR_PIDFILE="$supervisor_file" \
     RUN_TIMEOUT_CHILD_PIDFILE="$child_file" \
     "$WATCHDOG" "$timeout" -- "$@"
-  status=$?
+  command_status=$?
   set -e
 
-  assert_invocation_gone "$supervisor_file" "$child_file" \
+  assert_invocation_gone "$label" "$supervisor_file" "$child_file" \
     "$baseline_file" "$after_file" "$delta_file" || residue_status=$?
-  record_status "$label" "$status"
+  record_status "$label" "$command_status"
   print -r -- "command.${label}.residue_status=${residue_status}" >> "$MANIFEST"
 
-  (( status == 0 )) || return "$status"
+  (( command_status == 0 )) || return "$command_status"
   (( residue_status == 0 ))
-}
-
-run_watchdog_self_test() {
-  local label=$1 flag=$2 status=0
-
-  set +e
-  "$WATCHDOG" "$flag"
-  status=$?
-  set -e
-  record_status "$label" "$status"
-  return "$status"
 }
 
 extract_discovery() {
@@ -412,9 +486,6 @@ extract_discovery() {
 
   LC_ALL=C rg '^LaunchPadTests\.' "$raw" | LC_ALL=C sort > "$list" || return 1
   [[ -s "$list" ]] || return 1
-  if rg -n -v '^LaunchPadTests\.' "$list"; then
-    return 1
-  fi
   [[ $(rg -c '^LaunchPadTests\.PerformanceTests/' "$list") -eq 6 ]]
 }
 
@@ -430,16 +501,17 @@ extract_execution_set() {
 }
 
 assert_run_log() {
-  local log=$1 expected_count=$2 summary_file=$3
+  local label=$1 log=$2 expected_count=$3 summary_file=$4 normalized_summary=$5
   local failure_pattern='↷|[Ss]kipped|✘|failed after|unexpected signal|signal [0-9]+|Fatal error|Abort tr''ap|Trace/BPT tr''ap|Segmentation fault|timed out'
 
   rg '^✔ Test run with ' "$log" > "$summary_file" || return 1
   [[ $(wc -l < "$summary_file" | tr -d ' ') -eq 1 ]] || return 1
   rg -q "^✔ Test run with ${expected_count} tests in [0-9]+ suites? passed after [0-9.]+ seconds\.$" \
     "$summary_file" || return 1
-  if rg -n "$failure_pattern" "$log"; then
-    return 1
-  fi
+  sed -E 's/ passed after [0-9.]+ seconds\.$/ passed/' \
+    "$summary_file" > "$normalized_summary" || return 1
+  assert_no_matches "${label}-failure-markers" 'test failure marker detected' \
+    -n "$failure_pattern" "$log" || return $?
 
   local name
   for name in \
@@ -460,10 +532,11 @@ compare_artifacts() {
 
 record_check watchdog-executable assert_watchdog
 record_check syntax zsh -n "$WATCHDOG" "$0"
+record_check provenance capture_and_assert_provenance
 record_check static-policy assert_static_policy
-run_watchdog_self_test self-test-timeout --self-test-timeout
-run_watchdog_self_test self-test-signal --self-test-signal
-run_watchdog_self_test self-test-nonzero --self-test-nonzero
+run_watchdog self-test-timeout 60 "$WATCHDOG" --self-test-timeout
+run_watchdog self-test-signal 60 "$WATCHDOG" --self-test-signal
+run_watchdog self-test-nonzero 60 "$WATCHDOG" --self-test-nonzero
 
 for run in 1 2 3; do
   print "release gate: test run ${run}/3"
@@ -475,6 +548,7 @@ for run in 1 2 3; do
   event_version="$ARTIFACT_DIR/events-${run}.version"
   event_identity="$ARTIFACT_DIR/events-${run}.identity.json"
   summary_file="$ARTIFACT_DIR/tests-${run}.summary"
+  normalized_summary="$ARTIFACT_DIR/tests-${run}.normalized-summary"
 
   run_watchdog "discovery-${run}" 180 /bin/zsh -o pipefail -c \
     'swift test --disable-sandbox --disable-xctest --enable-swift-testing list 2>&1 | tee "$1"' \
@@ -490,7 +564,7 @@ for run in 1 2 3; do
     'swift test --disable-sandbox --disable-xctest --enable-swift-testing --no-parallel --event-stream-output-path "$2" --event-stream-version 0 2>&1 | tee "$1"' \
     _ "$log" "$events"
   record_check "tests-${run}-log-contract" assert_run_log \
-    "$log" "$expected_count" "$summary_file"
+    "tests-${run}" "$log" "$expected_count" "$summary_file" "$normalized_summary"
   run_watchdog "tests-${run}-event-parser" 180 /usr/bin/swift \
     "$EVENT_PARSER" "$events" "$executed" "$event_version" "$event_identity"
   record_check "tests-${run}-execution-contract" extract_execution_set \
@@ -500,6 +574,10 @@ for run in 1 2 3; do
       "$ARTIFACT_DIR/executed-1.list" "$executed"
     record_check "tests-${run}-event-version-stable" compare_artifacts \
       "$ARTIFACT_DIR/events-1.version" "$event_version"
+    record_check "tests-${run}-identity-stable" compare_artifacts \
+      "$ARTIFACT_DIR/events-1.identity.json" "$event_identity"
+    record_check "tests-${run}-summary-stable" compare_artifacts \
+      "$ARTIFACT_DIR/tests-1.normalized-summary" "$normalized_summary"
   fi
   print -r -- "summary.run${run}=$(<"$summary_file")" >> "$MANIFEST"
   print -r -- "event_version.run${run}=$(<"$event_version")" >> "$MANIFEST"
@@ -510,4 +588,6 @@ run_watchdog release-build 900 /bin/zsh -o pipefail -c \
   'swift build -c release --product LaunchPadApp 2>&1 | tee "$1"' \
   _ "$ARTIFACT_DIR/release-build.log"
 print -r -- 'result=passed' >> "$MANIFEST"
+print -r -- 'passed' > "$RESULT_STATUS_TEMP"
+/bin/mv -f "$RESULT_STATUS_TEMP" "$RESULT_STATUS"
 print "release gate: artifacts $ARTIFACT_DIR"
