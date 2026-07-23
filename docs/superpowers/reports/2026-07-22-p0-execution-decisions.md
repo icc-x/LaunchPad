@@ -1194,3 +1194,80 @@ the approved plan or task-specific test reports.
   spec compliant and Approved with Critical/Important/Minor `0/0/0`; main-agent
   fresh gates pass `231/231`, `133/133`, the real host test `1/1`, and static
   checks with no output.
+
+## Decision 057: Balance process-global resources through explicit ownership boundaries
+
+- Status: adopted and verified during Task 21.
+- Evidence: the previous hotkey path could create a second event tap while
+  installing its run-loop source, AppDelegate had no idempotent shutdown owner
+  for its status item and monitors, and accessibility observers depended on
+  process-global notification/settings sources.
+- Decision: inject each create/add/remove/read boundary, retain every successful
+  resource exactly once, and release it through one idempotent shutdown path.
+  Tests use local sources and counters instead of real status items, login
+  services, accessibility settings, running applications, or event taps.
+- Impact: failure, re-registration, explicit shutdown, repeated shutdown and
+  deinit all have auditable ownership without changing the public product flow.
+- Verification: focused resource suites pass, static scanning finds no forbidden
+  real-system API in tests, and Task 21 review reports Critical/Important/Minor
+  `0/0/0` with verdict Ready.
+
+## Decision 058: Keep one unchanged real FSEvents proof at the host boundary
+
+- Status: adopted and verified during Task 21.
+- Evidence: the UUID-directory FSEvents case cannot start inside the workspace
+  sandbox but passes on the host; all callback, generation and debounce branches
+  are covered deterministically with injected backends. Duplicating the real case
+  would add timing and host-resource exposure without increasing branch evidence.
+- Decision: retain exactly one non-skipped real FSEvents test in the migrated
+  `FileWatcherTests` suite and run it unchanged with controlled host permission.
+  Keep all other watcher lifecycle tests sandbox-safe and deterministic.
+- Impact: host integration remains a release blocker when it genuinely fails,
+  while deterministic unit coverage does not depend on host timing.
+- Verification: the controller's two host focused runs pass `156/156`; the real
+  case completes in `1.069s` and `1.077s`, and the full host suite passes
+  `1064/1064`.
+
+## Decision 059: Bind compatibility layout assertions to the actual clip viewport
+
+- Status: adopted and verified during Task 21.
+- Evidence: the first full suite expected three requested 300pt pages but the
+  legacy vertical scroller reduced the actual clip width to 283pt, producing the
+  correct content width `3 * 283 = 849` instead of 900.
+- Decision: keep production layout unchanged. Configure the legacy scroller
+  explicitly in the regression and derive the expected paged width from the
+  laid-out clip bounds.
+- Impact: the test now verifies the production viewport contract and remains
+  sensitive to real clipping regressions instead of assuming frame and clip are
+  identical.
+- Verification: the original complete run failed `1/1065` at actual 849; the
+  corrected regression and final full host suite pass without a production
+  layout diff.
+
+## Decision 060: Prove observer exact-once cleanup with a controlled concurrency interleaving
+
+- Status: adopted and verified during Task 21 review closure.
+- Evidence: launching many concurrent tasks did not guarantee overlap, so the old
+  remover-before-clear implementation could pass by sequential scheduling.
+- Decision: block the first remover after it records entry, start and await the
+  second `stop()`, then release the first remover. The current implementation
+  atomically takes and clears the token under lock before invoking the remover.
+- Impact: the regression deterministically distinguishes one removal from two
+  without fixed sleep, retry, polling or an enlarged timeout.
+- Verification: current implementation passes `9/9`; temporarily restoring the
+  old order fails the named case with `callCount == 2`; final review is
+  Critical/Important/Minor `0/0/0` and Ready.
+
+## Decision 061: Close Task 21 only on independent latest-HEAD host evidence
+
+- Status: adopted and verified.
+- Evidence: the final test-only concurrency commit followed earlier full-suite
+  evidence, so completion could not rely on results from the prior HEAD.
+- Decision: after the implementer and reviewer gates, independently rerun two
+  host focused passes, one complete host suite, all static policy scans and the
+  residual-process check on `eff903c` before advancing to performance work.
+- Impact: Task 22 starts from a fully green Swift Testing-only baseline with no
+  inherited process or system-side-effect ambiguity.
+- Verification: controller focused runs pass `156/156` twice, full suite passes
+  `1064/1064` in `6.688s`, legacy/system/disabled scans return no matches, the
+  real FSEvents title appears once, and host residual `pgrep` returns no process.
