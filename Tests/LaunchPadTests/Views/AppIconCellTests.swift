@@ -297,6 +297,7 @@ struct AppIconCellTests {
             app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
         )
         cell.configure(item: app, icon: nil)
+        #expect(providerReadCount == 1)
         cell.startJiggling()
 
         #expect(providerReadCount == 2)
