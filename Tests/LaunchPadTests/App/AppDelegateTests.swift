@@ -1005,5 +1005,28 @@ struct AppDelegateTests {
         #expect(reloads == 0)
         #expect(categories == ["scan-batch-failed", "scan-batch-failed"])
     }
+
+    @Test("批 writer 返回失败结果时不刷新并只记录固定分类")
+    func unsuccessfulScanBatchResultKeepsLoadedUIAndLogs() throws {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        var failedResult = ScanSyncResult()
+        failedResult.recordFailure()
+        writer.result = failedResult
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 1), excludedBundleIds: [])
+        let viewController = try makeViewController()
+        _ = viewController.view
+        sut.viewController = viewController
+        var reloads = 0
+        var categories: [String] = []
+        sut.viewControllerReloader = { _ in reloads += 1 }
+        sut.scanFailureLogger = { categories.append($0) }
+
+        sut.performInitialScan()
+
+        #expect(reloads == 0)
+        #expect(categories == ["scan-batch-failed"])
+    }
 }
 #endif

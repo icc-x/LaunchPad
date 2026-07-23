@@ -36,6 +36,10 @@ final class SystemFileEventStream: FileEventStreaming, @unchecked Sendable {
     }
 
     private static let callback: FSEventStreamCallback = { _, context, _, _, _, _ in
+        handleEvents(context: context)
+    }
+
+    static func handleEvents(context: UnsafeMutableRawPointer?) {
         guard let context else { return }
         Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue().onEvents()
     }
@@ -96,6 +100,7 @@ public final class FileWatcher {
     private let debounceInterval: TimeInterval
     private var onChange: (@MainActor @Sendable () -> Void)?
     private var isStarted = false
+    private var generation = 0
 
     public convenience init(debounceInterval: TimeInterval = 2.0) {
         self.init(debounceInterval: debounceInterval, backend: SystemFileEventStream(), scheduler: DispatchQueueScheduler())
@@ -111,23 +116,35 @@ public final class FileWatcher {
     public func start(paths: [String], onChange: @escaping @MainActor @Sendable () -> Void) -> Bool {
         stop()
         guard !paths.isEmpty else { return false }
+        generation &+= 1
+        let activeGeneration = generation
         self.onChange = onChange
         guard backend.start(paths: paths, onEvents: { [weak self] in
-            Task { @MainActor in self?.receiveEvents() }
+            Task { @MainActor in
+                self?.receiveEvents(generation: activeGeneration)
+            }
         }) else {
             self.onChange = nil
+            generation &+= 1
             return false
         }
         isStarted = true
         return true
     }
 
-    private func receiveEvents() {
+    private func receiveEvents(generation: Int) {
+        guard generation == self.generation, isStarted else { return }
         scheduler.cancelPending()
-        scheduler.schedule(after: debounceInterval) { [weak self] in self?.onChange?() }
+        scheduler.schedule(after: debounceInterval) { [weak self] in
+            guard let self,
+                  self.generation == generation,
+                  self.isStarted else { return }
+            self.onChange?()
+        }
     }
 
     public func stop() {
+        generation &+= 1
         scheduler.cancelPending()
         let shouldStopBackend = isStarted
         isStarted = false

@@ -268,11 +268,21 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
                             result: &observed,
                             firstError: &firstError
                         )
-                        try normalizeScanLayout(
-                            database: database,
-                            result: &observed,
-                            firstError: &firstError
-                        )
+                        do {
+                            try normalizeScanLayout(
+                                database: database,
+                                result: &observed,
+                                firstError: &firstError
+                            )
+                        } catch {
+                            if let firstError {
+                                throw ScanBatchWriteFailure(
+                                    result: observed,
+                                    primaryError: firstError
+                                )
+                            }
+                            throw error
+                        }
                     }
 
                     if let firstError {

@@ -123,6 +123,7 @@ struct StorageManagerScanBatchTests {
                 #expect(sqlite3_exec(database, sql, nil, nil, nil) == SQLITE_OK)
             }
         )
+        let before = try storage.persistedLayoutSnapshot()
         let scanned = [app("A", "com.test.a"), app("B", "com.test.b"), app("C", "com.test.c")]
         do {
             _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 3)
@@ -132,7 +133,7 @@ struct StorageManagerScanBatchTests {
             #expect(failure.result.successfulWriteCount == 2)
             #expect(failure.result.failedWriteCount == 1)
         }
-        #expect(try storage.persistedLayoutSnapshot().allItems.isEmpty)
+        #expect(try storage.persistedLayoutSnapshot() == before)
         _ = try storage.synchronizeInstalledApps([scanned[0], scanned[2]], initialPageCapacity: 3)
         #expect(Set(try storage.persistedLayoutSnapshot().allItems.compactMap(\.app?.bundleId)) == ["com.test.a", "com.test.c"])
     }
@@ -186,25 +187,29 @@ struct StorageManagerScanBatchTests {
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("launchpad.sqlite").path
         let script = SQLiteFaultScript()
+        var before: PersistedLayoutSnapshot?
         do {
             let storage = try StorageManager(
                 dbPath: path,
                 schemaSetup: { Schema.setupSchema(db: $0) },
                 faultInjector: script.result(for:)
             )
+            before = try storage.persistedLayoutSnapshot()
             script.failNext(.step(.insertAppMetadata), code: SQLITE_IOERR)
             #expect(throws: ScanBatchWriteFailure.self) {
                 _ = try storage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b")], initialPageCapacity: 2)
             }
         }
         let reopened = try StorageManager(dbPath: path)
-        #expect(try reopened.persistedLayoutSnapshot().allItems.isEmpty)
+        let expectedBefore = try #require(before)
+        #expect(try reopened.persistedLayoutSnapshot() == expectedBefore)
     }
 
     @Test("初始 page 与 app 失败均继续独立写入后整体回滚")
     func initialPageAndAppFailuresContinueThenRollback() throws {
         let pageScript = SQLiteFaultScript()
         let pageStorage = try makeFaultableStorage(pageScript)
+        let pageBefore = try pageStorage.persistedLayoutSnapshot()
         pageScript.fail(.step(.insertItem), onOccurrence: 3, code: SQLITE_IOERR)
         do {
             _ = try pageStorage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b"), app("C", "com.test.c")], initialPageCapacity: 1)
@@ -213,15 +218,16 @@ struct StorageManagerScanBatchTests {
             #expect(failure.result.attemptedWriteCount == 5)
             #expect(failure.result.successfulWriteCount == 4)
         }
-        #expect(try pageStorage.persistedLayoutSnapshot().allItems.isEmpty)
+        #expect(try pageStorage.persistedLayoutSnapshot() == pageBefore)
 
         let appScript = SQLiteFaultScript()
         let appStorage = try makeFaultableStorage(appScript)
+        let appBefore = try appStorage.persistedLayoutSnapshot()
         appScript.fail(.step(.insertAppMetadata), onOccurrence: 2, code: SQLITE_IOERR)
         #expect(throws: ScanBatchWriteFailure.self) {
             _ = try appStorage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b"), app("C", "com.test.c")], initialPageCapacity: 1)
         }
-        #expect(try appStorage.persistedLayoutSnapshot().allItems.isEmpty)
+        #expect(try appStorage.persistedLayoutSnapshot() == appBefore)
     }
 
     @Test("增量包含 new/changed/unchanged/removed，重复 scanned first-wins 且 no-op 不写入")
@@ -257,5 +263,78 @@ struct StorageManagerScanBatchTests {
         #expect(throws: (any Error).self) {
             _ = try valid.insertItem(TestDataFactory.makePageItem(type: .app, parentId: page, app: TestDataFactory.makeAppInfo(bundleId: "com.test.a")))
         }
+    }
+
+    @Test("增量写入首错优先于 normalization 的后续读取错误")
+    func incrementalFirstWriteFailureWinsOverNormalizationReadFailure() throws {
+        let script = SQLiteFaultScript()
+        let storage = try makeFaultableStorage(script)
+        _ = try storage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b")], initialPageCapacity: 28)
+        let before = try storage.persistedLayoutSnapshot()
+        script.failNext(.step(.updateAppMetadata), code: SQLITE_IOERR)
+        script.fail(.prepare(.fetchAllItems), onOccurrence: 2, code: SQLITE_IOERR)
+
+        do {
+            _ = try storage.synchronizeInstalledApps([app("A changed", "com.test.a", "/A2.app"), app("B", "com.test.b")], initialPageCapacity: 28)
+            Issue.record("expected ScanBatchWriteFailure")
+        } catch let failure as ScanBatchWriteFailure {
+            #expect(failure.primaryError as? StorageError == .updateFailed)
+        }
+        #expect(try storage.persistedLayoutSnapshot() == before)
+    }
+
+    @Test("同页 metadata 失败后继续后项并完整回滚")
+    func samePageMetadataFailureContinuesAndRollsBack() throws {
+        let script = SQLiteFaultScript()
+        let storage = try makeFaultableStorage(script)
+        let before = try storage.persistedLayoutSnapshot()
+        script.fail(.step(.insertAppMetadata), onOccurrence: 2, code: SQLITE_IOERR)
+
+        do {
+            _ = try storage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b"), app("C", "com.test.c")], initialPageCapacity: 3)
+            Issue.record("expected ScanBatchWriteFailure")
+        } catch let failure as ScanBatchWriteFailure {
+            #expect(failure.result.attemptedWriteCount == 4)
+            #expect(failure.result.successfulWriteCount == 3)
+            #expect(failure.result.failedWriteCount == 1)
+        }
+        #expect(try storage.persistedLayoutSnapshot() == before)
+    }
+
+    @Test("增量删除多页后规范为稠密单页并保留唯一空页")
+    func incrementalDeletionNormalizesPagesAndPreservesOnlyEmptyPage() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        let page1 = try storage.insertItem(TestDataFactory.makePageItem(type: .page, ordering: 0))
+        let page2 = try storage.insertItem(TestDataFactory.makePageItem(type: .page, ordering: 1))
+        let page3 = try storage.insertItem(TestDataFactory.makePageItem(type: .page, ordering: 2))
+        func insert(_ scanned: ScannedApp, parentID: Int64, ordering: Int) throws {
+            _ = try storage.insertItem(TestDataFactory.makePageItem(
+                type: .app,
+                ordering: ordering,
+                parentId: parentID,
+                app: TestDataFactory.makeAppInfo(
+                    title: scanned.name,
+                    bundleId: scanned.bundleId,
+                    path: scanned.path
+                )
+            ))
+        }
+        try insert(app("A", "com.test.a"), parentID: page1, ordering: 0)
+        try insert(app("B", "com.test.b"), parentID: page2, ordering: 0)
+        try insert(app("C", "com.test.c"), parentID: page2, ordering: 1)
+        try insert(app("D", "com.test.d"), parentID: page3, ordering: 0)
+
+        _ = try storage.synchronizeInstalledApps([app("C", "com.test.c")], initialPageCapacity: 1)
+        var snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.pages.count == 1)
+        #expect(snapshot.pages.map(\.ordering) == [0])
+        #expect(snapshot.pageChildren[snapshot.pages[0].id]?.map(\.app?.bundleId) == ["com.test.c"])
+        #expect(snapshot.pageChildren[snapshot.pages[0].id]?.map(\.ordering) == [0])
+
+        _ = try storage.synchronizeInstalledApps([], initialPageCapacity: 1)
+        snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.pages.count == 1)
+        #expect(snapshot.pages[0].ordering == 0)
+        #expect(snapshot.pageChildren[snapshot.pages[0].id] == [])
     }
 }
