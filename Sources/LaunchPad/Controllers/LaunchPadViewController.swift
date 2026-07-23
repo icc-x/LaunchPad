@@ -98,14 +98,23 @@ public class LaunchPadViewController: NSViewController {
     /// 抖动状态注入点：可见 cell 的 indexPath 列表（默认从 collectionView 取，测试注入以驱动循环体）
     var visibleJiggleIndexPathsProvider: (() -> [IndexPath])?
 
-    /// 抖动状态注入点：指定 indexPath 对应的 AppIconCell（默认从 collectionView 取，测试注入覆盖 startJiggling/stopJiggling）
-    var jiggleCellProvider: ((IndexPath) -> AppIconCell?)?
+    /// 抖动状态注入点：指定 indexPath 对应的 app/folder cell。
+    var jiggleCellProvider: ((IndexPath) -> NSCollectionViewItem?)?
 
     /// 启动应用 URL 解析器（默认走 NSWorkspace，测试注入 fake URL 避免真实启动应用）
     var bundleURLResolver: (String) -> URL? = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
 
     /// 窗口关闭回调 — 由 AppDelegate/WindowController 注入，ESC 关闭窗口时调用
     public var onClose: (() -> Void)?
+
+    var confirmFolderDeletion: (PageItem) -> Bool = { _ in
+        let alert = NSAlert()
+        alert.messageText = "删除文件夹？"
+        alert.informativeText = "文件夹中的应用会移回主网格。"
+        alert.addButton(withTitle: "删除")
+        alert.addButton(withTitle: "取消")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
 
     var viewportSizeProvider: (() -> CGSize)?
     var projectedLayoutDidReload: (() -> Void)?
@@ -387,6 +396,20 @@ public class LaunchPadViewController: NSViewController {
         folderOverlay.onClosed = { [weak self] in
             self?.folderOverlay.isHidden = true
         }
+        folderOverlay.dragController = dragController
+        folderOverlay.topLevelPlacementResolver = { [weak self] overlayPoint in
+            guard let self else { return nil }
+            let windowPoint = self.folderOverlay.convert(overlayPoint, to: nil)
+            let gridPoint = self.collectionView.convert(windowPoint, from: nil)
+            return self.gridInteractionCoordinator?
+                .topLevelPlacement(atLocalPoint: gridPoint)
+        }
+        folderOverlay.onDropRequested = { [weak self] session, destination in
+            self?.handleFolderDrop(
+                session: session,
+                destination: destination
+            ) ?? false
+        }
     }
 
     private func setupGestures() {
@@ -425,6 +448,61 @@ public class LaunchPadViewController: NSViewController {
         }
     }
 
+    func makeFolderIntent(
+        session: DragSession,
+        destination: FolderDropDestination
+    ) -> LayoutDropIntent? {
+        guard session.sourceKind == .folderChild,
+              session.itemType == .app,
+              destination.anchorItemID != session.itemID else { return nil }
+        switch destination {
+        case .inside(let placement):
+            return .reorderFolderItem(
+                itemID: session.itemID,
+                folderID: session.sourceParentID,
+                placement: placement
+            )
+        case .outside(let placement):
+            return .removeFromFolder(
+                itemID: session.itemID,
+                folderID: session.sourceParentID,
+                placement: placement
+            )
+        }
+    }
+
+    @discardableResult
+    func handleFolderDrop(
+        session: DragSession,
+        destination: FolderDropDestination
+    ) -> Bool {
+        guard let intent = makeFolderIntent(
+            session: session,
+            destination: destination
+        ) else {
+            dragController.cancelDrag()
+            return false
+        }
+
+        let succeeded = applyDropIntent(intent)
+        if let folder = findItem(byId: session.sourceParentID),
+           let children = try? storage.fetchAllItems(parentId: folder.id) {
+            folderOverlay.reloadChildren(children)
+        } else {
+            folderOverlay.closeFolder()
+        }
+        return succeeded
+    }
+
+    private func findItem(byId itemID: Int64) -> PageItem? {
+        for items in itemsByPage.values {
+            if let item = items.first(where: { $0.id == itemID }) {
+                return item
+            }
+        }
+        return nil
+    }
+
     private var isSearchActive: Bool {
         if case .search = keyboardNavigator.mode { return true }
         return !currentSearchQuery.isEmpty
@@ -432,6 +510,11 @@ public class LaunchPadViewController: NSViewController {
 
     private func synchronizeDragAvailability() {
         let enabled = !isSearchActive
+        if !enabled,
+           gridInteractionCoordinator?.isDragEnabled == true
+            || folderOverlay?.isDragEnabled == true {
+            cancelActiveDrag()
+        }
         if gridInteractionCoordinator?.isDragEnabled != enabled {
             gridInteractionCoordinator?.isDragEnabled = enabled
         }
@@ -473,9 +556,18 @@ public class LaunchPadViewController: NSViewController {
         keyboardNavigator.mode = jiggling ? .edit : .idle
         guard isViewLoaded else { return }
         for indexPath in visibleJiggleIndexPathsProvider?() ?? Array(collectionView.indexPathsForVisibleItems()) {
-            guard let cell = jiggleCellProvider?(indexPath) ?? (collectionView.item(at: indexPath) as? AppIconCell) else { continue }
-            if jiggling { cell.startJiggling() } else { cell.stopJiggling() }
+            guard let cell = jiggleCellProvider?(indexPath)
+                    ?? collectionView.item(at: indexPath) else { continue }
+            if let appCell = cell as? AppIconCell {
+                if jiggling { appCell.startJiggling() } else { appCell.stopJiggling() }
+            } else if let folderCell = cell as? FolderCell {
+                folderCell.setEditing(jiggling)
+            }
         }
+    }
+
+    func cancelActiveDrag() {
+        dragController.cancelDrag()
     }
 
     // MARK: - Data Loading
@@ -661,15 +753,21 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Item Deletion (Edit Mode)
 
     func handleItemDelete(_ item: PageItem) {
-        do {
-            try storage.deleteItem(id: item.id)
-            // 退出编辑模式
-            dragController.handleCancel()
-            updateJiggleState()
-            // 重新加载数据
-            loadData()
-        } catch {
-            NSLog("[LaunchPadViewController] Failed to delete item: \(error)")
+        switch item.type {
+        case .group:
+            guard confirmFolderDeletion(item) else { return }
+            _ = applyDropIntent(.deleteFolder(folderID: item.id))
+        case .app:
+            do {
+                try storage.deleteItem(id: item.id)
+                dragController.handleCancel()
+                updateJiggleState()
+                loadData()
+            } catch {
+                NSLog("[LaunchPadViewController] Failed to delete item")
+            }
+        case .page:
+            return
         }
     }
 
@@ -794,7 +892,7 @@ public class LaunchPadViewController: NSViewController {
     private func executeAction(_ action: KeyboardNavigator.Action) {
         switch action {
         case .closeWindow:
-            dragController.handleCancel()
+            cancelActiveDrag()
             onClose?()
         case .clearSearch:
             guard isViewLoaded else { return }
@@ -802,7 +900,7 @@ public class LaunchPadViewController: NSViewController {
             searchDebouncer.cancelPending()
             handleSearch(query: "")
         case .exitEditMode:
-            dragController.handleCancel()
+            cancelActiveDrag()
             updateJiggleState()
         case .enterSearchMode(let initialQuery):
             synchronizeDragAvailability()

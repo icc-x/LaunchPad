@@ -328,6 +328,9 @@ public class AppGridCollectionView: NSCollectionView {
         cell.onRenamed = { [weak self] newTitle in
             self?.onFolderRenamed?(item, newTitle)
         }
+        cell.onDelete = { [weak self] in
+            self?.onItemDelete?(item)
+        }
     }
 
     // MARK: - Accessibility

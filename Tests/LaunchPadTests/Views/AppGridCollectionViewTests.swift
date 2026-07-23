@@ -507,6 +507,34 @@ struct AppGridCollectionViewTests {
         #expect((renamed?.1) == ("Renamed"))
     }
 
+    @Test("group cell 删除 closure 转发稳定 folder item")
+    func configureCellGroupItemForwardsDeleteClosure() throws {
+        let fixture = makeSUT()
+        let collectionView = fixture.collectionView
+        var deleted: PageItem?
+        collectionView.onItemDelete = { deleted = $0 }
+        let group = TestDataFactory.makePageItem(
+            id: 2,
+            type: .group,
+            ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder")
+        )
+        collectionView.reload(
+            pages: [[group]],
+            searchResults: nil,
+            searchQuery: nil
+        )
+        let cell = try #require(collectionView.diffableDataSource.collectionView(
+            collectionView,
+            itemForRepresentedObjectAt: IndexPath(item: 0, section: 0)
+        ) as? FolderCell)
+
+        cell.onDelete?()
+
+        #expect(deleted?.id == group.id)
+        #expect(deleted?.type == .group)
+    }
+
     // MARK: - Drag image (extracted)
 
     @Test func makeDragImage_returns64x64Image() {

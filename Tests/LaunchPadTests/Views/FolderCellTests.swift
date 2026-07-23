@@ -24,7 +24,7 @@ struct FolderCellTests {
 
     @Test func init_loadsView() {
         let cell = makeSUT()
-        #expect(cell.view.subviews.count == 2)
+        #expect(cell.view.subviews.count == 3)
         #expect(cell.view.accessibilityRole() == .button)
     }
 
@@ -250,6 +250,47 @@ struct FolderCellTests {
                 #expect(!frames[first].intersects(frames[second]))
             }
         }
+    }
+
+    @Test("FolderCell edit mode 显示可用删除按钮")
+    func folderCellEditingShowsWorkingDeleteButton() {
+        let cell = makeSUT()
+        var deleteCount = 0
+        cell.onDelete = { deleteCount += 1 }
+
+        cell.setEditing(true)
+        #expect(cell.isEditing)
+        #expect(cell.isDeleteControlVisible)
+        cell.performDeleteForTesting()
+        #expect(deleteCount == 1)
+
+        cell.setEditing(false)
+        #expect(!cell.isEditing)
+        #expect(!cell.isDeleteControlVisible)
+    }
+
+    @Test("FolderCell 非编辑态测试入口仍精确转发 callback")
+    func folderCellDeleteCallbackIsIndependentOfVisibility() {
+        let cell = makeSUT()
+        var deleteCount = 0
+        cell.onDelete = { deleteCount += 1 }
+
+        #expect(!cell.isDeleteControlVisible)
+        cell.performDeleteForTesting()
+
+        #expect(deleteCount == 1)
+    }
+
+    @Test("FolderCell reuse 清理编辑与删除可见状态")
+    func folderCellReuseResetsEditingState() {
+        let cell = makeSUT()
+        cell.setEditing(true)
+        #expect(cell.isDeleteControlVisible)
+
+        cell.prepareForReuse()
+
+        #expect(!cell.isEditing)
+        #expect(!cell.isDeleteControlVisible)
     }
 }
 #endif

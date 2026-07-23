@@ -15,6 +15,24 @@ struct FolderOverlayViewPagingTests {
         )
     }
 
+    private func pagingFolder() -> PageItem {
+        TestDataFactory.makePageItem(
+            id: 50,
+            type: .group,
+            parentId: 1,
+            group: TestDataFactory.makeGroupInfo(id: 50, title: "Folder")
+        )
+    }
+
+    private func sectionCounts(_ overlay: FolderOverlayView) -> [Int] {
+        (0..<overlay.numberOfSections(in: overlay.folderCollectionView)).map {
+            overlay.collectionView(
+                overlay.folderCollectionView,
+                numberOfItemsInSection: $0
+            )
+        }
+    }
+
     // MARK: - Page Splitting Tests
 
     @Test
@@ -121,6 +139,151 @@ struct FolderOverlayViewPagingTests {
         let pages = FolderOverlayView.paginateItems(items, pageSize: 35)
         // With 2 pages, page control should be visible
         #expect(pages.count == 2)
+    }
+
+    @Test("folder metrics 使用实际宽高并封顶 35")
+    func metricsUseActualWidthHeightAndCapAtThirtyFive() {
+        let one = FolderOverlayView.folderGridMetrics(
+            forViewportSize: CGSize(width: 96, height: 96)
+        )
+        #expect(one.columns == 1)
+        #expect(one.rows == 1)
+        #expect(one.pageCapacity == 1)
+        #expect(one.horizontalInset == 12)
+
+        let medium = FolderOverlayView.folderGridMetrics(
+            forViewportSize: CGSize(width: 496, height: 360)
+        )
+        #expect(medium.columns == 6)
+        #expect(medium.rows == 4)
+        #expect(medium.pageCapacity == 24)
+        #expect(medium.horizontalInset == 12)
+        #expect(
+            FolderOverlayView.folderGridMetrics(
+                forViewportSize: CGSize(
+                    width: CGFloat(496).nextDown,
+                    height: 360
+                )
+            ).pageCapacity == 20
+        )
+        #expect(
+            FolderOverlayView.folderGridMetrics(
+                forViewportSize: CGSize(
+                    width: 496,
+                    height: CGFloat(360).nextDown
+                )
+            ).pageCapacity == 18
+        )
+
+        let capped = FolderOverlayView.folderGridMetrics(
+            forViewportSize: CGSize(width: 800, height: 624)
+        )
+        #expect(capped.columns == 5)
+        #expect(capped.rows == 7)
+        #expect(capped.pageCapacity == 35)
+        #expect(capped.horizontalInset == 204)
+
+        let invalid = FolderOverlayView.folderGridMetrics(
+            forViewportSize: CGSize(
+                width: CGFloat.nan,
+                height: CGFloat.infinity
+            )
+        )
+        #expect(invalid.columns == 1)
+        #expect(invalid.rows == 1)
+        #expect(invalid.pageCapacity == 1)
+        #expect(invalid.horizontalInset.isFinite)
+    }
+
+    @Test("open 使用实际 folder viewport 容量")
+    func openUsesActualFolderViewportCapacity() {
+        let pagingOverlay = makePagingOverlay()
+        pagingOverlay.folderViewportSizeProvider = {
+            CGSize(width: 500, height: 400)
+        }
+        pagingOverlay.openFolder(
+            item: pagingFolder(),
+            childItems: TestDataFactory.makeAppItems(count: 41),
+            iconCache: nil
+        )
+
+        #expect(pagingOverlay.currentPageCapacity == 24)
+        #expect(sectionCounts(pagingOverlay) == [24, 17])
+        #expect(pagingOverlay.currentVisualPageIndex == 0)
+    }
+
+    @Test("reload 重新分页并夹紧当前页")
+    func reloadRepaginatesAndClampsCurrentPage() {
+        let pagingOverlay = makePagingOverlay()
+        pagingOverlay.folderViewportSizeProvider = {
+            CGSize(width: 500, height: 400)
+        }
+        pagingOverlay.openFolder(
+            item: pagingFolder(),
+            childItems: TestDataFactory.makeAppItems(count: 60),
+            iconCache: nil
+        )
+        pagingOverlay.folderScrollView.frame = NSRect(
+            x: 0, y: 0, width: 500, height: 400
+        )
+        pagingOverlay.folderPageControl.onDotSelected?(2)
+        #expect(pagingOverlay.currentVisualPageIndex == 2)
+
+        pagingOverlay.reloadChildren(
+            TestDataFactory.makeAppItems(count: 25)
+        )
+
+        #expect(pagingOverlay.currentPageCapacity == 24)
+        #expect(sectionCounts(pagingOverlay) == [24, 1])
+        #expect(pagingOverlay.currentVisualPageIndex == 1)
+        #expect(pagingOverlay.emptyPlacement(inVisualPage: 1)
+            == .afterItem(itemID: 25))
+    }
+
+    @Test("resize 重新分页并夹紧当前页")
+    func resizeRepaginatesAndClampsCurrentPage() {
+        let pagingOverlay = makePagingOverlay()
+        var viewport = CGSize(width: 500, height: 400)
+        pagingOverlay.folderViewportSizeProvider = { viewport }
+        pagingOverlay.openFolder(
+            item: pagingFolder(),
+            childItems: TestDataFactory.makeAppItems(count: 60),
+            iconCache: nil
+        )
+        pagingOverlay.folderScrollView.frame = NSRect(
+            x: 0, y: 0, width: 500, height: 400
+        )
+        pagingOverlay.folderPageControl.onDotSelected?(2)
+        #expect(pagingOverlay.currentVisualPageIndex == 2)
+
+        viewport = CGSize(width: 500, height: 624)
+        pagingOverlay.layout()
+
+        #expect(pagingOverlay.currentPageCapacity == 35)
+        #expect(sectionCounts(pagingOverlay) == [35, 25])
+        #expect(pagingOverlay.currentVisualPageIndex == 1)
+        #expect(pagingOverlay.emptyPlacement(inVisualPage: 1)
+            == .afterItem(itemID: 60))
+    }
+
+    @Test("reload 按 ordering 与 id 稳定排序且真空页无 anchor")
+    func reloadSortsByOrderingAndIDAndEmptyHasNoAnchor() {
+        let overlay = makePagingOverlay()
+        overlay.folderViewportSizeProvider = { CGSize(width: 176, height: 96) }
+        let items = [
+            TestDataFactory.makePageItem(id: 3, type: .app, ordering: 1),
+            TestDataFactory.makePageItem(id: 2, type: .app, ordering: 0),
+            TestDataFactory.makePageItem(id: 1, type: .app, ordering: 0),
+        ]
+
+        overlay.openFolder(item: pagingFolder(), childItems: items, iconCache: nil)
+        #expect(overlay.currentPageCapacity == 2)
+        #expect(sectionCounts(overlay) == [2, 1])
+        #expect(overlay.emptyPlacement(inVisualPage: 0) == .afterItem(itemID: 2))
+        #expect(overlay.emptyPlacement(inVisualPage: 1) == .afterItem(itemID: 3))
+        overlay.reloadChildren([])
+        #expect(overlay.emptyPlacement(inVisualPage: 0) == nil)
+        #expect(overlay.currentVisualPageIndex == 0)
     }
 }
 #endif

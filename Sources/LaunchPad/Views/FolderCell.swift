@@ -11,12 +11,18 @@ public class FolderCell: NSCollectionViewItem {
 
     let titleLabel = NSTextField(labelWithString: "")
     private let thumbnailGrid = NSView()
+    private let deleteButton = NSButton()
     private var thumbnailImageViews: [NSImageView] = []
     let containerView = NSView()
     let frostedBackground = NSVisualEffectView()
 
     /// 文件夹重命名回调
     public var onRenamed: ((String) -> Void)?
+
+    /// 编辑模式下点击删除控件时的回调。
+    public var onDelete: (() -> Void)?
+    public private(set) var isEditing = false
+    var isDeleteControlVisible: Bool { deleteButton.alphaValue > 0 }
 
     /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduceTransparency 回退分支。
     internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
@@ -118,8 +124,29 @@ public class FolderCell: NSCollectionViewItem {
         titleLabel.addGestureRecognizer(doubleClick)
 
         setupThumbnailGrid()
+        setupDeleteButton()
 
         view.setAccessibilityRole(.button)
+    }
+
+    private func setupDeleteButton() {
+        deleteButton.image = NSImage(
+            systemSymbolName: "xmark.circle.fill",
+            accessibilityDescription: "Delete folder"
+        )
+        deleteButton.isBordered = false
+        deleteButton.contentTintColor = .systemRed
+        deleteButton.target = self
+        deleteButton.action = #selector(deleteFolderClicked)
+        deleteButton.alphaValue = 0
+        deleteButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(deleteButton)
+        NSLayoutConstraint.activate([
+            deleteButton.topAnchor.constraint(equalTo: view.topAnchor, constant: 2),
+            deleteButton.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 2),
+            deleteButton.widthAnchor.constraint(equalToConstant: 20),
+            deleteButton.heightAnchor.constraint(equalToConstant: 20),
+        ])
     }
 
     private func setupThumbnailGrid() {
@@ -212,9 +239,23 @@ public class FolderCell: NSCollectionViewItem {
 
     override public func prepareForReuse() {
         super.prepareForReuse()
+        setEditing(false)
         titleLabel.stringValue = ""
         titleLabel.isEditable = false
         thumbnailImageViews.forEach { $0.image = nil }
+    }
+
+    public func setEditing(_ editing: Bool) {
+        isEditing = editing
+        deleteButton.alphaValue = editing ? 1 : 0
+    }
+
+    @objc private func deleteFolderClicked() {
+        onDelete?()
+    }
+
+    func performDeleteForTesting() {
+        deleteFolderClicked()
     }
 
     // MARK: - 双击编辑

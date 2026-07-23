@@ -166,6 +166,63 @@ struct LaunchPadViewControllerTests {
         )
     }
 
+    private func makeFolderChildSession(
+        itemID: Int64 = 10,
+        folderID: Int64 = 50,
+        itemType: ItemType = .app,
+        sourceKind: DragSourceKind = .folderChild
+    ) -> DragSession {
+        DragSession(
+            itemID: itemID,
+            itemUUID: "00000000-0000-0000-0000-\(String(format: "%012lld", itemID))",
+            itemType: itemType,
+            sourceKind: sourceKind,
+            sourceParentID: folderID,
+            sourceVisualIndex: 0
+        )
+    }
+
+    private func makeFolder(id: Int64 = 50, parentID: Int64 = 1) -> PageItem {
+        TestDataFactory.makePageItem(
+            id: id,
+            uuid: "10000000-0000-0000-0000-\(String(format: "%012lld", id))",
+            type: .group,
+            ordering: 0,
+            parentId: parentID,
+            group: TestDataFactory.makeGroupInfo(id: id, title: "Folder \(id)")
+        )
+    }
+
+    private func makeFolderChild(id: Int64, ordering: Int) -> PageItem {
+        TestDataFactory.makePageItem(
+            id: id,
+            uuid: "00000000-0000-0000-0000-\(String(format: "%012lld", id))",
+            type: .app,
+            ordering: ordering,
+            parentId: 50,
+            app: TestDataFactory.makeAppInfo(id: id, title: "A\(id)")
+        )
+    }
+
+    private func makeOpenedFolderSUT(
+        mutator: MockLayoutMutator,
+        children: [PageItem]
+    ) -> (LaunchPadViewController, MockDataStore, PageItem) {
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let folder = makeFolder()
+        storage.pages = [page]
+        storage.childrenByPage = [1: [folder], 50: children]
+        _ = sut.view
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        sut.folderOverlay.folderViewportSizeProvider = {
+            CGSize(width: 800, height: 624)
+        }
+        sut.folderOverlay.closeFolderCompletionRunner = { $0() }
+        sut.openFolder(folder)
+        return (sut, storage, folder)
+    }
+
     @Test("全部 grid source 与 destination 映射稳定 intent 或明确拒绝")
     func gridSourceAndDestinationMappingIsExhaustive() {
         let (sut, _, _) = makeSUT()
@@ -2452,6 +2509,326 @@ struct LaunchPadViewControllerTests {
         }))
         _ = sut.selectItem(id: target.id)
         #expect(grid.currentVisualPageIndex == sut.selectedItemIndexPath?.section)
+    }
+
+    @Test("folder inside/outside 分别映射 reorder/remove intent 且非法 source 明确拒绝")
+    func folderIntentMappingIsExhaustive() {
+        let (sut, _, _) = makeSUT(layoutMutator: MockLayoutMutator())
+        let child = makeFolderChildSession(itemID: 10, folderID: 50)
+        #expect(sut.makeFolderIntent(
+            session: child,
+            destination: .inside(.beforeItem(itemID: 11))
+        ) == .reorderFolderItem(
+            itemID: 10,
+            folderID: 50,
+            placement: .beforeItem(itemID: 11)
+        ))
+        #expect(sut.makeFolderIntent(
+            session: child,
+            destination: .outside(.afterItem(itemID: 99))
+        ) == .removeFromFolder(
+            itemID: 10,
+            folderID: 50,
+            placement: .afterItem(itemID: 99)
+        ))
+        #expect(sut.makeFolderIntent(
+            session: child,
+            destination: .inside(.beforeItem(itemID: 10))
+        ) == nil)
+        #expect(sut.makeFolderIntent(
+            session: makeFolderChildSession(itemType: .group),
+            destination: .inside(.beforeItem(itemID: 11))
+        ) == nil)
+        #expect(sut.makeFolderIntent(
+            session: makeFolderChildSession(sourceKind: .topLevel),
+            destination: .inside(.beforeItem(itemID: 11))
+        ) == nil)
+    }
+
+    @Test("folder exterior resolver 经 overlay、window 转为 grid local 坐标")
+    func folderExteriorResolverConvertsThroughWindowIntoGridCoordinates() throws {
+        let apps = [
+            TestDataFactory.makePageItem(
+                id: 1,
+                uuid: "00000000-0000-0000-0000-000000000001",
+                type: .app,
+                ordering: 0,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 1, title: "A1")
+            ),
+            TestDataFactory.makePageItem(
+                id: 2,
+                uuid: "00000000-0000-0000-0000-000000000002",
+                type: .app,
+                ordering: 1,
+                parentId: 1,
+                app: TestDataFactory.makeAppInfo(id: 2, title: "A2")
+            ),
+        ]
+        let (sut, _, storage) = makeSUT()
+        loadViewWithData(sut, storage: storage, apps: apps)
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
+            styleMask: [],
+            backing: .buffered,
+            defer: false
+        )
+        let host = NSView(frame: window.contentView?.bounds ?? .zero)
+        window.contentView = host
+        sut.view.frame = NSRect(x: 130, y: 90, width: 1000, height: 700)
+        host.addSubview(sut.view)
+        layout(sut, viewportSize: CGSize(width: 1000, height: 620))
+        sut.view.layoutSubtreeIfNeeded()
+
+        let grid = try #require(extractCollectionView(from: sut))
+        let targetPath = try #require(
+            grid.diffableDataSource.indexPath(for: apps[1])
+        )
+        grid.collectionViewLayout?.prepare()
+        let targetFrame = try #require(grid.layoutFrame(at: targetPath))
+        let expectedGridPoint = NSPoint(
+            x: targetFrame.minX + 1,
+            y: targetFrame.midY
+        )
+        var capturedGridPoint: NSPoint?
+        grid.indexPathResolver = { point in
+            capturedGridPoint = point
+            return targetPath
+        }
+
+        let windowPoint = grid.convert(expectedGridPoint, to: nil)
+        let overlayPoint = sut.folderOverlay.convert(windowPoint, from: nil)
+        let overlayWindowOrigin = sut.folderOverlay.convert(NSPoint.zero, to: nil)
+        let gridWindowOrigin = grid.convert(NSPoint.zero, to: nil)
+        #expect(overlayWindowOrigin != NSPoint.zero)
+        #expect(gridWindowOrigin != NSPoint.zero)
+        #expect(overlayWindowOrigin != gridWindowOrigin)
+
+        let placement = sut.folderOverlay.topLevelPlacementResolver?(overlayPoint)
+
+        #expect(placement == .beforeItem(itemID: 2))
+        let resolvedPoint = try #require(capturedGridPoint)
+        #expect(abs(resolvedPoint.x - expectedGridPoint.x) <= 0.001)
+        #expect(abs(resolvedPoint.y - expectedGridPoint.y) <= 0.001)
+    }
+
+    @Test("folder inner reorder 成功后只写一次并重载 remaining children")
+    func folderReorderSuccessReloadsRemainingChildrenOnce() {
+        let mutator = MockLayoutMutator()
+        let (sut, storage, _) = makeOpenedFolderSUT(
+            mutator: mutator,
+            children: [
+                makeFolderChild(id: 11, ordering: 0),
+                makeFolderChild(id: 10, ordering: 1),
+            ]
+        )
+        let readsBefore = storage.fetchAllItemsCallCount
+
+        let succeeded = sut.handleFolderDrop(
+            session: makeFolderChildSession(),
+            destination: .inside(.afterItem(itemID: 11))
+        )
+
+        #expect(succeeded)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.attemptedIntents == [
+            .reorderFolderItem(
+                itemID: 10,
+                folderID: 50,
+                placement: .afterItem(itemID: 11)
+            ),
+        ])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 3)
+        #expect(sut.folderOverlay.currentFolderID == 50)
+        #expect(sut.folderOverlay.collectionView(
+            sut.folderOverlay.folderCollectionView,
+            numberOfItemsInSection: 0
+        ) == 2)
+        #expect(storage.insertedItems.isEmpty)
+        #expect(storage.updatedItems.isEmpty)
+        #expect(storage.deletedIds.isEmpty)
+    }
+
+    @Test("folder drag-out auto-dissolve 后关闭 overlay 且只有一次 mutation")
+    func folderDragOutAutoDissolveClosesOverlay() {
+        let mutator = MockLayoutMutator()
+        let (sut, storage, _) = makeOpenedFolderSUT(
+            mutator: mutator,
+            children: [makeFolderChild(id: 10, ordering: 0)]
+        )
+        mutator.eventRecorder = { event in
+            if event == "apply-return" {
+                storage.childrenByPage[1] = []
+                storage.childrenByPage[50] = []
+            }
+        }
+
+        let succeeded = sut.handleFolderDrop(
+            session: makeFolderChildSession(),
+            destination: .outside(.afterItem(itemID: 99))
+        )
+
+        #expect(succeeded)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.attemptedIntents == [
+            .removeFromFolder(
+                itemID: 10,
+                folderID: 50,
+                placement: .afterItem(itemID: 99)
+            ),
+        ])
+        #expect(sut.folderOverlay.currentFolderID == nil)
+        #expect(sut.folderOverlay.isHidden)
+        #expect(storage.insertedItems.isEmpty)
+        #expect(storage.updatedItems.isEmpty)
+        #expect(storage.deletedIds.isEmpty)
+    }
+
+    @Test("folder mutation 失败后重载原 children、返回 false 且显示固定消息")
+    func folderMutationFailureReloadsOriginalChildrenAndReturnsFalse() {
+        let mutator = MockLayoutMutator()
+        mutator.applyError = SensitiveError(description: "folder-sensitive-error")
+        let (sut, storage, _) = makeOpenedFolderSUT(
+            mutator: mutator,
+            children: [
+                makeFolderChild(id: 10, ordering: 0),
+                makeFolderChild(id: 11, ordering: 1),
+            ]
+        )
+
+        let succeeded = sut.handleFolderDrop(
+            session: makeFolderChildSession(),
+            destination: .inside(.afterItem(itemID: 11))
+        )
+
+        #expect(!succeeded)
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.appliedIntents.isEmpty)
+        #expect(sut.folderOverlay.currentFolderID == 50)
+        #expect(sut.folderOverlay.collectionView(
+            sut.folderOverlay.folderCollectionView,
+            numberOfItemsInSection: 0
+        ) == 2)
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
+        #expect(storage.insertedItems.isEmpty)
+        #expect(storage.updatedItems.isEmpty)
+        #expect(storage.deletedIds.isEmpty)
+    }
+
+    @Test("文件夹删除取消时零 mutation，确认后只提交安全删除 intent")
+    func folderDeleteRequiresConfirmation() {
+        let mutator = MockLayoutMutator()
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        let folder = makeFolder(id: 50)
+
+        sut.confirmFolderDeletion = { _ in false }
+        sut.handleItemDelete(folder)
+        #expect(mutator.applyAttemptCount == 0)
+        #expect(storage.deletedIds.isEmpty)
+
+        sut.confirmFolderDeletion = { _ in true }
+        sut.handleItemDelete(folder)
+        #expect(mutator.attemptedIntents == [.deleteFolder(folderID: 50)])
+        #expect(storage.deletedIds.isEmpty)
+    }
+
+    @Test("folder 删除 mutation failure 只走统一错误反馈")
+    func folderDeleteFailureUsesUnifiedWriterFeedback() {
+        let mutator = MockLayoutMutator()
+        mutator.applyError = SensitiveError(description: "delete-folder-sensitive")
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        sut.confirmFolderDeletion = { _ in true }
+
+        sut.handleItemDelete(makeFolder())
+
+        #expect(mutator.applyAttemptCount == 1)
+        #expect(mutator.appliedIntents.isEmpty)
+        #expect(sut.transientMessageView.message == "无法更新布局，请重试")
+        #expect(storage.deletedIds.isEmpty)
+    }
+
+    @Test("page 删除严格 no-op 且 app 删除仍保留原 writer")
+    func pageDeleteIsNoOpAndAppDeleteRemainsUnchanged() {
+        let mutator = MockLayoutMutator()
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let app = makeFolderChild(id: 10, ordering: 0)
+
+        sut.handleItemDelete(page)
+        #expect(mutator.applyAttemptCount == 0)
+        #expect(storage.deletedIds.isEmpty)
+
+        sut.handleItemDelete(app)
+        #expect(mutator.applyAttemptCount == 0)
+        #expect(storage.deletedIds == [10])
+    }
+
+    @Test("folder cell 随 edit mode 显隐且 app cell 行为保持")
+    func updateJiggleStateSupportsAppFolderAndMissingCells() {
+        let scheduler = MockScheduler()
+        let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
+        _ = sut.view
+        let appCell = AppIconCell()
+        let folderCell = FolderCell()
+        _ = appCell.view
+        _ = folderCell.view
+        let paths = [
+            IndexPath(item: 0, section: 0),
+            IndexPath(item: 1, section: 0),
+            IndexPath(item: 2, section: 0),
+        ]
+        sut.visibleJiggleIndexPathsProvider = { paths }
+        sut.jiggleCellProvider = { path in
+            switch path.item {
+            case 0: return appCell
+            case 1: return folderCell
+            default: return nil
+            }
+        }
+
+        dragController.handlePressBegan(at: .zero)
+        scheduler.advance(by: 0.5)
+        sut.updateJiggleState()
+
+        #expect(dragController.state == .jiggling)
+        #expect(folderCell.isEditing)
+        #expect(folderCell.isDeleteControlVisible)
+
+        dragController.handleCancel()
+        sut.updateJiggleState()
+        #expect(!folderCell.isEditing)
+        #expect(!folderCell.isDeleteControlVisible)
+    }
+
+    @Test("cancelActiveDrag 幂等清理 session、timer 与 preview")
+    func cancelActiveDragClearsAllTransientStateIdempotently() {
+        let scheduler = MockScheduler()
+        let (sut, dragController, _) = makeSUT(dragScheduler: scheduler)
+        var previewChanges: [Int64?] = []
+        dragController.onFolderCreationPreviewChanged = {
+            previewChanges.append($0)
+        }
+        dragController.beginDrag(makeDragSession(itemID: 10))
+        dragController.updateDragHover(.item(itemID: 11, itemType: .app))
+        scheduler.advance(by: 0.8)
+        #expect(dragController.session?.folderCreationPreviewTargetID == 11)
+
+        sut.cancelActiveDrag()
+
+        #expect(dragController.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
+        #expect(previewChanges.last == .some(nil))
+
+        let cancelCount = scheduler.cancelCallCount
+        sut.cancelActiveDrag()
+        #expect(dragController.session == nil)
+        #expect(scheduler.scheduledActions.isEmpty)
+        #expect(scheduler.cancelCallCount == cancelCount + 1)
     }
 }
 #endif
