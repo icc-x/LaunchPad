@@ -1429,3 +1429,143 @@ the approved plan or task-specific test reports.
 - Verification: both aggregate reports must name the same base/head and report no
   open Critical or Important finding before the adjacent suite or final gate runs;
   any later code/test/script fix invalidates prior review and gate evidence.
+
+## Decision 069: Treat the two aggregate reviews as one blocking fix wave
+
+- Status: adopted after the frozen-candidate reviews.
+- Evidence: the production/architecture review of
+  `9a0f9b3..f9c3d5d` found Critical/Important/Minor `1/2/0`; the independent
+  test/release/process review of the same range found `0/4/1`. Both reports are
+  `With fixes`, and no final-authority gate has run.
+- Decision: close all seven findings in one fix wave owned by one implementer,
+  then regenerate the complete review package and repeat both independent
+  review tracks. Do not run the P0-adjacent suite or consume the final gate
+  until both re-reviews have no open Critical or Important finding; close the
+  one Minor now because it affects the truth of Task 23 durability evidence.
+- Impact: the prior candidate is invalidated for release evidence, but its
+  completed task reviews remain historical evidence. The known dirty plan file
+  remains untouched.
+- Verification: the fix-wave report must contain RED/GREEN evidence per finding,
+  a changed-file list, focused suite results, static policy results and commits;
+  the two new aggregate reports must name the same new HEAD.
+
+## Decision 070: Make discovery completeness explicit and fail closed before destructive sync
+
+- Status: adopted from the Critical architecture finding.
+- Evidence: `AppScanner.scanDirectories` currently catches a root read error and
+  continues, and folds an unreadable candidate bundle into `nil`; AppDelegate
+  forwards the resulting partial array to `StorageManager`, whose incremental
+  branch deletes every existing bundle absent from that array. A temporary
+  directory or Info.plist read failure can therefore delete stable IDs, ordering
+  and folder membership permanently.
+- Decision: replace the bare scanner array with a structured discovery result
+  containing the readable applications and structured failed root/bundle paths.
+  Business filters based on a successfully read plist remain normal omissions;
+  directory enumeration failure or unreadable candidate `.app` marks the result
+  incomplete. AppDelegate records a fixed `app-discovery-incomplete` category
+  and performs zero scan-batch writes or UI reloads for an incomplete result.
+  A later complete scan proceeds normally. Do not attempt partial destructive
+  synchronization because the current storage contract has no complete-root
+  scope with which to prove deletion safety.
+- Impact: scanner/protocol/AppDelegate contracts and their tests change; schema,
+  stable IDs and successful complete-scan behavior do not.
+- Verification: RED/GREEN cases must cover failed root, unreadable existing
+  bundle and next complete scan, proving exact persisted snapshot, stable IDs,
+  ordering and folder membership before failure and correct recovery afterward.
+
+## Decision 071: Re-run active search by request generation after every authoritative reload
+
+- Status: adopted from the Important architecture finding.
+- Evidence: `reloadAuthoritativeLayout` replaces `allPages/itemsByPage` but
+  projects the previous `currentSearchResults`; the existing stale guard compares
+  only query text, so two searches for the same query can still complete out of
+  order after a scan refresh.
+- Decision: centralize search execution behind a monotonically increasing
+  request generation. A successful authoritative reload with a nonempty query
+  schedules that query against the new flattened items; result application
+  requires both the same query and latest generation. Empty-query reloads keep
+  the normal projection path. Preserve selection-by-ID, page clamp and the
+  current query.
+- Impact: no search UI contract changes; scan-driven added, removed and renamed
+  matches become authoritative, and same-query stale callbacks cannot overwrite
+  them.
+- Verification: synchronous and controlled-completion tests must cover added,
+  removed, renamed and same-query out-of-order callbacks through the default
+  `loadData` path.
+
+## Decision 072: Let the final layout invariant override the obsolete app-delete step
+
+- Status: adopted under the user's autonomous recommended-solution rule.
+- Evidence: the local Task 18 step retained `storage.deleteItem` for ordinary
+  apps, while the plan's final acceptance requires dense ordering and deletion
+  of every obsolete empty page. The raw delete leaves ordering gaps and empty
+  pages and has no commit-time topology verification.
+- Decision: the higher-level final acceptance governs. Add an explicit ordinary
+  app deletion layout intent and process it through `LayoutDomainState` and the
+  existing `BEGIN IMMEDIATE` atomic layout writer. Reject non-app or invalid
+  targets through domain validation; do not compose raw delete and normalization
+  writes in the view controller.
+- Impact: the layout intent set grows by one and exhaustive switches/tests must
+  be synchronized. UI behavior remains ordinary app deletion, but persistence
+  now preserves dense row-major pages and exactly one page for an empty layout.
+- Verification: pure-domain and file-backed tests cover middle-item deletion,
+  deletion of a non-unique page's last app, deletion of the layout's last app,
+  failure rollback and reopen durability.
+
+## Decision 073: Make host launch and every P0-adjacent test assertion observable
+
+- Status: adopted from the first two test/release findings.
+- Evidence: two controller tests reach `NSWorkspace.openApplication` through
+  production code, and nine literal `#expect(true)` plus constant type/nil
+  checks and unread recorders can pass while the named behavior is broken.
+- Decision: inject a narrow application-opening boundary into every controller
+  construction path; production alone installs the `NSWorkspace` adapter, while
+  tests use no-op or recording openers and assert exact URL/call count. Replace
+  every zero-evidence test with observable state, identity, ordering, callback,
+  parameter or lifecycle assertions, or delete a truly redundant test rather
+  than retain a no-op. Add a release static-policy rejection for literal
+  `#expect(true)` and keep the host-boundary scan fail closed.
+- Impact: tests no longer call LaunchServices and the gate rejects a known class
+  of deterministic fake-green evidence. No application-launch product behavior
+  changes.
+- Verification: focused controller/AppDelegate/grid/protocol suites pass with
+  exact recorder assertions; test static scans find no `#expect(true)`, unused
+  recorder pattern introduced by the fix, or direct host API in tests.
+
+## Decision 074: Bind release evidence to both candidate endpoints and one invocation identity
+
+- Status: adopted from the provenance and PID-attribution findings.
+- Evidence: the release script hashes the candidate only before work, then can
+  mark `passed` after HEAD or controlled files change. Its all-host PID delta can
+  mislabel another task as residue and can miss PID reuse because it has no
+  ownership identity.
+- Decision: capture start and end branch, HEAD, full status, controlled file list
+  and SHA-256 manifests and require exact equality before writing `passed`.
+  Give every watchdog call a unique invocation token inherited only by that
+  process tree, record its process-group identity through the shared watchdog,
+  and after return require the exact wrapper/supervisor/child, process group and
+  token-bearing descendants to be gone. Treat unrelated concurrent SwiftPM
+  processes as a separately recorded environment conflict, not as residue from
+  this invocation. Preserve `scripts/run-with-timeout.sh` as the sole supervisor.
+- Impact: artifact provenance becomes end-to-end and residue evidence becomes
+  attributable; the script still performs the same three discoveries, three
+  suites and release build.
+- Verification: watchdog/orchestrator self-tests must prove normal, nonzero,
+  timeout and signal cleanup, token isolation from an unrelated process, and
+  deliberate mid-run controlled-tree mutation fail-closed without ever writing
+  `passed`.
+
+## Decision 075: Prove every Task 23 manager lifetime ended before reopen
+
+- Status: adopted from the durability Minor finding.
+- Evidence: assigning the only visible `StorageManager?` to nil permits a second
+  SQLite connection, but does not mechanically fail if a future self-retain
+  prevents `deinit` and close.
+- Decision: at every Task 23 reopen boundary, retain a weak reference to the old
+  manager, clear the strong reference, assert the weak reference is nil with
+  case-specific diagnostics, and only then construct the next manager. Keep each
+  mutation/release/reopen boundary explicit.
+- Impact: integration evidence becomes a true lifetime assertion; production
+  storage code is unchanged by this finding.
+- Verification: the complete storage/domain/integration suite passes and review
+  maps every reopen construction to a preceding weak-release assertion.
