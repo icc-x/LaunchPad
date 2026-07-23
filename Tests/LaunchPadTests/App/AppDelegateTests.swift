@@ -68,8 +68,13 @@ struct AppDelegateTests {
         let manager = HotkeyManager()
         let localMonitorToken = NSObject()
         manager.accessibilityChecker = { accessibilityTrusted }
-        manager.tapProvider = { tapResult }
-        manager.eventTapCreator = { _, _, _ in nil }
+        manager.eventTapCreator = { _, _, _ in tapResult }
+        manager.runLoopSourceCreator = {
+            CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
+        }
+        manager.runLoopSourceAdder = { _ in }
+        manager.runLoopSourceRemover = { _ in }
+        manager.eventTapEnabler = { _, _ in }
         manager.localMonitorInstaller = { _ in localMonitorToken }
         manager.localMonitorRemover = { _ in }
         return manager

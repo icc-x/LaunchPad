@@ -41,8 +41,13 @@ struct HotkeyManagerTests {
         let manager = HotkeyManager()
         let localMonitorToken = NSObject()
         manager.accessibilityChecker = { accessibilityTrusted }
-        manager.tapProvider = { tapResult }
-        manager.eventTapCreator = { _, _, _ in nil }
+        manager.eventTapCreator = { _, _, _ in tapResult }
+        manager.runLoopSourceCreator = {
+            CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
+        }
+        manager.runLoopSourceAdder = { _ in }
+        manager.runLoopSourceRemover = { _ in }
+        manager.eventTapEnabler = { _, _ in }
         manager.localMonitorInstaller = { _ in localMonitorToken }
         manager.localMonitorRemover = { _ in }
         return manager
@@ -283,7 +288,6 @@ struct HotkeyManagerTests {
     func tapCallback_onMainRunLoop_preservesEventOrdering() throws {
         let manager = makeIsolatedManager(accessibilityTrusted: true)
         let port = try makeMachPort()
-        manager.tapProvider = nil
         var callbackContext: UnsafeMutableRawPointer?
         var creatorCalls = 0
         var creatorRanOnMainThread = false
@@ -387,7 +391,6 @@ struct HotkeyManagerTests {
     func tapCallbackEntry_validRefcon_dispatches() throws {
         let manager = makeIsolatedManager(accessibilityTrusted: true)
         let port = try makeMachPort()
-        manager.tapProvider = nil
         var contextAddress: UInt?
         manager.eventTapCreator = { _, _, context in
             contextAddress = context.map { UInt(bitPattern: $0) }
@@ -479,7 +482,7 @@ struct HotkeyManagerTests {
         let manager = makeIsolatedManager()
         manager.accessibilityChecker = { true }
         let port = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
-        manager.tapProvider = { port }
+        manager.eventTapCreator = { _, _, _ in port }
         let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         #expect(registered == true)
         #expect(manager.hasConflict == false)
@@ -491,34 +494,99 @@ struct HotkeyManagerTests {
     func registerGlobalHotkey_hasConflict_whenTapFails() {
         let manager = makeIsolatedManager()
         manager.accessibilityChecker = { true }
-        manager.tapProvider = { nil } // 模拟 tapCreate 返回 nil
+        manager.eventTapCreator = { _, _, _ in nil }
         let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
         #expect(registered == false)
         #expect(manager.hasConflict == true)
     }
 
-    @Test("nil tap override is authoritative")
-    func nilTapOverrideIsAuthoritative() {
+    @Test("permission、tap 与 source 失败不留下全局资源")
+    func globalHotkeyCreationFailuresLeaveNoResources() throws {
         let manager = makeIsolatedManager()
         var creatorCalls = 0
-        manager.accessibilityChecker = { true }
-        manager.tapProvider = { nil }
         manager.eventTapCreator = { _, _, _ in
             creatorCalls += 1
             return nil
         }
 
-        let registered = manager.registerGlobalHotkey(keyCode: 49, modifiers: .option)
-
-        #expect(registered == false)
-        #expect(manager.hasConflict == true)
+        #expect(!manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
         #expect(creatorCalls == 0)
+        #expect(!manager.hasConflict)
+        #expect(!manager.hasCallbackContext)
+
+        manager.accessibilityChecker = { true }
+        #expect(!manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        #expect(creatorCalls == 1)
+        #expect(manager.hasConflict)
+        #expect(!manager.hasCallbackContext)
+
+        let port = try makeMachPort()
+        manager.eventTapCreator = { _, _, _ in port }
+        manager.runLoopSourceCreator = { _ in nil }
+        #expect(!manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        #expect(!manager.hasConflict)
+        #expect(!manager.hasCallbackContext)
     }
 
-    @Test("no tap override calls the injected creator exactly once")
-    func eventTapCreatorWithoutOverrideCalledExactlyOnce() {
+    @Test("global hotkey 重注册与注销平衡 source、tap 和 context")
+    func globalHotkeyLifecycleIsBalanced() throws {
         let manager = makeIsolatedManager(accessibilityTrusted: true)
-        manager.tapProvider = nil
+        let port = try makeMachPort()
+        var adds = 0
+        var removes = 0
+        var enabled: [Bool] = []
+        manager.eventTapCreator = { _, _, _ in port }
+        manager.runLoopSourceCreator = {
+            CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
+        }
+        manager.runLoopSourceAdder = { _ in adds += 1 }
+        manager.runLoopSourceRemover = { _ in removes += 1 }
+        manager.eventTapEnabler = { _, value in enabled.append(value) }
+
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        #expect(manager.hasCallbackContext)
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        #expect(manager.hasCallbackContext)
+        manager.unregisterGlobalHotkey()
+        manager.unregisterGlobalHotkey()
+
+        #expect(adds == 2)
+        #expect(removes == 2)
+        #expect(enabled == [true, false, true, false])
+        #expect(!manager.hasCallbackContext)
+    }
+
+    @Test("global hotkey 析构平衡活动 source、tap 和 context")
+    func globalHotkeyDeinitBalancesActiveResources() throws {
+        let port = try makeMachPort()
+        var removes = 0
+        var enabled: [Bool] = []
+        weak var weakBox: HotkeyManager.HotkeyCallbackBox?
+        do {
+            let manager = makeIsolatedManager(accessibilityTrusted: true)
+            manager.eventTapCreator = { _, _, context in
+                if let context {
+                    weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
+                        .fromOpaque(context)
+                        .takeUnretainedValue()
+                }
+                return port
+            }
+            manager.runLoopSourceRemover = { _ in removes += 1 }
+            manager.eventTapEnabler = { _, value in enabled.append(value) }
+
+            #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+            #expect(weakBox != nil)
+        }
+
+        #expect(removes == 1)
+        #expect(enabled == [true, false])
+        #expect(weakBox == nil)
+    }
+
+    @Test("event tap creator 每次注册只调用一次")
+    func eventTapCreatorCalledExactlyOnce() {
+        let manager = makeIsolatedManager(accessibilityTrusted: true)
         var creatorCalls = 0
         weak var weakBox: HotkeyManager.HotkeyCallbackBox?
         manager.eventTapCreator = { _, _, context in
@@ -551,7 +619,7 @@ struct HotkeyManagerTests {
         #expect(manager.hasConflict == false)
 
         manager.accessibilityChecker = { true }
-        manager.tapProvider = { port }
+        manager.eventTapCreator = { _, _, _ in port }
         #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option) == true)
         #expect(manager.hasConflict == false)
         manager.unregisterGlobalHotkey()
@@ -564,7 +632,6 @@ struct HotkeyManagerTests {
         weak var weakBox: HotkeyManager.HotkeyCallbackBox?
         do {
             let manager = makeIsolatedManager(accessibilityTrusted: true)
-            manager.tapProvider = nil
             manager.eventTapCreator = { _, _, context in
                 if let context {
                     weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
@@ -588,7 +655,6 @@ struct HotkeyManagerTests {
         let manager = makeIsolatedManager(accessibilityTrusted: true)
         let firstPort = try makeMachPort()
         let secondPort = try makeMachPort()
-        manager.tapProvider = nil
         weak var firstBox: HotkeyManager.HotkeyCallbackBox?
         weak var secondBox: HotkeyManager.HotkeyCallbackBox?
         var creatorCalls = 0
@@ -627,7 +693,6 @@ struct HotkeyManagerTests {
         weak var weakBox: HotkeyManager.HotkeyCallbackBox?
         do {
             let manager = makeIsolatedManager(accessibilityTrusted: true)
-            manager.tapProvider = nil
             manager.eventTapCreator = { _, _, context in
                 if let context {
                     weakBox = Unmanaged<HotkeyManager.HotkeyCallbackBox>
@@ -669,6 +734,48 @@ struct HotkeyManagerTests {
         #expect(installCount == 1)
         #expect(removeCount == 1)
         #expect(removedToken === token)
+    }
+
+    @Test("local monitor 安装失败可重试，成功后重复注册与注销幂等")
+    func localMonitorFailureThenSuccessIsBalanced() {
+        let manager = makeIsolatedManager()
+        let token = NSObject()
+        var installs = 0
+        var removals = 0
+        manager.localMonitorInstaller = { _ in
+            installs += 1
+            return installs == 1 ? nil : token
+        }
+        manager.localMonitorRemover = { received in
+            #expect(received as AnyObject === token)
+            removals += 1
+        }
+
+        manager.registerLocalMonitor()
+        manager.registerLocalMonitor()
+        manager.registerLocalMonitor()
+        manager.unregisterLocalMonitor()
+        manager.unregisterLocalMonitor()
+
+        #expect(installs == 2)
+        #expect(removals == 1)
+    }
+
+    @Test("local monitor 析构只移除活动 token 一次")
+    func localMonitorDeinitRemovesActiveTokenOnce() {
+        let token = NSObject()
+        var removals = 0
+        do {
+            let manager = makeIsolatedManager()
+            manager.localMonitorInstaller = { _ in token }
+            manager.localMonitorRemover = { received in
+                #expect(received as AnyObject === token)
+                removals += 1
+            }
+            manager.registerLocalMonitor()
+        }
+
+        #expect(removals == 1)
     }
 
     // MARK: - handleLocalMonitorEvent

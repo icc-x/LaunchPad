@@ -49,9 +49,6 @@ public final class HotkeyManager: HotkeyManaging {
     /// 默认权限查询实现（具名函数避免默认闭包 thunk 噪声，且可被测试直接覆盖）
     static func defaultAccessibilityCheck() -> Bool { AXIsProcessTrusted() }
 
-    /// 事件 tap 创建器（默认走真实 CGEvent.tapCreate；测试可注入以模拟成功/失败）
-    var tapProvider: (() -> CFMachPort?)?
-
     /// 事件 tap 系统边界（测试可注入，避免触及真实事件 tap）
     var eventTapCreator: EventTapCreator = { mask, callback, context in
         CGEvent.tapCreate(
@@ -62,6 +59,22 @@ public final class HotkeyManager: HotkeyManaging {
             callback: callback,
             userInfo: context
         )
+    }
+
+    /// run-loop source 生命周期边界；测试替换后不会注册进程级 source。
+    var runLoopSourceCreator: (CFMachPort) -> CFRunLoopSource? = {
+        CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
+    }
+    var runLoopSourceAdder: (CFRunLoopSource) -> Void = {
+        CFRunLoopAddSource(CFRunLoopGetCurrent(), $0, .commonModes)
+    }
+    var runLoopSourceRemover: (CFRunLoopSource) -> Void = {
+        CFRunLoopRemoveSource(CFRunLoopGetCurrent(), $0, .commonModes)
+    }
+
+    /// event tap 启停边界；所有成功注册都由注销路径精确关闭。
+    var eventTapEnabler: (CFMachPort, Bool) -> Void = {
+        CGEvent.tapEnable(tap: $0, enable: $1)
     }
 
     /// 本地键盘监视器闭包（抽出为属性，便于测试直接调用）
@@ -98,6 +111,8 @@ public final class HotkeyManager: HotkeyManaging {
     /// (CGEvent.tapCreate returned nil despite having permission)
     public private(set) var hasConflict: Bool = false
 
+    var hasCallbackContext: Bool { callbackContext != nil }
+
     @discardableResult
     public func registerGlobalHotkey(keyCode: UInt32, modifiers: NSEvent.ModifierFlags) -> Bool {
         unregisterGlobalHotkey()
@@ -116,22 +131,14 @@ public final class HotkeyManager: HotkeyManaging {
 
         let context = Unmanaged.passRetained(HotkeyCallbackBox(manager: self)).toOpaque()
 
-        let tap: CFMachPort?
-        if let tapProvider {
-            tap = tapProvider()
-        } else {
-            tap = eventTapCreator(mask, HotkeyManager.tapCallback, context)
-        }
-
-        guard let tap else {
+        guard let tap = eventTapCreator(mask, HotkeyManager.tapCallback, context) else {
             // tapCreate 失败：可能是快捷键被其他应用占用
             hasConflict = true
             Unmanaged<HotkeyCallbackBox>.fromOpaque(context).release()
             return false
         }
 
-        guard let source = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, tap, 0) else {
-            CGEvent.tapEnable(tap: tap, enable: false)
+        guard let source = runLoopSourceCreator(tap) else {
             Unmanaged<HotkeyCallbackBox>.fromOpaque(context).release()
             return false
         }
@@ -139,8 +146,8 @@ public final class HotkeyManager: HotkeyManaging {
         eventTap = tap
         runLoopSource = source
         callbackContext = context
-        CFRunLoopAddSource(CFRunLoopGetCurrent(), source, .commonModes)
-        CGEvent.tapEnable(tap: tap, enable: true)
+        runLoopSourceAdder(source)
+        eventTapEnabler(tap, true)
 
         return true
     }
@@ -187,14 +194,15 @@ public final class HotkeyManager: HotkeyManaging {
 
     public func unregisterGlobalHotkey() {
         if let eventTap {
-            CGEvent.tapEnable(tap: eventTap, enable: false)
+            eventTapEnabler(eventTap, false)
         }
         if let runLoopSource {
-            CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
+            runLoopSourceRemover(runLoopSource)
         }
         eventTap = nil
         runLoopSource = nil
         releaseCallbackContext()
+        isOptionHeld = false
     }
 
     private func releaseCallbackContext() {
@@ -207,7 +215,8 @@ public final class HotkeyManager: HotkeyManaging {
 
     public func registerLocalMonitor() {
         guard localMonitor == nil, let localMonitorHandler else { return }
-        localMonitor = localMonitorInstaller(localMonitorHandler)
+        guard let monitor = localMonitorInstaller(localMonitorHandler) else { return }
+        localMonitor = monitor
     }
 
     /// 本地键盘监视器事件处理（抽出便于测试）。
