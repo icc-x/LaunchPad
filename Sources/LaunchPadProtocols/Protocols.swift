@@ -41,9 +41,25 @@ public protocol DataStoring: ItemReading, ItemWriting, ImageStoring {}
 
 // MARK: - 应用扫描协议
 
+/// 描述一个应用发现根目录及其缺失时的权威性策略。
+public struct AppDiscoveryRoot: Sendable, Equatable {
+    public enum MissingPolicy: Sendable, Equatable {
+        case required
+        case optional
+    }
+
+    public let url: URL
+    public let missingPolicy: MissingPolicy
+
+    public init(url: URL, missingPolicy: MissingPolicy) {
+        self.url = url
+        self.missingPolicy = missingPolicy
+    }
+}
+
 /// 测试时可注入 mock 目录内容
 public protocol AppScanning: Sendable {
-    func scanDirectories(_ directories: [URL]) -> AppDiscoveryResult
+    func scanDirectories(_ roots: [AppDiscoveryRoot]) -> AppDiscoveryResult
     func isExcluded(bundleId: String) -> Bool
 }
 

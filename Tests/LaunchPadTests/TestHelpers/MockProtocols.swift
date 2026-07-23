@@ -120,9 +120,11 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var unreadableBundleURLs: Set<URL> = []
     var existingFiles: Set<URL> = []
     var shouldThrowOnContentsOfDirectory = false
+    var directoryErrors: [URL: any Error] = [:]
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
         if shouldThrowOnContentsOfDirectory { throw TestError.generic }
+        if let error = directoryErrors[url] { throw error }
         return directoryContentsMap[url] ?? directoryContents
     }
 

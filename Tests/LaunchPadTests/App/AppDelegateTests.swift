@@ -10,6 +10,18 @@ import LaunchPadProtocols
 @Suite("AppDelegate 启动流程与分支覆盖")
 struct AppDelegateTests {
 
+    enum ExistingBundleFailure: CaseIterable, Sendable {
+        case malformed
+        case unreadable
+    }
+
+    private struct PersistedTopologyIDs {
+        let page: Int64
+        let folder: Int64
+        let folderChild: Int64
+        let pageSibling: Int64
+    }
+
     // MARK: - Test Doubles
 
     private final class MockStatusItem: StatusItemManaging {
@@ -138,6 +150,122 @@ struct AppDelegateTests {
             ]
         }
         return fileSystem
+    }
+
+    private func temporaryDatabaseDirectory(_ prefix: String) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("\(prefix)-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory,
+            withIntermediateDirectories: true
+        )
+        return directory
+    }
+
+    private func seedPersistedTopology(
+        in storage: StorageManager
+    ) throws -> PersistedTopologyIDs {
+        let page = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "scan-page",
+            type: .page,
+            ordering: 0
+        ))
+        let folder = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "scan-folder",
+            type: .group,
+            ordering: 0,
+            parentId: page,
+            group: TestDataFactory.makeGroupInfo(title: "Utilities")
+        ))
+        let folderChild = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "scan-folder-child",
+            type: .app,
+            ordering: 0,
+            parentId: folder,
+            app: TestDataFactory.makeAppInfo(
+                title: "Existing Child",
+                bundleId: "com.test.existing-child",
+                path: "/Applications/ExistingChild.app"
+            )
+        ))
+        let pageSibling = try storage.insertItem(TestDataFactory.makePageItem(
+            uuid: "scan-page-sibling",
+            type: .app,
+            ordering: 1,
+            parentId: page,
+            app: TestDataFactory.makeAppInfo(
+                title: "Page Sibling",
+                bundleId: "com.test.page-sibling",
+                path: "/Applications/PageSibling.app"
+            )
+        ))
+        return PersistedTopologyIDs(
+            page: page,
+            folder: folder,
+            folderChild: folderChild,
+            pageSibling: pageSibling
+        )
+    }
+
+    private func expectStableTopology(
+        _ snapshot: PersistedLayoutSnapshot,
+        ids: PersistedTopologyIDs,
+        appendedAppID: Int64? = nil
+    ) {
+        let expectedPageChildren = [ids.folder, ids.pageSibling]
+            + (appendedAppID.map { [$0] } ?? [])
+        #expect(snapshot.pages.map(\.id) == [ids.page])
+        #expect(snapshot.pages.map(\.ordering) == [0])
+        #expect(snapshot.pages.map(\.uuid) == ["scan-page"])
+        #expect(snapshot.pageChildren[ids.page]?.map(\.id) == expectedPageChildren)
+        #expect(
+            snapshot.pageChildren[ids.page]?.map(\.ordering)
+                == Array(0..<expectedPageChildren.count)
+        )
+        #expect(snapshot.folderChildren[ids.folder]?.map(\.id) == [ids.folderChild])
+        #expect(snapshot.folderChildren[ids.folder]?.map(\.ordering) == [0])
+        #expect(snapshot.allItems.first(where: { $0.id == ids.folder })?.uuid == "scan-folder")
+        #expect(
+            snapshot.allItems.first(where: { $0.id == ids.folderChild })?.uuid
+                == "scan-folder-child"
+        )
+        #expect(
+            snapshot.allItems.first(where: { $0.id == ids.pageSibling })?.uuid
+                == "scan-page-sibling"
+        )
+        #expect(snapshot.allItems.first(where: { $0.id == ids.folder })?.parentId == ids.page)
+        #expect(snapshot.allItems.first(where: { $0.id == ids.folderChild })?.parentId == ids.folder)
+        #expect(snapshot.allItems.first(where: { $0.id == ids.pageSibling })?.parentId == ids.page)
+        if let appendedAppID {
+            #expect(
+                snapshot.allItems.first(where: { $0.id == appendedAppID })?.parentId
+                    == ids.page
+            )
+        }
+    }
+
+    private func installCompleteExistingBundleDiscovery(
+        in fileSystem: MockFileSystemService,
+        root: URL,
+        childURL: URL,
+        siblingURL: URL,
+        newURL: URL
+    ) {
+        fileSystem.directoryErrors.removeValue(forKey: root)
+        fileSystem.unreadableBundleURLs.removeAll()
+        fileSystem.directoryContentsMap[root] = [childURL, siblingURL, newURL]
+        fileSystem.bundleInfos[childURL] = [
+            "CFBundleName": "Existing Child Updated",
+            "CFBundleIdentifier": "com.test.existing-child",
+        ]
+        fileSystem.bundleInfos[siblingURL] = [
+            "CFBundleName": "Page Sibling",
+            "CFBundleIdentifier": "com.test.page-sibling",
+        ]
+        fileSystem.bundleInfos[newURL] = [
+            "CFBundleName": "New App",
+            "CFBundleIdentifier": "com.test.new-app",
+        ]
     }
 
     /// 构造一个真实但无视图依赖的 LaunchPadViewController
@@ -860,6 +988,33 @@ struct AppDelegateTests {
         #expect(writer.receivedApps.allSatisfy { $0.map(\.bundleId) == ["com.test.app0"] })
     }
 
+    @Test("默认 discovery roots 精确区分 required system roots 与 optional home root")
+    func defaultDiscoveryRootsAllowMissingHomeRootAndStillWrite() {
+        let sut = makeDelegate()
+        let homeRoot = URL(fileURLWithPath: NSHomeDirectory() + "/Applications")
+        #expect(sut.discoveryRoots == [
+            AppDiscoveryRoot(
+                url: URL(fileURLWithPath: "/Applications"),
+                missingPolicy: .required
+            ),
+            AppDiscoveryRoot(url: homeRoot, missingPolicy: .optional),
+            AppDiscoveryRoot(
+                url: URL(fileURLWithPath: "/System/Applications"),
+                missingPolicy: .required
+            ),
+        ])
+        let fileSystem = MockFileSystemService()
+        fileSystem.directoryErrors[homeRoot] = CocoaError(.fileReadNoSuchFile)
+        let writer = RecordingScanBatchWriter()
+        sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+        sut.scanBatchWriter = writer
+
+        sut.performInitialScan()
+
+        #expect(writer.receivedApps == [[]])
+        #expect(writer.receivedCapacities.count == 1)
+    }
+
     // MARK: - 其余方法
 
     @Test("statusItemClicked 切换窗口")
@@ -1168,6 +1323,146 @@ struct AppDelegateTests {
         #expect(writer.receivedApps.map { $0.map(\.bundleId) } == [["com.test.existing"]])
         #expect(reloads == 1)
         #expect(categories == ["app-discovery-incomplete"])
+    }
+
+    @Test("file-backed initial scan 的 required root 失败在重开前后保留完整拓扑")
+    func fileBackedFailedRootPreservesTopologyAcrossReopenAndRecovery() throws {
+        let directory = try temporaryDatabaseDirectory("LaunchPadAppDelegateRootFailure")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("layout.sqlite").path
+        let root = URL(fileURLWithPath: "/Applications")
+        let childURL = root.appendingPathComponent("ExistingChild.app")
+        let siblingURL = root.appendingPathComponent("PageSibling.app")
+        let newURL = root.appendingPathComponent("NewApp.app")
+        let fileSystem = MockFileSystemService()
+        fileSystem.directoryErrors[root] = TestError.generic
+        let sut = makeDelegate()
+        sut.discoveryRoots = [AppDiscoveryRoot(url: root, missingPolicy: .required)]
+        sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+
+        var storage: StorageManager? = try StorageManager(dbPath: path)
+        let ids = try seedPersistedTopology(in: try #require(storage))
+        let before = try #require(storage).persistedLayoutSnapshot()
+        sut.scanBatchWriter = storage
+
+        sut.performInitialScan()
+
+        #expect(try #require(storage).persistedLayoutSnapshot() == before)
+        expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
+
+        sut.scanBatchWriter = nil
+        weak let previousManager = storage
+        storage = nil
+        #expect(previousManager == nil)
+
+        storage = try StorageManager(dbPath: path)
+        #expect(try #require(storage).persistedLayoutSnapshot() == before)
+        expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
+
+        installCompleteExistingBundleDiscovery(
+            in: fileSystem,
+            root: root,
+            childURL: childURL,
+            siblingURL: siblingURL,
+            newURL: newURL
+        )
+        sut.scanBatchWriter = storage
+        sut.performIncrementalScan()
+
+        let recovered = try #require(storage).persistedLayoutSnapshot()
+        let appended = try #require(
+            recovered.allItems.first { $0.app?.bundleId == "com.test.new-app" }
+        )
+        expectStableTopology(recovered, ids: ids, appendedAppID: appended.id)
+        #expect(appended.ordering == 2)
+        #expect(appended.app?.path == newURL.path)
+        #expect(
+            recovered.allItems.first(where: { $0.id == ids.folderChild })?.app?.title
+                == "Existing Child Updated"
+        )
+        #expect(
+            recovered.allItems.first(where: { $0.id == ids.folderChild })?.app?.path
+                == childURL.path
+        )
+    }
+
+    @Test(
+        "file-backed incremental scan 的 malformed/unreadable bundle 在重开前后保留完整拓扑",
+        arguments: ExistingBundleFailure.allCases
+    )
+    func fileBackedBundleFailurePreservesTopologyAcrossReopenAndRecovery(
+        _ failure: ExistingBundleFailure
+    ) throws {
+        let directory = try temporaryDatabaseDirectory("LaunchPadAppDelegateBundleFailure")
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("layout.sqlite").path
+        let root = URL(fileURLWithPath: "/Applications")
+        let childURL = root.appendingPathComponent("ExistingChild.app")
+        let siblingURL = root.appendingPathComponent("PageSibling.app")
+        let newURL = root.appendingPathComponent("NewApp.app")
+        let fileSystem = MockFileSystemService()
+        fileSystem.directoryContentsMap[root] = [childURL, siblingURL]
+        fileSystem.bundleInfos[siblingURL] = [
+            "CFBundleName": "Page Sibling",
+            "CFBundleIdentifier": "com.test.page-sibling",
+        ]
+        switch failure {
+        case .malformed:
+            fileSystem.bundleInfos[childURL] = [
+                "CFBundleName": " \n\t",
+                "CFBundleIdentifier": "com.test.existing-child",
+            ]
+        case .unreadable:
+            fileSystem.unreadableBundleURLs = [childURL]
+        }
+        let sut = makeDelegate()
+        sut.discoveryRoots = [AppDiscoveryRoot(url: root, missingPolicy: .required)]
+        sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+
+        var storage: StorageManager? = try StorageManager(dbPath: path)
+        let ids = try seedPersistedTopology(in: try #require(storage))
+        let before = try #require(storage).persistedLayoutSnapshot()
+        sut.scanBatchWriter = storage
+
+        sut.performIncrementalScan()
+
+        #expect(try #require(storage).persistedLayoutSnapshot() == before)
+        expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
+
+        sut.scanBatchWriter = nil
+        weak let previousManager = storage
+        storage = nil
+        #expect(previousManager == nil)
+
+        storage = try StorageManager(dbPath: path)
+        #expect(try #require(storage).persistedLayoutSnapshot() == before)
+        expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
+
+        installCompleteExistingBundleDiscovery(
+            in: fileSystem,
+            root: root,
+            childURL: childURL,
+            siblingURL: siblingURL,
+            newURL: newURL
+        )
+        sut.scanBatchWriter = storage
+        sut.performIncrementalScan()
+
+        let recovered = try #require(storage).persistedLayoutSnapshot()
+        let appended = try #require(
+            recovered.allItems.first { $0.app?.bundleId == "com.test.new-app" }
+        )
+        expectStableTopology(recovered, ids: ids, appendedAppID: appended.id)
+        #expect(appended.ordering == 2)
+        #expect(appended.app?.path == newURL.path)
+        #expect(
+            recovered.allItems.first(where: { $0.id == ids.folderChild })?.app?.title
+                == "Existing Child Updated"
+        )
+        #expect(
+            recovered.allItems.first(where: { $0.id == ids.folderChild })?.app?.path
+                == childURL.path
+        )
     }
 
     @Test("批事务失败不刷新并只记录固定分类")

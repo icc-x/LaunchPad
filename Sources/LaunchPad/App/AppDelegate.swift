@@ -129,12 +129,34 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         Task { @MainActor in action() }
     }
 
-    /// 监控目录（默认系统应用目录，测试注入临时目录以确定性触发变更）
-    var watchedPaths: [String] = [
-        "/Applications",
-        NSHomeDirectory() + "/Applications",
-        "/System/Applications",
+    /// 应用发现根；用户 Applications 缺失是权威空根，其余根必须可枚举。
+    var discoveryRoots: [AppDiscoveryRoot] = [
+        AppDiscoveryRoot(
+            url: URL(fileURLWithPath: "/Applications"),
+            missingPolicy: .required
+        ),
+        AppDiscoveryRoot(
+            url: URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
+            missingPolicy: .optional
+        ),
+        AppDiscoveryRoot(
+            url: URL(fileURLWithPath: "/System/Applications"),
+            missingPolicy: .required
+        ),
     ]
+
+    /// 测试注入兼容入口；显式替换的路径默认都属于 required root。
+    var watchedPaths: [String] {
+        get { discoveryRoots.map(\.url.path) }
+        set {
+            discoveryRoots = newValue.map {
+                AppDiscoveryRoot(
+                    url: URL(fileURLWithPath: $0),
+                    missingPolicy: .required
+                )
+            }
+        }
+    }
 
     var targetWindowContentSizeProvider: () -> CGSize = {
         let mouse = NSEvent.mouseLocation
@@ -407,8 +429,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performScan() {
-        let directories = watchedPaths.map { URL(fileURLWithPath: $0) }
-        let discovery = appScanner.scanDirectories(directories)
+        let discovery = appScanner.scanDirectories(discoveryRoots)
         guard discovery.isComplete else {
             scanFailureLogger("app-discovery-incomplete")
             return

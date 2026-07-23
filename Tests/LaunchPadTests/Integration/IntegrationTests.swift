@@ -151,7 +151,9 @@ struct IntegrationTests {
         let scanner = AppScanner(fileSystemService: mockFS)
         let storage = try StorageManager(dbPath: ":memory:")
 
-        let discovery = scanner.scanDirectories([appDir])
+        let discovery = scanner.scanDirectories([
+            AppDiscoveryRoot(url: appDir, missingPolicy: .required),
+        ])
         #expect(discovery.apps.count == 2)
         #expect(discovery.isComplete)
 
@@ -277,7 +279,9 @@ struct IntegrationTests {
             "CFBundleIdentifier": "com.test.excluded",
         ]
 
-        let discovery = scanner.scanDirectories([appDirectory])
+        let discovery = scanner.scanDirectories([
+            AppDiscoveryRoot(url: appDirectory, missingPolicy: .required),
+        ])
         #expect(discovery.apps.map(\.bundleId) == ["com.test.visible"])
         #expect(discovery.isComplete)
 

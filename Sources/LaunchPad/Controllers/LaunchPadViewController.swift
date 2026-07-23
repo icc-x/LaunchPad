@@ -182,7 +182,7 @@ public class LaunchPadViewController: NSViewController {
     lazy var searchRunner: SearchRunner = {
         [searchQueue, searchEngine] items, query, completion in
         searchQueue.async {
-            let results = searchEngine.cachedSearch(items: items, query: query)
+            let results = searchEngine.search(items: items, query: query)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { completion(results) }
             }

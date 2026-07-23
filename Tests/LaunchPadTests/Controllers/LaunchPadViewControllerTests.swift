@@ -1613,8 +1613,8 @@ struct LaunchPadViewControllerTests {
         #expect(searchScheduler.scheduledActions.isEmpty)
     }
 
-    @Test("权威 reload 以新布局重算 active search 的新增删除与重命名")
-    func authoritativeReloadRecomputesActiveSearchFromLatestLayout() {
+    @Test("默认 runner 忽略同 query 旧缓存并以权威布局重算新增删除与重命名")
+    func defaultRunnerRecomputesActiveSearchFromLatestLayout() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let first = TestDataFactory.makePageItem(
@@ -1634,20 +1634,25 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [first]]
         layout(sut)
-        sut.searchRunner = { items, query, completion in
-            completion(items.filter {
-                $0.app?.title.localizedCaseInsensitiveContains(query) == true
-            })
-        }
+
+        #expect(sut.executeSearch(items: [first], query: "match").map(\.id) == [first.id])
+        let (reloads, reloadContinuation) = AsyncStream<Void>.makeStream()
+        var reloadIterator = reloads.makeAsyncIterator()
+        sut.projectedLayoutDidReload = { reloadContinuation.yield() }
+        defer { reloadContinuation.finish() }
+
         sut.handleSearch(query: "match")
+        _ = await reloadIterator.next()
         #expect(sut.currentSearchResults.map(\.id) == [first.id])
 
         storage.childrenByPage[page.id] = [first, second]
         sut.loadData()
+        _ = await reloadIterator.next()
         #expect(sut.currentSearchResults.map(\.id) == [first.id, second.id])
 
         storage.childrenByPage[page.id] = [second]
         sut.loadData()
+        _ = await reloadIterator.next()
         #expect(sut.currentSearchResults.map(\.id) == [second.id])
 
         let renamed = TestDataFactory.makePageItem(
@@ -1660,10 +1665,46 @@ struct LaunchPadViewControllerTests {
         )
         storage.childrenByPage[page.id] = [renamed]
         sut.loadData()
+        _ = await reloadIterator.next()
 
         #expect(sut.currentSearchQuery == "match")
         #expect(sut.currentSearchResults.isEmpty)
         #expect(sut.resultCountLabel.stringValue == "0 results")
+    }
+
+    @Test("active query 的权威读取失败不改变 generation、结果或 runner 次数")
+    func failedAuthoritativeReloadPreservesActiveSearchState() {
+        let (sut, _, storage) = makeSUT()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        let match = TestDataFactory.makePageItem(
+            id: 10,
+            type: .app,
+            ordering: 0,
+            parentId: page.id,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "Match")
+        )
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [match]]
+        layout(sut)
+        var runnerCalls = 0
+        sut.searchRunner = { items, query, completion in
+            runnerCalls += 1
+            completion(items.filter {
+                $0.app?.title.localizedCaseInsensitiveContains(query) == true
+            })
+        }
+
+        sut.handleSearch(query: "match")
+        let generationBeforeFailure = sut.searchRequestGeneration
+        let resultsBeforeFailure = sut.currentSearchResults
+        #expect(runnerCalls == 1)
+
+        storage.fetchError = TestError.generic
+        sut.loadData()
+
+        #expect(sut.searchRequestGeneration == generationBeforeFailure)
+        #expect(sut.currentSearchResults == resultsBeforeFailure)
+        #expect(runnerCalls == 1)
     }
 
     @Test("相同 query 的旧 completion 不覆盖较新权威 reload")

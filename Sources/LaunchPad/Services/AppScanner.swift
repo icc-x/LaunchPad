@@ -6,6 +6,11 @@ final class AppScanner: AppScanning {
 
     typealias ExcludedDataProvider = @Sendable () -> Data?
 
+    private enum BundleMetadataError: Error {
+        case invalidName
+        case invalidBundleIdentifier
+    }
+
     private let fileSystemService: FileSystemService
     private let excludedBundleIds: Set<String>
 
@@ -57,17 +62,20 @@ final class AppScanner: AppScanning {
         return excludedBundleIds.contains(bundleId)
     }
 
-    func scanDirectories(_ directories: [URL]) -> AppDiscoveryResult {
+    func scanDirectories(_ roots: [AppDiscoveryRoot]) -> AppDiscoveryResult {
         var apps: [ScannedApp] = []
         var failedRootPaths: [String] = []
         var failedBundlePaths: [String] = []
 
-        for directory in directories {
+        for root in roots {
             let contents: [URL]
             do {
-                contents = try fileSystemService.contentsOfDirectory(at: directory)
+                contents = try fileSystemService.contentsOfDirectory(at: root.url)
+            } catch let error as CocoaError
+                where root.missingPolicy == .optional && Self.isMissingRoot(error) {
+                continue
             } catch {
-                failedRootPaths.append(directory.path)
+                failedRootPaths.append(root.url.path)
                 continue
             }
 
@@ -90,16 +98,26 @@ final class AppScanner: AppScanning {
         )
     }
 
+    private static func isMissingRoot(_ error: CocoaError) -> Bool {
+        error.code == .fileNoSuchFile || error.code == .fileReadNoSuchFile
+    }
+
     private func scanApp(at url: URL) throws -> ScannedApp? {
         let plist = try fileSystemService.bundleInfo(at: url)
 
-        guard let name = plist["CFBundleName"] as? String, !name.isEmpty else { return nil }
-
         if let isUIElement = plist["LSUIElement"] as? Bool, isUIElement { return nil }
 
-        guard let bundleId = plist["CFBundleIdentifier"] as? String else { return nil }
+        guard let bundleId = plist["CFBundleIdentifier"] as? String,
+              !bundleId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BundleMetadataError.invalidBundleIdentifier
+        }
 
         if excludedBundleIds.contains(bundleId) { return nil }
+
+        guard let name = plist["CFBundleName"] as? String,
+              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+            throw BundleMetadataError.invalidName
+        }
 
         return ScannedApp(name: name, bundleId: bundleId, path: url.path)
     }
