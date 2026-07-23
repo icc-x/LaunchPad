@@ -1,14 +1,14 @@
 # LaunchPad P0 Readiness Gate Implementation Plan
 
-> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:executing-plans to implement this plan task-by-task in the current `release-readiness` branch. Steps use checkbox (`- [ ]`) syntax for tracking.
+> **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development or superpowers:executing-plans to implement this plan task-by-task in the current `release-readiness` branch. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** 修复 P0-1 至 P0-6，并按已确认设计交付动态网格、完整原子拖放、真实键盘入口、首次扫描刷新和始终启用墙钟断言的可重复发布门禁。
 
-**Architecture:** 保持 AppKit + Controller + Protocol + SQLite 分层。页面展示由稳定顶层全局顺序投影；拖放通过 `LayoutDropIntent` 和单一 `LayoutMutating` 入口在 SQLite `BEGIN IMMEDIATE` 事务中提交；网格由真实 viewport 产生 `GridMetrics`；UI 只在 COMMIT 成功后 reload。
+**Architecture:** 保持 AppKit + Controller + Protocol + SQLite 分层。页面展示由稳定顶层全局顺序投影；`AppGridInteractionCoordinator` 作为主网格唯一 AppKit delegate，独占 selection 与 drag/drop 规则，`AppGridCollectionView` 只负责渲染、布局、cell、snapshot 和窄 host 查询；拖放通过 `LayoutDropIntent` 和单一 `LayoutMutating` 入口在 SQLite `BEGIN IMMEDIATE` 事务中提交；网格由真实 viewport 产生 `GridMetrics`；UI 只在 COMMIT 成功后 reload。测试目标渐进统一为 Swift Testing，系统边界通过窄注入隔离，Task 21 后完整 suite 必须零失败、零跳过、零 signal。
 
-**Tech Stack:** Swift 6.0、Swift Testing、XCTest、AppKit、SQLite3、Swift Package Manager、zsh。
+**Tech Stack:** Swift 6.0、Swift Testing、AppKit、SQLite3、Swift Package Manager、zsh。
 
-**Design:** `docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md`
+**Design:** `docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md`、`docs/superpowers/specs/2026-07-21-swift-testing-unification-design.md`、`docs/superpowers/specs/2026-07-22-app-grid-interaction-coordinator-design.md`
 
 ## Global Constraints
 
@@ -16,9 +16,15 @@
 - 本计划的成功状态仅为 **P0 readiness gate 通过**，不是正式发布授权；禁止据此打发布 tag、生成分发包或宣称项目已满足上线条件。正式分发前必须另行关闭剩余 P1/P2，并完成 release warning、CI、Developer ID、hardened runtime、notarization、stapling、`codesign` 与 Gatekeeper 独立验证。
 - 当前分支必须是 `release-readiness`；不得修改或恢复工作区中与本计划无关的用户变更。
 - 全程 TDD：每个行为先增加最小失败测试并实际确认 RED，再写最小生产实现并确认 GREEN。
+- 新测试只允许使用 Swift Testing。任何 Task 一旦修改仍含 XCTest 的测试文件，该文件必须在同一 Task 结束前完整迁移；禁止在同一文件中混用 `XCTest + Testing`。
+- 纯测试框架迁移提交不得包含生产代码。既有失败修复、纯迁移和新行为 RED-GREEN 分别提交、分别审查，最后再审查 Task 的完整 `base..head`。
+- 每个旧 XCTest 方法必须映射到一个明确的 Swift Testing suite/test；迁移不得删除期望、降低精度、把失败改为 skip，或依赖测试数量相等代替断言语义审查。
+- AppKit suite 在 suite 级标注 `@MainActor`；外部状态使用测试局部 `defer` 清理；异步 callback 必须真正 await，禁止固定 sleep 和 RunLoop 轮询。
 - 所有数据库测试使用 `:memory:` 或 `/tmp` 独立文件；禁止访问用户数据库。
 - 禁止测试修改真实 Dock plist、登录项、辅助功能设置、全局热键或系统设置。
-- 墙钟性能断言始终启用；禁止 `.enabled(if:)`、环境变量或 `--skip PerformanceTests`。
+- 墙钟性能断言始终启用；禁止 `.enabled(if:)`、环境变量、重试、放宽阈值或 `--skip PerformanceTests`。
+- 主网格禁止 `delegate === collectionView`、内部纯转发 proxy 和兼容门面；`onItemSelected`、网格上的 `onSelectionChanged`、`dragController`、`pasteboardUUIDReader` 必须在 Task 4 结束前删除，选择与拖放只由 `AppGridInteractionCoordinator` 拥有。
+- `scripts/run-with-timeout.sh` 是唯一进程组 watchdog 实现；Task 22 的 `scripts/test-release.sh` 只能调用它，禁止内联第二份 supervisor 或绕过 watchdog 直接执行权威门禁。
 - 拖放只允许一个写入口：`LaunchPadViewController -> LayoutMutating`。`FolderController` 仅保留重命名，不保留旧的多 CRUD 布局写路径。
 - 页面空白落点必须转换为稳定 `ItemPlacement.afterItem(itemID:)`；禁止把 `visualPageIndex` 写入领域 intent。
 - 文件夹禁止嵌套；新文件夹 children 保持原顶层相对顺序；0/1 child 文件夹按设计删除或解散。
@@ -26,6 +32,29 @@
 - 每个任务只提交任务列出的文件，不顺手清理无关 warning、历史计划或 P1/P2。
 - 每个任务结束时整个 package 和 test target 必须可编译；`--filter` 只减少执行用例，不允许把尚未迁移的调用点留到后续任务。
 - 每条 focused 命令必须匹配至少一个明确命名的 RED/GREEN 测试；零匹配退出 0 视为门禁失败。
+- Task 3R 后全量测试必须完整退出并产生 Swift Testing summary；Task 21 后完整串行 suite 必须全绿、零 skip、零 signal，且 `Tests/**/*.swift` 的 XCTest 静态扫描为零。
+- 当前失败台账只能单调减少，只用于执行追踪，不是发布白名单。出现未登记失败、缺失 summary 或新的宿主副作用时立即停止并按系统化调试重新定位根因。
+- Task 3R 的已确认执行基线是 6 个既有 XCTest failure、2 个既有
+  XCTest skip，以及 4 个既有 Swift Testing issue（来自 3 个测试）；
+  允许全量命令因这些已登记项非零退出，但必须完整退出、同时产生
+  XCTest 与 Swift Testing 的完整 summary、无 signal、无残留进程，且
+  failure/skip/issue 集合只能保持或减少，不得新增。6 个 XCTest
+  failure 是
+  `AppGridCollectionViewTests.testAcceptDrop_onGroupTarget_returnsTrue`、
+  `testAcceptDrop_reorderSamePage_performsReorder`、
+  `testExtractDraggedItem_validPasteboard_returnsItem`、
+  `FileWatcherTests.testStart_realFileChange_triggersOnChange`、
+  `FolderOverlayViewTests.testMouseDown_outsidePanel_closesFolder`、
+  `SearchBarTests.testSearchBar_hide_animated_completionHidesView`；2 个 skip 是
+  `AppIconCellTests.testDidActivateNotification_showsRunningIndicator` 和
+  `testDidDeactivateNotification_hidesRunningIndicator`。4 个 Swift Testing
+  issue 是
+  `LaunchPadWindowControllerTests.openingTransition_triggersShowWindowAnimated`
+  的两个断言、
+  `LaunchPadWindowControllerTests.launchAnimation_fadesWindowOut` 和
+  `LaunchPadWindowControllerTests.showWindowAnimated_reduceMotion_usesReducedBranch`
+  各一个断言。它们分别由 Tasks 3M、4、19、21 修复；Task 21 后不再
+  允许任何 failure、skip 或 issue。
 - 所有 SwiftPM 命令统一使用：
 
 ```bash
@@ -44,13 +73,15 @@ swift test --disable-sandbox --no-parallel
 - `Sources/LaunchPad/Storage/LayoutDomainState.swift`：领域校验、顺序变换和页面重建计划。
 - `Sources/LaunchPad/Storage/SQLiteTransaction.swift`：检查 BEGIN/COMMIT/ROLLBACK 的唯一事务骨架。
 - `Sources/LaunchPad/Models/DragSession.swift`：不可变拖拽会话。
+- `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift`：主网格 selection 与 drag/drop 的唯一 AppKit delegate、所有权和生命周期边界。
 - `Sources/LaunchPad/Views/TransientMessageView.swift`：非阻塞、可访问的固定错误提示。
+- `Sources/LaunchPad/Utilities/AccessibilityObservers.swift`：局部通知中心与 settings provider 驱动的可释放观察者。
 
 ### Modified production files
 
 - `Sources/LaunchPad/Utilities/GridLayoutCalculator.swift`：真实 viewport、动态行数和完整 metrics。
 - `Sources/LaunchPad/Views/AppGridFlowLayout.swift`：显式 row-major、一 section 一屏和真实 snap。
-- `Sources/LaunchPad/Views/AppGridCollectionView.swift`：单一 metrics、稳定落点、零乐观写入。
+- `Sources/LaunchPad/Views/AppGridCollectionView.swift`：单一 metrics、稳定落点、零乐观写入，以及 coordinator 所需的窄渲染/快照 host；不再 self-delegate。
 - `Sources/LaunchPad/Views/AppIconCell.swift`、`FolderCell.swift`：尺寸重配置、folder preview 和安全删除入口。
 - `Sources/LaunchPad/Views/PageScrollView.swift`：显式 page width/count 和页码回调。
 - `Sources/LaunchPad/Views/FolderOverlayView.swift`：实际 clip 容量分页、文件夹内重排和拖出。
@@ -60,22 +91,28 @@ swift test --disable-sandbox --no-parallel
 - `Sources/LaunchPad/Controllers/FolderController.swift`：移除非原子布局 CRUD，只保留 rename。
 - `Sources/LaunchPad/App/HotkeyManager.swift`、`AppDelegate.swift`：真实 monitor 链、扫描刷新和安全系统边界。
 - `Sources/LaunchPad/Services/AppScanner.swift`：可观察扫描写入结果与只读排除列表注入。
+- `Sources/LaunchPad/Services/SearchDebouncer.swift`：scheduler action 显式回到 MainActor，禁止后台 `assumeIsolated`。
 - `Sources/LaunchPad/Services/FileWatcher.swift`：显式 FSEvent 生命周期。
 - `Sources/LaunchPad/Storage/StorageManager.swift`：单队列、事务和 `LayoutMutating`。
 - `Sources/LaunchPadProtocols/Protocols.swift`：新增独立 `LayoutMutating` 协议。
-- `scripts/test-release.sh`：唯一发布测试入口。
+- `scripts/run-with-timeout.sh`：Task 4 创建的唯一进程组 watchdog，可运行任意 argv 命令并完整清理子孙进程。
+- `scripts/test-release.sh`：Task 22 创建的唯一对外发布测试入口，只编排并消费共享 watchdog。
 
 ### New test files
 
 - `Tests/LaunchPadTests/Services/LayoutProjectionTests.swift`
+- `Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift`
 - `Tests/LaunchPadTests/Storage/LayoutDomainStateTests.swift`
 - `Tests/LaunchPadTests/Storage/StorageManagerLayoutMutationTests.swift`
 - `Tests/LaunchPadTests/Storage/StorageManagerScanBatchTests.swift`
 - `Tests/LaunchPadTests/Views/TransientMessageViewTests.swift`
+- `Tests/LaunchPadTests/Services/FileWatcherLifecycleTests.swift`
+- `Tests/LaunchPadTests/Utilities/AccessibilityObserversTests.swift`
 
 ### Existing tests synchronized by this plan
 
 - `Tests/LaunchPadTests/Utilities/GridLayoutCalculatorTests.swift`
+- `Tests/LaunchPadTests/Utilities/AccessibilitySettingsTests.swift`
 - `Tests/LaunchPadTests/Views/ViewLayerTests.swift`
 - `Tests/LaunchPadTests/Views/PageScrollViewTests.swift`
 - `Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift`
@@ -1134,35 +1171,1162 @@ git commit -m "fix: use explicit row-major paged geometry"
 
 ---
 
-### Task 4: Make Grid Cells and Accessibility Consume One Metrics Object
+### Task 3R-A: Bind Scheduler Work to MainActor and Make Debounce Deterministic
+
+**Files:**
+- Modify: `Sources/LaunchPadProtocols/Protocols.swift:92-98`
+- Modify: `Sources/LaunchPad/Controllers/DragController.swift:6,228-251`
+- Modify: `Sources/LaunchPad/Services/SearchDebouncer.swift:9-70`
+- Modify: `Sources/LaunchPad/Controllers/LaunchPadViewController.swift:67-68,310-339`
+- Modify: `Tests/LaunchPadTests/TestHelpers/MockProtocols.swift:150-176`
+- Modify: `Tests/LaunchPadTests/Models/ProtocolTests.swift:47-50`
+- Modify: `Tests/LaunchPadTests/Controllers/DragControllerTests.swift:14`
+- Modify: `Tests/LaunchPadTests/Views/CollectionViewDragTests.swift:6`
+- Modify: `Tests/LaunchPadTests/Services/SearchDebounceTests.swift`
+- Modify: `Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift:100-117,711-722`
+- Create: `.superpowers/sdd/task-3r-a-review.md`
+
+**Interfaces:**
+- Produces: `@MainActor public protocol Scheduler: Sendable` and an exact `@escaping @MainActor @Sendable () -> Void` action contract.
+- Produces: one-work-item `DispatchQueueScheduler`; replacement, explicit cancellation and destruction each cancel the exact owned item.
+- Produces: `SearchDebouncer` with `@MainActor @Sendable (String) -> Void` handler and VC-local `SearchRunner` for synchronous test completion.
+- Consumed later by: Tasks 7, 15 and 21. Those tasks consume this contract and must not redefine it.
+
+- [ ] **Step 1: Reproduce the background `assumeIsolated` trap with a named RED test**
+
+Add:
+
+```swift
+@Test("真实 scheduler 的延迟 action 在 MainActor 执行")
+func dispatchQueueSchedulerRunsActionOnMainActor() async {
+    let (stream, continuation) = AsyncStream.makeStream(of: String.self)
+    let scheduler = DispatchQueueScheduler()
+    scheduler.schedule(after: 0) {
+        MainActor.preconditionIsolated()
+        continuation.yield("safari")
+        continuation.finish()
+    }
+    var iterator = stream.makeAsyncIterator()
+    #expect(await iterator.next() == "safari")
+}
+```
+
+Run:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter dispatchQueueSchedulerRunsActionOnMainActor
+```
+
+Expected: current implementation terminates with signal 5 in `MainActor.assumeIsolated` on `com.launchpad.scheduler`. This is the RED evidence and may not be skipped or recorded as an allowed failure.
+
+- [ ] **Step 2: Move the scheduler contract and implementation onto MainActor**
+
+Replace the protocol with:
+
+```swift
+@MainActor
+public protocol Scheduler: Sendable {
+    func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor @Sendable () -> Void
+    )
+    func cancelPending()
+}
+```
+
+Mark `DragController` `@MainActor` and replace `DispatchQueueScheduler` with:
+
+```swift
+@MainActor
+public final class DispatchQueueScheduler: Scheduler {
+    private final class PendingWork: @unchecked Sendable {
+        private var item: DispatchWorkItem?
+
+        func replace(with newItem: DispatchWorkItem) {
+            item?.cancel()
+            item = newItem
+        }
+
+        func cancel() {
+            item?.cancel()
+            item = nil
+        }
+
+        deinit { item?.cancel() }
+    }
+
+    private let pendingWork = PendingWork()
+    var workItemObserver: ((DispatchWorkItem) -> Void)?
+
+    public init() {}
+
+    public func schedule(
+        after interval: TimeInterval,
+        action: @escaping @MainActor @Sendable () -> Void
+    ) {
+        cancelPending()
+        let item = DispatchWorkItem {
+            MainActor.assumeIsolated { action() }
+        }
+        pendingWork.replace(with: item)
+        workItemObserver?(item)
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + interval,
+            execute: item
+        )
+    }
+
+    public func cancelPending() {
+        pendingWork.cancel()
+    }
+}
+```
+
+`assumeIsolated` is allowed only inside the work item explicitly submitted to `DispatchQueue.main`. Mark `MockScheduler` and both drag suites `@MainActor`; store actions as `@MainActor @Sendable () -> Void`. `fireLatest()` must remove all pending actions before invoking the latest action so a test cannot leave escaped work.
+
+- [ ] **Step 3: Remove every unsafe SearchDebouncer bridge and prove exact ownership**
+
+Replace the callback declaration, initializer and delayed branch with:
+
+```swift
+private let searchHandler: @MainActor @Sendable (String) -> Void
+
+public init(
+    debounceInterval: TimeInterval = 0.1,
+    scheduler: Scheduler,
+    searchHandler: @escaping @MainActor @Sendable (String) -> Void
+) {
+    self.debounceInterval = debounceInterval
+    self.scheduler = scheduler
+    self.searchHandler = searchHandler
+}
+
+lastQuery = query
+scheduler.cancelPending()
+let handler = searchHandler
+scheduler.schedule(after: debounceInterval) {
+    handler(query)
+}
+```
+
+Delete both `@preconcurrency`, `nonisolated(unsafe)`, `unsafeHandler` and the background `MainActor.assumeIsolated`. Add:
+
+```swift
+@Test("替换、显式取消与释放均取消 exact work item")
+func dispatchQueueSchedulerCancelsOwnedWorkItems() {
+    var first: DispatchWorkItem?
+    var second: DispatchWorkItem?
+    var third: DispatchWorkItem?
+    weak var weakScheduler: DispatchQueueScheduler?
+    do {
+        let scheduler = DispatchQueueScheduler()
+        weakScheduler = scheduler
+        scheduler.workItemObserver = { item in
+            if first == nil { first = item }
+            else if second == nil { second = item }
+            else { third = item }
+        }
+        scheduler.schedule(after: 60) {}
+        scheduler.schedule(after: 60) {}
+        #expect(first?.isCancelled == true)
+        #expect(second?.isCancelled == false)
+        scheduler.cancelPending()
+        #expect(second?.isCancelled == true)
+        scheduler.schedule(after: 60) {}
+        #expect(third?.isCancelled == false)
+    }
+    #expect(weakScheduler == nil)
+    #expect(third?.isCancelled == true)
+}
+```
+
+Run the two named scheduler tests; expected: 2 tests pass and the helper exits normally.
+
+- [ ] **Step 4: Replace the escaping VC search fixture with an injected runner**
+
+Add:
+
+```swift
+typealias SearchRunner = @MainActor @Sendable (
+    [PageItem],
+    String,
+    @escaping @MainActor @Sendable ([PageItem]) -> Void
+) -> Void
+
+lazy var searchRunner: SearchRunner = {
+    [searchQueue, searchEngine] items, query, completion in
+    searchQueue.async {
+        let results = searchEngine.cachedSearch(items: items, query: query)
+        DispatchQueue.main.async {
+            MainActor.assumeIsolated { completion(results) }
+        }
+    }
+}
+```
+
+The nonempty branch calls `searchRunner(allItems, capturedQuery)` and applies results only through its MainActor completion with the existing expected-query guard. Replace the no-assertion fixture with `handleSearch_nonEmptyQuery_runsInjectedSearchOnce`: inject `MockScheduler`, one Safari item ID 10 and a synchronous runner; enter `s`, append `a`, advance by `0.099` then `0.001`, and assert exactly `[(ids: [10], query: "sa")]`, label `1 results`, visible results and an empty scheduler.
+
+- [ ] **Step 5: Run regression, full serial termination gate and commit**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'SearchDebounceTests|LaunchPadViewControllerTests|DragControllerTests|CollectionViewDragTests|ProtocolTests'
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel
+```
+
+Expected: the focused command exits 0. The full command completes with a full
+Swift Testing summary, no signal and no escaped helper process; it may exit
+nonzero only for the exact registered 6-failure/2-skip Task 3R baseline above.
+Compare qualified IDs, not only counts, and stop on any new ID or count
+increase. Record RED/GREEN/full-gate logs and review the task range before
+committing:
+
+```bash
+git add Sources/LaunchPadProtocols/Protocols.swift \
+  Sources/LaunchPad/Controllers/DragController.swift \
+  Sources/LaunchPad/Services/SearchDebouncer.swift \
+  Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
+  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift \
+  Tests/LaunchPadTests/Models/ProtocolTests.swift \
+  Tests/LaunchPadTests/Controllers/DragControllerTests.swift \
+  Tests/LaunchPadTests/Views/CollectionViewDragTests.swift \
+  Tests/LaunchPadTests/Services/SearchDebounceTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift
+git commit -m "fix: bind schedulers and debounce work to main actor"
+```
+
+---
+
+### Task 3R-B: Isolate Hotkey and AppDelegate Process Boundaries
+
+**Files:**
+- Modify: `Sources/LaunchPadProtocols/Protocols.swift:86-90`
+- Modify: `Sources/LaunchPad/App/HotkeyManager.swift:39-58,72-112,161-183`
+- Modify: `Sources/LaunchPad/App/AppDelegate.swift:31-83,139-141,222-290`
+- Modify: `Tests/LaunchPadTests/TestHelpers/MockProtocols.swift:134-148`
+- Modify: `Tests/LaunchPadTests/Models/ProtocolTests.swift:43-47`
+- Modify: `Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift`
+- Modify: `Tests/LaunchPadTests/App/AppDelegateTests.swift`
+- Create: `.superpowers/sdd/task-3r-b-review.md`
+
+**Interfaces:**
+- Produces: explicit global-tap override semantics; an injected closure returning nil is an authoritative failure and never falls through to the injected `eventTapCreator` system boundary.
+- Produces: Task 21's planned `eventTapCreator` boundary ahead of schedule so the no-fallback rule has deterministic RED/GREEN evidence; Task 21 reuses it and does not add a duplicate creator.
+- Produces: `@MainActor HotkeyManaging` and `@MainActor HotkeyManager`, removing the unverifiable `@unchecked Sendable` contract; mocks and protocol tests consume the same actor contract.
+- Produces: Task 21's planned weak `HotkeyCallbackBox` and exactly-once retained callback-context release ahead of schedule; Task 21 reuses them.
+- Produces: idempotent `localMonitorInstaller`/`localMonitorRemover`, plus AppDelegate `hotkeyManagerFactory`, `workspaceURLOpener` and `hotkeyToggleRunner`.
+- Consumed later by: Tasks 8-9 and 21; those tasks extend behavior/lifecycle through these names and do not add duplicate boundaries.
+
+- [ ] **Step 1: Reproduce tap fallback and real-boundary leaks**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'registerGlobalHotkey_hasConflict_whenTapFails|setupHotkey_conflict'
+```
+
+Expected: the current host returns nil from the real `CGEvent.tapCreate`, so the
+existing result-only tests pass and cannot prove whether fallback occurred. Add
+an injected `eventTapCreator` counter first, without changing the nil-coalescing
+selection, and assert that `tapProvider = { nil }` must leave its call count at
+zero. The old selection calls it once, producing deterministic RED without
+touching the real event-tap boundary. Capture the counter mismatch as RED.
+
+- [ ] **Step 2: Make tap selection explicit and local monitor lifecycle injectable**
+
+Move Task 21's planned event-tap creation boundary forward:
+
+```swift
+typealias EventTapCreator = (
+    CGEventMask,
+    CGEventTapCallBack,
+    UnsafeMutableRawPointer?
+) -> CFMachPort?
+
+var eventTapCreator: EventTapCreator = { mask, callback, context in
+    CGEvent.tapCreate(
+        tap: .cgSessionEventTap,
+        place: .headInsertEventTap,
+        options: .defaultTap,
+        eventsOfInterest: mask,
+        callback: callback,
+        userInfo: context
+    )
+}
+```
+
+Replace tap selection with:
+
+```swift
+let tap: CFMachPort?
+if let tapProvider {
+    tap = tapProvider()
+} else {
+    tap = eventTapCreator(mask, HotkeyManager.tapCallback, selfPtr)
+}
+```
+
+Add:
+
+```swift
+var localMonitorHandler: ((NSEvent) -> NSEvent?)?
+var localMonitorInstaller: (@escaping (NSEvent) -> NSEvent?) -> Any? = {
+    handler in
+    NSEvent.addLocalMonitorForEvents(
+        matching: [.keyDown, .flagsChanged],
+        handler: handler
+    )
+}
+var localMonitorRemover: (Any) -> Void = { NSEvent.removeMonitor($0) }
+
+public init() {
+    accessibilityChecker = HotkeyManager.defaultAccessibilityCheck
+    localMonitorHandler = { [weak self] event in
+        self?.handleLocalMonitorEvent(event) ?? event
+    }
+}
+
+public func registerLocalMonitor() {
+    guard localMonitor == nil, let localMonitorHandler else { return }
+    localMonitor = localMonitorInstaller(localMonitorHandler)
+}
+
+public func unregisterLocalMonitor() {
+    guard let localMonitor else { return }
+    localMonitorRemover(localMonitor)
+    self.localMonitor = nil
+}
+```
+
+Make `HotkeyManaging`, `HotkeyManager`, `MockHotkeyManager`, the hotkey suite,
+and the affected protocol test MainActor-isolated. Remove
+`HotkeyManager: @unchecked Sendable`. Registration is MainActor-isolated and
+adds the event-tap source to `CFRunLoopGetCurrent()`, which is therefore the main
+run loop. The `nonisolated` C callback has a main-runloop-only contract: require
+`Thread.isMainThread`, then synchronously enter `MainActor.assumeIsolated` and
+process the event before returning. Do not bridge an off-main callback with
+`DispatchQueue.main.sync`; that creates callback-context UAF and cross-thread
+deadlock windows. Cover the main-thread `flagsChanged` then `keyDown` ordering
+and statically reject an off-main sync bridge.
+
+Move Task 21's weak callback ownership forward. Retain a `HotkeyCallbackBox`
+whose manager reference is weak, store the opaque context only after successful
+registration, and release it exactly once on every tap/source failure,
+re-registration, explicit unregister and deinit. Registration starts by
+unregistering prior state and resetting `hasConflict = false`. Add RED/GREEN
+coverage for deallocation after successful unregister, repeated registration,
+double unregister, and conflict followed by permission failure/success.
+
+Do not change special-key suppression in this task; Task 8 owns that behavior. Convert every hotkey test fixture to an isolated manager with injected accessibility result, opaque local token and fake tap result. Add `nilTapOverrideIsAuthoritative` and `localMonitorLifecycleUsesInjectedBoundary`. The former asserts false/conflict and an exact zero `eventTapCreator` call count; the latter asserts install/remove identity/count after double register/unregister. Also cover the no-override production branch with exactly one injected creator call. Delete tests that directly call `AXIsProcessTrusted` or real `SMAppService.register/unregister`, and delete the real-FSEvents two-second sleep test whose only assertion is `#expect(true)`; Task 21 adds its deterministic backend replacement.
+
+- [ ] **Step 3: Isolate AppDelegate construction, URL opening and toggle delivery**
+
+Add:
+
+```swift
+var hotkeyManagerFactory: () -> HotkeyManager = { HotkeyManager() }
+var workspaceURLOpener: (URL) -> Void = {
+    _ = NSWorkspace.shared.open($0)
+}
+var hotkeyToggleRunner:
+    @Sendable (@escaping @MainActor @Sendable () -> Void) -> Void = {
+    action in
+    Task { @MainActor in action() }
+}
+```
+
+Use the factory in `setupServices`, the URL opener in the permission-settings branch, and bind toggle through:
+
+```swift
+let runner = hotkeyToggleRunner
+hotkeyManager.onToggle = { @Sendable [weak self] in
+    runner { [weak self] in self?.windowController.toggle() }
+}
+```
+
+The AppDelegate test factory must use `NSStatusItem()` instead of `NSStatusBar.system`, an isolated hotkey manager, `{ _ in }` URL opener and a synchronous toggle runner. Replace sleep-based toggle verification with an immediate lifecycle assertion. Conflict tests assert the exact alert `Option+Space 快捷键已被占用` and no opened URL; permission tests assert only `x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent`, while the second-button path opens nothing. Add exact factory call-count/identity coverage and a successful hotkey-registration branch that produces zero alert and zero opened URL.
+
+- [ ] **Step 4: Run isolated suites, full serial termination gate and commit**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'HotkeyManagerTests|AppDelegateTests'
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel
+```
+
+Expected: the focused command exits 0. The full command completes with both
+framework summaries, no `Task.sleep`, no real event tap/local monitor/status-bar
+insertion or System Settings open, no signal and no escaped helper; it may exit
+nonzero only for the remaining subset of the registered Task 3R baseline:
+6 XCTest failures, 2 XCTest skips and 4 Swift Testing issues from the 3 named
+`LaunchPadWindowControllerTests`. Stop on any new failure/skip/issue ID or count
+increase. Review 3R-B separately, then the combined 3R range:
+
+```bash
+git add Sources/LaunchPad/App/HotkeyManager.swift \
+  Sources/LaunchPad/App/AppDelegate.swift \
+  Sources/LaunchPadProtocols/Protocols.swift \
+  Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift \
+  Tests/LaunchPadTests/App/AppDelegateTests.swift \
+  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift \
+  Tests/LaunchPadTests/Models/ProtocolTests.swift
+git commit -m "fix: isolate hotkey system boundaries in tests"
+```
+
+---
+
+### Task 3R-C: Isolate Dock Exclusion Parsing Before Continuing the Full Gate
+
+**Files:**
+- Modify: `Sources/LaunchPad/Services/AppScanner.swift:5-40`
+- Modify: `Tests/LaunchPadTests/Services/AppScannerTests.swift:6-193`
+- Create: `.superpowers/sdd/task-3r-c-review.md`
+
+**Interfaces:**
+- Consumes: the existing `excludedBundleIds` override; explicit sets remain
+  authoritative and do not invoke the provider.
+- Produces: `AppScanner.ExcludedDataProvider`, read-only
+  `systemExcludedData()` and pure `parseExcludedBundleIDs(from:)`.
+- Preserves: production defaults still read
+  `~/Library/Application Support/Dock/LaunchPadLayout.plist` once and parse the
+  same hidden string bundle IDs; production never writes that path.
+- Test isolation: every AppScanner test that does not target the provider passes
+  `excludedBundleIds: []`; the provider/parser tests use only in-memory `Data`.
+
+- [x] **Step 1: Record the stable RED without widening filesystem permissions**
+
+Use the existing main-agent evidence rather than re-running the dangerous test
+outside the managed sandbox:
+
+```bash
+rg -n "scan_loadsSystemExcludedBundleIds|LaunchPadLayout.plist|try! data.write" \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift
+rg -n "unexpected signal code 5|AppScannerTests.swift:179|NSCocoaErrorDomain Code=513" \
+  /tmp/launchpad-main-3m-full.log
+test ! -e "$HOME/Library/Application Support/Dock/LaunchPadLayout.plist"
+```
+
+Expected: the old test contains backup/delete/create/write operations against
+the real user Dock path; the full log records signal 5 and Cocoa 513/EPERM at
+line 179; no plist remains after the denied write. Never request broader
+permissions to make this test pass, because that would authorize the forbidden
+side effect.
+
+- [x] **Step 2: Replace the host mutation with in-memory RED tests**
+
+Add this helper inside `AppScannerTests`:
+
+```swift
+private func makeExcludedData(from root: [String: Any]) throws -> Data {
+    try PropertyListSerialization.data(
+        fromPropertyList: root,
+        format: .xml,
+        options: 0
+    )
+}
+```
+
+Delete the backup/remove/create/write test and replace it with these six exact
+branches:
+
+```swift
+@Test("nil exclusion data returns an empty set")
+func parseExcludedBundleIDs_nil_returnsEmpty() {
+    #expect(AppScanner.parseExcludedBundleIDs(from: nil).isEmpty)
+}
+
+@Test("malformed exclusion data returns an empty set")
+func parseExcludedBundleIDs_malformedData_returnsEmpty() {
+    #expect(AppScanner.parseExcludedBundleIDs(
+        from: Data("not a plist".utf8)
+    ).isEmpty)
+}
+
+@Test("a plist without pages returns an empty set")
+func parseExcludedBundleIDs_missingPages_returnsEmpty() throws {
+    let data = try makeExcludedData(from: ["version": 1])
+    #expect(AppScanner.parseExcludedBundleIDs(from: data).isEmpty)
+}
+
+@Test("malformed item containers and entries are ignored")
+func parseExcludedBundleIDs_malformedItems_areIgnored() throws {
+    let data = try makeExcludedData(from: [
+        "pages": [
+            ["items": "not an array"],
+            ["items": [
+                ["bundleid": 17, "visible": false],
+                ["bundleid": "missing.visible"],
+                ["visible": false],
+            ]],
+        ],
+    ])
+    #expect(AppScanner.parseExcludedBundleIDs(from: data).isEmpty)
+}
+
+@Test("only hidden string bundle IDs are returned")
+func parseExcludedBundleIDs_mixedVisibility_returnsOnlyHiddenStrings() throws {
+    let data = try makeExcludedData(from: [
+        "pages": [
+            ["items": [
+                ["bundleid": "com.test.hidden.one", "visible": false],
+                ["bundleid": "com.test.visible", "visible": true],
+            ]],
+            ["items": [
+                ["bundleid": "com.test.hidden.two", "visible": false],
+            ]],
+        ],
+    ])
+    #expect(AppScanner.parseExcludedBundleIDs(from: data) == [
+        "com.test.hidden.one", "com.test.hidden.two",
+    ])
+}
+
+@Test("injected exclusion data filters a hidden app")
+func scan_loadsInjectedSystemExcludedBundleIds() throws {
+    let data = try makeExcludedData(from: [
+        "pages": [["items": [[
+            "bundleid": "com.test.hidden", "visible": false,
+        ]]]],
+    ])
+    let fs = MockFileSystemService()
+    let hiddenURL = appURL("HiddenApp")
+    fs.directoryContentsMap[appDir] = [hiddenURL]
+    fs.existingFiles = [hiddenURL]
+    fs.bundleInfos[hiddenURL] = makePlist(
+        name: "HiddenApp",
+        bundleId: "com.test.hidden"
+    )
+    let scanner = AppScanner(
+        fileSystemService: fs,
+        excludedDataProvider: { data }
+    )
+
+    #expect(scanner.scanDirectories([appDir]).isEmpty)
+}
+```
+
+The file contains 22 `AppScanner(...)` construction points. After this change,
+exactly 20 pass `excludedBundleIds: []`, one existing test passes the non-empty
+`["com.apple.Installer"]` set, and one test passes the in-memory
+`excludedDataProvider`. This makes all non-provider tests independent of the
+user's actual Dock contents.
+
+- [x] **Step 3: Run the rewritten suite and confirm interface RED**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppScannerTests
+```
+
+Expected: compilation fails because `parseExcludedBundleIDs(from:)` and the
+`excludedDataProvider` initializer parameter do not exist. Stop if the new
+tests are not discovered after the production interface is added; a zero-match
+or a signal from the deleted host-writing path is not valid RED.
+
+- [x] **Step 4: Add the read-only provider and pure parser**
+
+Replace the coupled loader with:
+
+```swift
+typealias ExcludedDataProvider = @Sendable () -> Data?
+
+init(
+    fileSystemService: FileSystemService,
+    excludedBundleIds: Set<String>? = nil,
+    excludedDataProvider: @escaping ExcludedDataProvider = AppScanner.systemExcludedData
+) {
+    self.fileSystemService = fileSystemService
+    self.excludedBundleIds = excludedBundleIds
+        ?? Self.parseExcludedBundleIDs(from: excludedDataProvider())
+}
+
+static func systemExcludedData() -> Data? {
+    let path = NSHomeDirectory()
+        + "/Library/Application Support/Dock/LaunchPadLayout.plist"
+    return FileManager.default.contents(atPath: path)
+}
+
+static func parseExcludedBundleIDs(from data: Data?) -> Set<String> {
+    guard let data,
+          let propertyList = try? PropertyListSerialization.propertyList(
+              from: data,
+              format: nil
+          ),
+          let root = propertyList as? [String: Any],
+          let pages = root["pages"] as? [[String: Any]] else {
+        return []
+    }
+
+    var result = Set<String>()
+    for page in pages {
+        guard let items = page["items"] as? [[String: Any]] else {
+            continue
+        }
+        for item in items {
+            guard let id = item["bundleid"] as? String,
+                  let visible = item["visible"] as? Bool,
+                  visible == false else {
+                continue
+            }
+            result.insert(id)
+        }
+    }
+    return result
+}
+```
+
+Do not add a writable path injection, a temporary HOME override or filesystem
+backup logic. The provider returns data only; the parser owns no filesystem.
+
+- [x] **Step 5: Run focused, static and full termination gates**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter '^LaunchPadTests\.AppScannerTests/'
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppScannerTests
+
+! rg -n "backup_test|createDirectory|removeItem|moveItem|data.write|try!" \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift
+test "$(sed -n '1,/^@Suite("AppScanner 首次启动分页")/p' \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift | \
+  rg -c '^\s*@Test')" -eq 13
+test "$(rg -c 'excludedBundleIds: \[\]' \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift)" -eq 20
+test "$(rg -c 'excludedBundleIds: \["com.apple.Installer"\]' \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift)" -eq 1
+test "$(rg -c 'excludedDataProvider:' \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift)" -eq 1
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel
+```
+
+Expected: the qualified focused filter runs 13 tests in one suite and exits 0.
+The unqualified `--filter AppScannerTests` is a substring match in this
+toolchain and is retained only as an adjacent regression command; it runs 27
+tests in three suites.
+The full command completes both summaries with no signal or Dock write: XCTest
+`205 tests / 2 skips / 5 registered failures`; Swift Testing
+`703 tests / 48 suites / 4 registered issues`. Stop on any new ID, count
+increase, missing summary or residual process.
+
+- [x] **Step 6: Review, commit and re-run the focused suite**
+
+Review all parser branches, explicit-list precedence and every AppScanner test
+initializer. Review the task range `fe947af..HEAD` separately, then the full
+Task 3R-A-through-3R-C/3M aggregate `5b4cf0a..HEAD`. Then commit only:
+
+```bash
+git add Sources/LaunchPad/Services/AppScanner.swift \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift
+git commit -m "fix: isolate launchpad exclusion parsing"
+```
+
+After commit, re-run the 13-test focused command and record exact commands,
+summaries and commit range in `.superpowers/sdd/task-3r-c-review.md`.
+
+---
+
+### Task 3M: Stabilize Animation Fixtures and Migrate ViewLayer 56/56
+
+**Files:**
+- Modify: `Tests/LaunchPadTests/Views/ViewLayerTests.swift:1-791`
+- Create: `docs/superpowers/reports/2026-07-21-task-3m-view-layer-migration.md`
+- Create: `.superpowers/sdd/task-3m-review.md`
+
+**Interfaces:**
+- Produces: six Swift Testing suites, 56 one-to-one tests, zero legacy framework symbols and no production diff.
+- Actor rule: `AnimationRunnerTests`, `EmptyStateViewTests`, `SearchBarTests`, `AppGridFlowLayoutTests` and `PageControlViewTests` are suite-level `@MainActor`; `LayoutPersistenceTests` remains a value suite.
+- Preserves: all 9 source `accuracy: 0.5` call sites as explicit
+  `abs(actual - expected) <= 0.5` assertions. One call site is inside the
+  row-major helper and intentionally executes once for every non-leading item;
+  migration equivalence is audited by source call site, not dynamic invocation
+  count.
+
+- [ ] **Step 1: Capture the 56-test baseline and current static residue**
+
+```bash
+cat > /tmp/task-3m-id-map.tsv <<'EOF'
+AnimationRunnerTests testAnimate_normalMotion_callsNormal animate_normalMotion_callsNormal
+AnimationRunnerTests testAnimate_reduceMotion_callsReduced animate_reduceMotion_callsReduced
+AnimationRunnerTests testRun_normalMotion_callsBlock run_normalMotion_callsBlock
+AnimationRunnerTests testRun_reduceMotion_fadeFallback_callsBlock run_reduceMotion_fadeFallback_callsBlock
+AnimationRunnerTests testRun_reduceMotion_scalePulseFallback_callsBlock run_reduceMotion_scalePulseFallback_callsBlock
+AnimationRunnerTests testRun_reduceMotion_skipsBlock run_reduceMotion_skipsBlock
+LayoutPersistenceTests testLoadLayout_emptyStorage_returnsEmptyLayout loadLayout_emptyStorage_returnsEmptyLayout
+LayoutPersistenceTests testLoadLayout_withPages_returnsCorrectStructure loadLayout_withPages_returnsCorrectStructure
+LayoutPersistenceTests testSaveLayout_callsUpdateForEachItem saveLayout_callsUpdateForEachItem
+LayoutPersistenceTests testSaveLayout_emptyList_doesNotCallUpdate saveLayout_emptyList_doesNotCallUpdate
+LayoutPersistenceTests testSaveLayout_propagatesError saveLayout_propagatesError
+EmptyStateViewTests testEmptyStateView_hide_animated_completionHidesView emptyStateView_hide_animated_completionHidesView
+EmptyStateViewTests testEmptyStateView_hide_animated_doesNotCrash emptyStateView_hide_animated_doesNotCrash
+EmptyStateViewTests testEmptyStateView_hide_hides emptyStateView_hide_hides
+EmptyStateViewTests testEmptyStateView_init_doesNotCrash emptyStateView_init_doesNotCrash
+EmptyStateViewTests testEmptyStateView_initCoder_producesValidInstance emptyStateView_initCoder_producesValidInstance
+EmptyStateViewTests testEmptyStateView_show_animated_doesNotCrash emptyStateView_show_animated_doesNotCrash
+EmptyStateViewTests testEmptyStateView_show_hide_multipleTimes emptyStateView_show_hide_multipleTimes
+EmptyStateViewTests testEmptyStateView_show_unhides emptyStateView_show_unhides
+SearchBarTests testSearchBar_clearAndFocus_resetsStringValue searchBar_clearAndFocus_resetsStringValue
+SearchBarTests testSearchBar_controlTextDidChange_callsCallback searchBar_controlTextDidChange_callsCallback
+SearchBarTests testSearchBar_hide_animated_completionHidesView searchBar_hide_animated_completionHidesView
+SearchBarTests testSearchBar_hide_animated_doesNotCrash searchBar_hide_animated_doesNotCrash
+SearchBarTests testSearchBar_hide_hides searchBar_hide_hides
+SearchBarTests testSearchBar_hide_withoutShow_isNoOp searchBar_hide_withoutShow_isNoOp
+SearchBarTests testSearchBar_init_doesNotCrash searchBar_init_doesNotCrash
+SearchBarTests testSearchBar_initCoder_producesValidInstance searchBar_initCoder_producesValidInstance
+SearchBarTests testSearchBar_onQueryChanged_callback searchBar_onQueryChanged_callback
+SearchBarTests testSearchBar_searchFieldDidEndSearching_callsCallback searchBar_searchFieldDidEndSearching_callsCallback
+SearchBarTests testSearchBar_searchFieldDidStartSearching_callsCallback searchBar_searchFieldDidStartSearching_callsCallback
+SearchBarTests testSearchBar_show_animated_doesNotCrash searchBar_show_animated_doesNotCrash
+SearchBarTests testSearchBar_show_calledTwice_secondCallIsNoOp searchBar_show_calledTwice_secondCallIsNoOp
+SearchBarTests testSearchBar_show_unhides searchBar_show_unhides
+AppGridFlowLayoutTests testCompatibilityMetricsStayBoundToClipViewportAcrossPrepares compatibilityMetricsStayBoundToClipViewportAcrossPrepares
+AppGridFlowLayoutTests testDocumentFrameTracksPagedContentWidthAndCanShrink documentFrameTracksPagedContentWidthAndCanShrink
+AppGridFlowLayoutTests testPartialLastPageStartsAtTopLeftSlot partialLastPageStartsAtTopLeftSlot
+AppGridFlowLayoutTests testRowMajorAttributesUseTwoThreeAndFiveRowsWithoutOverlap rowMajorAttributesUseTwoThreeAndFiveRowsWithoutOverlap
+AppGridFlowLayoutTests testSnapUsesRealSectionCountAndConfiguredPageWidth snapUsesRealSectionCountAndConfiguredPageWidth
+AppGridFlowLayoutTests testSupplementaryRequestIsNotRepositionedAsAnItem supplementaryRequestIsNotRepositionedAsAnItem
+AppGridFlowLayoutTests testTwoAndThreeSectionOriginsDifferByPageWidth twoAndThreeSectionOriginsDifferByPageWidth
+PageControlViewTests testPageControlView_accessibilityLabel_isPageIndicator pageControlView_accessibilityLabel_isPageIndicator
+PageControlViewTests testPageControlView_accessibilityRole_isGroup pageControlView_accessibilityRole_isGroup
+PageControlViewTests testPageControlView_draw_withActiveDot_doesNotCrash pageControlView_draw_withActiveDot_doesNotCrash
+PageControlViewTests testPageControlView_draw_withPages_doesNotCrash pageControlView_draw_withPages_doesNotCrash
+PageControlViewTests testPageControlView_draw_zeroPages_doesNotCrash pageControlView_draw_zeroPages_doesNotCrash
+PageControlViewTests testPageControlView_init_doesNotCrash pageControlView_init_doesNotCrash
+PageControlViewTests testPageControlView_initCoder_producesValidInstance pageControlView_initCoder_producesValidInstance
+PageControlViewTests testPageControlView_intrinsicContentSize_multiplePages pageControlView_intrinsicContentSize_multiplePages
+PageControlViewTests testPageControlView_intrinsicContentSize_singlePage pageControlView_intrinsicContentSize_singlePage
+PageControlViewTests testPageControlView_intrinsicContentSize_zeroPages pageControlView_intrinsicContentSize_zeroPages
+PageControlViewTests testPageControlView_mouseDown_onDot_selectsPage pageControlView_mouseDown_onDot_selectsPage
+PageControlViewTests testPageControlView_mouseDown_outsideDots_doesNotSelect pageControlView_mouseDown_outsideDots_doesNotSelect
+PageControlViewTests testPageControlView_mouseDown_zeroPages_doesNotCrash pageControlView_mouseDown_zeroPages_doesNotCrash
+PageControlViewTests testPageControlView_onDotSelected_isSettable pageControlView_onDotSelected_isSettable
+PageControlViewTests testPageControlView_update_withMultiplePages_isVisible pageControlView_update_withMultiplePages_isVisible
+PageControlViewTests testPageControlView_update_withSinglePage_isHidden pageControlView_update_withSinglePage_isHidden
+EOF
+
+awk '{ print "LaunchPadTests." $1 "/" $2 }' /tmp/task-3m-id-map.tsv | \
+  LC_ALL=C sort > /tmp/task-3m-expected-before.txt
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(AnimationRunnerTests|LayoutPersistenceTests|EmptyStateViewTests|SearchBarTests|AppGridFlowLayoutTests|PageControlViewTests)/' | \
+  LC_ALL=C sort > /tmp/task-3m-actual-before.txt
+test "$(wc -l < /tmp/task-3m-id-map.tsv)" -eq 56
+test "$(wc -l < /tmp/task-3m-actual-before.txt)" -eq 56
+diff -u /tmp/task-3m-expected-before.txt /tmp/task-3m-actual-before.txt
+test "$(rg -c '^\s+func test' Tests/LaunchPadTests/Views/ViewLayerTests.swift)" -eq 56
+rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests/LaunchPadTests/Views/ViewLayerTests.swift
+```
+
+Expected: the canonical map, discovery set and method scan each identify exactly
+56 tests; `diff -u` exits 0, proving every qualified XCTest ID matches the
+canonical set; the static scan records the legacy symbols that the migration
+must remove.
+
+- [ ] **Step 2: Fix the SearchBar headless animation fixture before migration**
+
+Replace the wait-based test, still in its existing framework for this isolated fixture commit, with:
+
+```swift
+func testSearchBar_hide_animated_completionHidesView() {
+    let bar = SearchBar()
+    bar.show(animated: false)
+    var completionRan = false
+    bar.hideCompletionRunner = { completion in
+        completionRan = true
+        completion()
+    }
+
+    bar.hide(animated: true)
+
+    XCTAssertTrue(completionRan)
+    XCTAssertTrue(bar.isHidden)
+}
+```
+
+Run the exact test and commit only the fixture:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter SearchBarTests/testSearchBar_hide_animated_completionHidesView
+git add Tests/LaunchPadTests/Views/ViewLayerTests.swift
+git commit -m "test: make search bar hide completion deterministic"
+```
+
+Expected: one test passes without a fixed wait.
+
+- [ ] **Step 3: Perform the full-file pure migration with no production diff**
+
+Use this structure:
+
+```swift
+import Testing
+@testable import LaunchPad
+@testable import LaunchPadProtocols
+
+#if canImport(AppKit)
+import AppKit
+
+@MainActor @Suite("AnimationRunner") struct AnimationRunnerTests { /* 6 tests */ }
+@Suite("LayoutPersistence") struct LayoutPersistenceTests { /* 5 tests */ }
+@MainActor @Suite("EmptyStateView") struct EmptyStateViewTests { /* 8 tests */ }
+@MainActor @Suite("SearchBar") struct SearchBarTests { /* 14 tests */ }
+@MainActor @Suite("显式 row-major 分页网格") struct AppGridFlowLayoutTests { /* 7 tests */ }
+@MainActor @Suite("PageControlView") struct PageControlViewTests { /* 16 tests */ }
+#endif
+```
+
+The comments above describe counts only; the implementation commit must contain all original bodies. Convert truth/equality/nil assertions to `#expect`, unwraps to `try #require`, typed errors to `#expect(throws: TestError.self)`, and identity assertions to `===`. The row helper becomes:
+
+```swift
+private func expectRowMajor(
+    attributes: [NSCollectionViewLayoutAttributes],
+    columns: Int,
+    expectedRows: Int
+) throws {
+    let indexed = try attributes.map { attribute in
+        (
+            item: try #require(attribute.indexPath).item,
+            attributes: attribute
+        )
+    }
+    let sorted = indexed.sorted { $0.item < $1.item }
+    #expect(Set(sorted.map { $0.attributes.frame.minY.rounded() }).count == expectedRows)
+    for (index, entry) in sorted.enumerated() {
+        let row = index / columns
+        let column = index % columns
+        #expect(entry.item == index)
+        if column > 0 {
+            #expect(abs(
+                entry.attributes.frame.minY
+                    - sorted[row * columns].attributes.frame.minY
+            ) <= 0.5)
+        }
+    }
+}
+```
+
+Every caller uses `try expectRowMajor(...)`; no migrated test in this file may
+force-unwrap `indexPath`.
+
+Both EmptyState and SearchBar animated-hide cases inject `hideCompletionRunner = { $0() }`; tests that verify execution also set a Boolean before invoking completion. Page mouse tests require a real optional event with `try #require`; x=50 in width 100 selects page 1, x=5 in width 200 selects nothing, and the zero-page event leaves callback count zero.
+
+Create the migration report with 56 explicit rows, using
+`/tmp/task-3m-id-map.tsv` as the canonical old/new ID set. Each report row
+records the exact qualified old and new IDs, assertion equivalence or
+strengthening, actor placement, fixture behavior and wait cleanup. The report
+must expand every map row; citing the naming rule alone is not sufficient.
+
+- [ ] **Step 4: Run migration equivalence, adjacent geometry and static gates**
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AnimationRunnerTests|LayoutPersistenceTests|EmptyStateViewTests|SearchBarTests|AppGridFlowLayoutTests|PageControlViewTests|PageScrollViewTests'
+
+awk '{ print "LaunchPadTests." $1 "/" $3 "()" }' /tmp/task-3m-id-map.tsv | \
+  LC_ALL=C sort > /tmp/task-3m-expected-after.txt
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(AnimationRunnerTests|LayoutPersistenceTests|EmptyStateViewTests|SearchBarTests|AppGridFlowLayoutTests|PageControlViewTests)/' | \
+  LC_ALL=C sort > /tmp/task-3m-actual-after.txt
+test "$(wc -l < /tmp/task-3m-actual-after.txt)" -eq 56
+diff -u /tmp/task-3m-expected-after.txt /tmp/task-3m-actual-after.txt
+
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests/LaunchPadTests/Views/ViewLayerTests.swift
+```
+
+Expected: the six migrated suites discover exactly 56 tests, `diff -u` proves
+every qualified Swift Testing ID matches the canonical set, all focused and
+adjacent tests pass, and the static scan prints nothing.
+
+- [ ] **Step 5: Review migration and commit separately**
+
+The migration reviewer checks all 56 report rows, all 9 tolerance call sites
+(including the row-major helper call site), actor placement and a
+production-empty diff. Then commit:
+
+```bash
+git add Tests/LaunchPadTests/Views/ViewLayerTests.swift \
+  docs/superpowers/reports/2026-07-21-task-3m-view-layer-migration.md
+git commit -m "test: migrate view layer suites to Swift Testing"
+```
+
+Finally review the aggregate range from Task 3R-A base through Task 3M head and record the exact commits and commands in `.superpowers/sdd/task-3m-review.md`.
+
+---
+
+### Task 4: Finish Grid Metrics and Replace the Self-delegate with an Interaction Coordinator
 
 **Files:**
 - Modify: `Sources/LaunchPad/Views/AppIconCell.swift:19-20,192-218`
 - Modify: `Sources/LaunchPad/Views/FolderCell.swift:24-26,63-152`
 - Modify: `Sources/LaunchPad/Views/AppGridCollectionView.swift:25-45,99-205,209-282`
+- Create: `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift`
+- Modify: `Sources/LaunchPad/Controllers/LaunchPadViewController.swift:13-32,117-128,209-225`
 - Modify: `Sources/LaunchPad/Views/DiffableDataSourceBuilder.swift:8-49`
 - Modify: `Tests/LaunchPadTests/Views/AppIconCellTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/FolderCellTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift`
+- Create: `Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift`
+- Modify: `Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift`
+- Modify: `docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md`
+- Create: `scripts/run-with-timeout.sh`
 
 **Interfaces:**
-- Consumes: Task 1 `GridMetrics`, Task 3 layout API.
-- Produces: exact cell reconfiguration, section-aware accessibility, selection by stable ID and paged search snapshots.
+- Consumes: Task 1 `GridMetrics`, Task 3 layout API, Task 3M's full-file migration rule, Task 3R-B's isolated process boundaries and the approved `2026-07-22-app-grid-interaction-coordinator-design.md` ownership contract.
+- Produces: four fully migrated Swift Testing files (128 one-to-one mappings), deterministic workspace/drag inputs, exact cell reconfiguration, section-aware accessibility, stable-ID programmatic selection, authoritative paged-search snapshots and an externally owned main-grid delegate.
+- Produces for Tasks 5, 16, 18 and 19: `AppGridInteractionCoordinator`, `AppGridInteractionHosting`, non-optional `onSelectionChanged: ((PageItem) -> Void)?`, `onItemActivated`, injectable coordinator-owned pasteboard reader and a grid host with no delegate/business callbacks.
+- Produces for Tasks 22 and 23: executable `scripts/run-with-timeout.sh SECONDS -- COMMAND [ARG...]`, the only process-group supervisor implementation in the repository.
 
-- [ ] **Step 1: Add RED tests for 96pt reconfiguration, paged search and section-aware rows**
+**Confirmed Task 4 execution rules:**
 
-Add `import Testing` to `AppIconCellTests.swift`, `FolderCellTests.swift`,
-`AppGridCollectionViewTests.swift` and `DiffableDataSourceBuilderTests.swift`
-before using `@Test`/`#expect`; keep their existing XCTest imports and
-lifecycle methods. The top of each file must contain:
+- The following six commits are the completed, reviewed Task 4 baseline and must
+  not be replayed or amended: `29998af`, `47c5902`, `1de5594`, `d7073d4`,
+  `f804ef9`, `b169539`. They cover fixture isolation, all four XCTest migrations
+  and the cell-metrics slice. The remaining steps start at the Grid RED slice.
+- Commit `29998af` temporarily placed `pasteboardUUIDReader` on the grid to make
+  the historical drag fixtures deterministic. The remaining coordinator slice
+  migrates that dependency and every interaction test to the coordinator, then
+  deletes the grid property in the same Task. It is not a downstream API.
+- `LaunchPadViewController` strongly owns one coordinator for its current grid;
+  AppKit weakly references the coordinator as delegate; the coordinator weakly
+  references its host and strongly owns the existing `DragController`.
+- `AppGridCollectionView` must not conform to `NSCollectionViewDelegate`, assign
+  `delegate = self`, retain a proxy, or expose `onItemSelected`, grid-level
+  `onSelectionChanged`, `dragController` or `pasteboardUUIDReader` after GREEN.
+- `onSelectionChanged` has non-optional `PageItem` payload and fires before
+  `onItemActivated` for a valid mouse selection. Empty/stale selection and every
+  programmatic `selectItem(id:)` path emit no coordinator output.
+- `selectItem(id:)` clears nil/unknown IDs with
+  `deselectItems(at: selectionIndexPaths)`, never `deselectAll`, because AppKit
+  documents that the latter notifies the delegate.
+- The focused coordinator suite has two independent time gates:
+  `ContinuousClock` always asserts each returning hot-loop regression is `< 1s`;
+  the shared watchdog runs the focused process with a hard 30-second limit.
+
+- `makeSUT()` does not install default `GridMetrics`. Tests that exercise
+  entrance animation or accessibility rows explicitly call
+  `applyGridMetrics(_:)`; this preserves the observable `gridMetrics == nil`
+  guard branch.
+- `AppIconCell` uses these exact narrow boundaries, all defaulted to the
+  existing production sources:
 
 ```swift
-import Testing
-import XCTest
+internal var workspaceNotificationCenter: NotificationCenter =
+    NSWorkspace.shared.notificationCenter
+internal var runningApplicationProvider: () -> [NSRunningApplication] = {
+    NSWorkspace.shared.runningApplications
+}
+internal var notificationBundleIDReader: (Notification) -> String? = {
+    notification in
+    let application = notification.userInfo?[
+        NSWorkspace.applicationUserInfoKey
+    ] as? NSRunningApplication
+    return application?.bundleIdentifier
+}
 ```
 
-Add these exact assertions; the read-only observability properties are implemented in Step 3, so tests never reach into private constraints:
+  Registration and removal must use the same injected center. Each test owns a
+  local center and calls `prepareForReuse()` from `defer`; tests never post to
+  `NSWorkspace.shared.notificationCenter`.
+- Migration report IDs use the discovery format exactly. Example row:
+  `LaunchPadTests.AppIconCellTests/testInit_loadsView` ->
+  `LaunchPadTests.AppIconCellTests/init_loadsView()`.
+- The 13 behavior tests execute as three compileable TDD feature slices:
+  Cell `2`, Grid `9`, Search `2`. For each slice, add only that slice's tests,
+  prove its exact declarations exist once, run the compile/behavior RED, add
+  the minimal production implementation, then prove its qualified IDs exist
+  once and run the slice plus adjacent suites GREEN before commit. Do not
+  create one commit that leaves tests referring to missing interfaces.
+- `accessibilityRows()` returns an empty array while `gridMetrics` is nil.
+  Section-aware accessibility tests explicitly apply metrics before reload.
+- Folder rows retain `bottomAnchor`, so their inward inset uses a negative
+  constant. Name the positive distance `bottomInset`, assign
+  `constraint.constant = -bottomInset`, and test both the negative sign and the
+  exact inset before asserting final bounded, distinct, non-overlapping frames.
+
+- [ ] **Step 1: Record the exact 128-test baseline and reproduce all five existing outcomes**
+
+Run the four suites before editing:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AppIconCellTests|FolderCellTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests'
+
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(AppIconCellTests|FolderCellTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests)/'
+```
+
+Expected baseline: exactly 128 discovered tests: AppIconCell 26, FolderCell 20, AppGridCollectionView 71 and DiffableDataSourceBuilder 11. The run reports exactly three failures in the AppGrid `acceptDrop` group/reorder/extract paths and exactly two skips in AppIconCell activation/deactivation. Record all five IDs and their current assertion/skip reason in `.superpowers/sdd/task-4-baseline.md`; this ledger is diagnostic evidence, never a whitelist.
+
+- [ ] **Step 2: Fix the three false pasteboard fixtures and two workspace skips before migration**
+
+Add the narrow read boundary to `AppGridCollectionView`:
+
+```swift
+internal var pasteboardUUIDReader: (NSPasteboard) -> String? = {
+    $0.string(forType: .string)
+}
+```
+
+All source writer serialization tests continue to inspect a real `NSPasteboardItem`. Validation/acceptance extraction calls `pasteboardUUIDReader(draggingInfo.draggingPasteboard)`. The three previously failing tests inject the session UUID; missing/malformed branches inject nil or an invalid value. Strengthen the fixture matrix to prove group source, missing source, reorder target and missing target branches reached the callback or rejection expected by production.
+
+In `AppIconCell`, inject a test-local `NotificationCenter`, `runningApplicationProvider` and notification bundle reader. Each activation/deactivation test owns a local center, uses `defer` for exact observer cleanup, supplies a deterministic running app/bundle ID and replaces both skips with real assertions. No test posts to `NSWorkspace.shared.notificationCenter`.
+
+Run the same focused command. Expected: 128 pass, 0 fail, 0 skip. Commit only this existing-failure repair:
+
+```bash
+git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppIconCell.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift
+git commit -m "fix: isolate cell workspace and drag inputs"
+```
+
+- [ ] **Step 3: Migrate AppIconCellTests 26/26 with a production-empty diff**
+
+Replace the class and lifecycle with a suite-level `@MainActor @Suite("AppIconCell") struct AppIconCellTests`. Every test constructs its own cell, center and dependency closures; convert assertions to `#expect`/`try #require` and keep exact identity/equality semantics. Create 26 explicit mapping rows in `docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md` using the confirmed discovery-ID format for both old and new IDs, then run:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppIconCellTests
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/AppIconCellTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md
+git commit -m "test: migrate app icon cell tests to Swift Testing"
+```
+
+Expected: exactly 26 tests pass, no skip, static scan empty and no production diff.
+
+- [ ] **Step 4: Migrate FolderCellTests 20/20 with all tolerances preserved**
+
+Use suite-level `@MainActor`. Convert every old method one-to-one, preserve every frame/constraint assertion, and write all 20 rows to the same report. Every former `accuracy:` assertion becomes `#expect(abs(actual - expected) <= originalTolerance)`.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter FolderCellTests
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:|accuracy:' \
+  Tests/LaunchPadTests/Views/FolderCellTests.swift
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/FolderCellTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md
+git commit -m "test: migrate folder cell tests to Swift Testing"
+```
+
+Expected: exactly 20 tests pass and the report now has 46 mapping rows.
+
+- [ ] **Step 5: Migrate AppGridCollectionViewTests 71/71 without real pasteboard reads**
+
+Use suite-level `@MainActor`; replace shared IUO setup with `makeSUT()` returning a fresh collection view and owned dependencies. Writer tests inspect `NSPasteboardItem`; every validation/acceptance test injects `pasteboardUUIDReader`. Convert the file's four former tolerance assertions to exact `abs` comparisons and add 71 mapping rows.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppGridCollectionViewTests
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:|accuracy:' \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md
+git commit -m "test: migrate app grid tests to Swift Testing"
+```
+
+Expected: exactly 71 tests pass; the report has 117 rows.
+
+- [ ] **Step 6: Migrate DiffableDataSourceBuilderTests 11/11 and audit 128 mappings**
+
+This is a plain `@Suite` unless an individual test actually creates AppKit UI. Convert all 11 methods, append the 11 rows, and make the report contain columns for old discovery ID, new discovery ID, assertion equivalence/strengthening, actor, fixture and cleanup. The naming rule is removal of leading `test` followed by lowercasing the next character; the report must list every mapping rather than relying on the rule.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter DiffableDataSourceBuilderTests
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:|accuracy:' \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift
+test "$(rg -c '^\| `LaunchPadTests\.(AppIconCellTests|FolderCellTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests)/test[^`]+` \|' \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md)" -eq 128
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md
+git commit -m "test: migrate diffable builder tests to Swift Testing"
+```
+
+Expected: 11 tests pass, all four files are free of legacy symbols, the report has exactly 128 data rows plus header/separator, and all four migration commits have an empty production diff.
+
+- [ ] **Step 7: Prepare the remaining Grid, coordinator and Search RED slices**
+
+The declaration inventory below is authoritative, but add and execute it in
+the confirmed compileable order rather than as one uncompilable RED commit:
+
+1. Cell slice: the AppIcon and Folder declarations (`2`) is complete in
+   `b169539`.
+2. Grid slice: the AppGrid declarations (`8`).
+3. Coordinator slice: migrate every existing interaction test and add the
+   branch/lifecycle/hot-loop matrix from Step 11.
+4. Search slice: the DiffableDataSourceBuilder declarations (`2`).
+
+For each slice, add these exact assertions to the already migrated suites;
+never reintroduce the old framework. Run the corresponding Step 8 discovery
+and RED gate before adding that slice's production interface from Steps 9-10.
+The read-only observability properties prevent tests from reaching into private
+constraints:
+
+The complete declaration inventory is authoritative; Step 8 must statically
+verify every declaration before its RED run, then dynamically discover the
+same 13 qualified IDs after their owning slice compiles GREEN:
+
+| Suite | Exact Swift Testing function | Required behavioral proof |
+|---|---|---|
+| `AppIconCellTests` | `appIconCellReconfiguresBothConstraints` | 96pt reconfiguration updates width and height constraints |
+| `FolderCellTests` | `folderCellReconfiguresEntireThumbnailGrid` | all nine 96pt-grid frames are bounded, distinct and non-overlapping |
+| `AppGridCollectionViewTests` | `legacyUpdateLayoutUsesBothClipAxes` | compatibility API reads both valid clip-view axes |
+| `AppGridCollectionViewTests` | `legacyUpdateLayoutFallsBackOnlyForInvalidClipAxes` | each invalid axis falls back independently |
+| `AppGridCollectionViewTests` | `applyGridMetricsReconfiguresVisibleAppAndFolderCells` | app and folder cells receive the same new icon size |
+| `AppGridCollectionViewTests` | `reloadReconfigureItemsRefreshesUnchangedVisibleIcon` | unchanged diffable identity reloads its visible content |
+| `AppGridCollectionViewTests` | `buildAccessibilityRowsPreservesOneThenTwoItemSections` | section sizes `[1, 2]` remain `[1, 2]`, with view identity preserved |
+| `AppGridCollectionViewTests` | `accessibilityRowsUsesRealSnapshotSections` | outer accessibility API uses real snapshot section boundaries |
+| `AppGridCollectionViewTests` | `stableIDSelectionUpdatesActualSelectionIndexPaths` | stable ID resolves across sections and mutates AppKit selection state |
+| `AppGridCollectionViewTests` | `nilAndUnknownStableIDsClearActualSelection` | nil and unknown IDs both clear AppKit selection state |
+| `DiffableDataSourceBuilderTests` | `searchResultPagesAreAuthoritative` | supplied pages and item order override flat search results exactly |
+| `DiffableDataSourceBuilderTests` | `nilSearchResultPagesUsesLegacySearchSection` | nil pages preserve the single legacy `.search` section |
 
 ```swift
 @Test("AppIconCell 重新配置 96pt 时同步两个尺寸约束")
@@ -1179,7 +2343,7 @@ func appIconCellReconfiguresBothConstraints() {
 }
 
 @Test("FolderCell 重新配置 96pt 时同步九个缩略图及位置")
-func folderCellReconfiguresThumbnailGrid() {
+func folderCellReconfiguresEntireThumbnailGrid() {
     let cell = FolderCell()
     _ = cell.view
     cell.configure(
@@ -1192,10 +2356,16 @@ func folderCellReconfiguresThumbnailGrid() {
     )
     #expect(cell.configuredIconSize == 96)
     #expect(cell.configuredThumbnailGridSize == CGSize(width: 96, height: 96))
-    #expect(cell.configuredThumbnailSizes == Array(
-        repeating: (CGFloat(96) - 4) / 3,
-        count: 18
-    ))
+    cell.view.layoutSubtreeIfNeeded()
+    let frames = cell.configuredThumbnailFrames
+    let bounds = cell.configuredThumbnailGridBounds
+    #expect(frames.count == 9)
+    #expect(frames.allSatisfy { bounds.contains($0) })
+    for first in frames.indices {
+        for second in frames.indices where first < second {
+            #expect(!frames[first].intersects(frames[second]))
+        }
+    }
 }
 ```
 
@@ -1203,14 +2373,14 @@ Use this exact section-aware input in the accessibility test:
 
 ```swift
 let indexPaths = [
-    [IndexPath(item: 0, section: 0), IndexPath(item: 1, section: 0)],
-    [IndexPath(item: 0, section: 1)],
+    [IndexPath(item: 0, section: 0)],
+    [IndexPath(item: 0, section: 1), IndexPath(item: 1, section: 1)],
 ]
 let rows = collectionView.buildAccessibilityRows(
     itemIndexPathsBySection: indexPaths,
     columns: 2
 )
-#expect(rows.count == 2)
+#expect(rows.map(\.count) == [1, 2])
 #expect(requestedIndexPaths == indexPaths.flatMap { $0 })
 
 let noRows = collectionView.buildAccessibilityRows(
@@ -1223,9 +2393,9 @@ let noRows = collectionView.buildAccessibilityRows(
 Add stable selection and paged-search tests with exact section assertions:
 
 ```swift
-@Test("稳定 ID 在重新分段后解析到新 section")
+@Test("稳定 ID 在重新分段后解析并更新真实 AppKit selection")
 @MainActor
-func stableIDSelectionResolvesReprojectedSection() {
+func stableIDSelectionUpdatesActualSelectionIndexPaths() throws {
     let collectionView = AppGridCollectionView(frame: NSRect(
         x: 0, y: 0, width: 800, height: 600
     ))
@@ -1237,11 +2407,13 @@ func stableIDSelectionResolvesReprojectedSection() {
         animateEntrance: false
     )
 
-    #expect(collectionView.selectItem(id: items[4].id) == IndexPath(item: 2, section: 1))
+    let selected = try #require(collectionView.selectItem(id: items[4].id))
+    #expect(selected == IndexPath(item: 2, section: 1))
+    #expect(collectionView.selectionIndexPaths == [selected])
 }
 
-@Test("搜索结果视觉分页产生多个 search page sections")
-func searchResultPagesProduceMultipleSections() {
+@Test("paged search contents 是权威输入并保持精确顺序")
+func searchResultPagesAreAuthoritative() {
     let items = TestDataFactory.makeAppItems(count: 9)
     let snapshot = DiffableDataSourceBuilder.buildSnapshot(
         pages: [],
@@ -1255,24 +2427,98 @@ func searchResultPagesProduceMultipleSections() {
     #expect(snapshot.sectionIdentifiers == [
         .searchPage(0), .searchPage(1), .searchPage(2),
     ])
-    #expect(snapshot.sectionIdentifiers.allSatisfy {
-        snapshot.itemIdentifiers(inSection: $0).count <= 4
-    })
+    #expect(snapshot.itemIdentifiers.map(\.id) == items.map(\.id))
 }
 ```
 
-- [ ] **Step 2: Run focused suites and confirm RED**
+Implement the other eight Grid declarations and two Search declarations in
+their owning slice.
+Their required-proof column is the minimum assertion contract: each
+test must assert the named production state directly, not only callback count,
+object existence or lack of a crash. In particular, the nil/unknown selection
+test inspects `selectionIndexPaths.isEmpty`, and the legacy-search test compares
+both `.search` and the exact item order. Selection callback order moves to the
+coordinator suite and compares the exact two-element event array there.
 
-Run:
+- [ ] **Step 8: Confirm each slice RED, then discover its GREEN IDs**
+
+`swift test list` compiles the test target, so a slice whose tests refer to a
+missing production interface cannot be dynamically discovered during compile
+RED. For each slice, first use `rg` to prove every exact function declaration
+exists once, then run only the covering suites and record the expected
+interface/behavior failure. After implementing the slice, rerun the focused
+suite GREEN, obtain a fresh `swift test list`, and use the qualified-ID loop for
+that slice. Use these three exact inventories:
+
+```bash
+test "$(rg -n '^\s*func (appIconCellReconfiguresBothConstraints|folderCellReconfiguresEntireThumbnailGrid)\(' \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift \
+  Tests/LaunchPadTests/Views/FolderCellTests.swift | wc -l | tr -d ' ')" -eq 2
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AppIconCellTests|FolderCellTests'
+
+test "$(rg -c '^\s*func (legacyUpdateLayoutUsesBothClipAxes|legacyUpdateLayoutFallsBackOnlyForInvalidClipAxes|applyGridMetricsReconfiguresVisibleAppAndFolderCells|reloadReconfigureItemsRefreshesUnchangedVisibleIcon|buildAccessibilityRowsPreservesOneThenTwoItemSections|accessibilityRowsUsesRealSnapshotSections|stableIDSelectionUpdatesActualSelectionIndexPaths|nilAndUnknownStableIDsClearActualSelection)\(' \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift)" -eq 8
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AppGridCollectionViewTests|AppGridFlowLayoutTests'
+
+test "$(rg -c '^\s*func (searchResultPagesAreAuthoritative|nilSearchResultPagesUsesLegacySearchSection)\(' \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift)" -eq 2
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'DiffableDataSourceBuilderTests|DiffableDataSourceTests'
+
+```
+
+Expected per slice: the completed Cell `2`, then Grid `8`, the Step 11
+coordinator inventory, then Search `2` declarations exist once before
+the focused command fails only for that slice's missing production interface or
+behavior. After implementation, the same qualified IDs appear once and the
+focused command is GREEN. Commit the current slice before adding the next
+slice's tests. Across the Grid/Search records all 10 remaining IDs must be
+present exactly once; coordinator IDs are checked by their own exhaustive list.
+Any missing/duplicate declaration or ID, or unrelated migrated-test failure, is
+a stop condition rather than valid RED evidence.
+
+- [ ] **Step 9: Add exact metrics, constraint storage and reconfiguration APIs**
+
+Execute the AppIcon/Folder portions immediately after the Cell RED gate and
+commit that slice before adding Grid tests. Execute the AppGrid metrics portion
+immediately after the Grid RED gate. The existing
+`animateEntrance_withInjectedProviders_runsLoopBody` fixture must explicitly
+call `applyGridMetrics(_:)` before `reload`; do not install metrics in the
+default `makeSUT()`.
+
+After implementing the Cell portion, run its GREEN gate and commit immediately:
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'AppIconCellTests|FolderCellTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests'
+  --filter 'AppIconCellTests|FolderCellTests'
+TASK4_GREEN_LIST=$(CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+  SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+  swift test --disable-sandbox list)
+while IFS= read -r id; do
+  test "$(printf '%s\n' "$TASK4_GREEN_LIST" | rg -c -x -F "${id}()")" -eq 1
+done <<'TASK4_CELL_GREEN_IDS'
+LaunchPadTests.AppIconCellTests/appIconCellReconfiguresBothConstraints
+LaunchPadTests.FolderCellTests/folderCellReconfiguresEntireThumbnailGrid
+TASK4_CELL_GREEN_IDS
+git add Sources/LaunchPad/Views/AppIconCell.swift \
+  Sources/LaunchPad/Views/FolderCell.swift \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift \
+  Tests/LaunchPadTests/Views/FolderCellTests.swift
+git commit -m "fix: synchronize cell metrics"
 ```
-
-- [ ] **Step 3: Add exact metrics, constraint storage and reconfiguration APIs**
 
 In `AppGridCollectionView` replace `currentIconSize` with:
 
@@ -1283,13 +2529,23 @@ public func applyGridMetrics(_ metrics: GridMetrics) {
     guard gridMetrics != metrics else { return }
     gridMetrics = metrics
     (collectionViewLayout as? AppGridFlowLayout)?.applyGridMetrics(metrics)
+    var snapshot = diffableDataSource.snapshot()
+    let items = snapshot.itemIdentifiers
+    if !items.isEmpty {
+        snapshot.reloadItems(items)
+        diffableDataSource.apply(snapshot, animatingDifferences: false)
+    }
 }
 
 @available(*, deprecated, message: "Use applyGridMetrics(_:)")
 public func updateLayout(screenWidth: CGFloat) {
-    let height = bounds.height > 0 ? bounds.height : 620
+    let clipSize = enclosingScrollView?.contentView.bounds.size ?? .zero
+    let width = clipSize.width.isFinite && clipSize.width > 0
+        ? clipSize.width : screenWidth
+    let height = clipSize.height.isFinite && clipSize.height > 0
+        ? clipSize.height : 620
     applyGridMetrics(GridLayoutCalculator.calculate(
-        viewportSize: CGSize(width: screenWidth, height: height)
+        viewportSize: CGSize(width: width, height: height)
     ))
 }
 ```
@@ -1330,6 +2586,15 @@ var configuredThumbnailGridSize: CGSize {
 }
 var configuredThumbnailSizes: [CGFloat] {
     thumbnailSizeConstraints.map(\.constant)
+}
+var configuredThumbnailBottomConstants: [CGFloat] {
+    thumbnailBottomConstraints.map { $0.0.constant }
+}
+var configuredThumbnailFrames: [CGRect] {
+    thumbnailImageViews.map(\.frame)
+}
+var configuredThumbnailGridBounds: CGRect {
+    thumbnailGrid.bounds
 }
 ```
 
@@ -1400,13 +2665,71 @@ thumbnailLeadingConstraints.forEach { constraint, column in
     constraint.constant = CGFloat(column) * (thumbnailSize + thumbnailSpacing)
 }
 thumbnailBottomConstraints.forEach { constraint, rowFromBottom in
-    constraint.constant = -CGFloat(rowFromBottom) * (thumbnailSize + thumbnailSpacing)
+    let bottomInset = CGFloat(rowFromBottom)
+        * (thumbnailSize + thumbnailSpacing)
+    constraint.constant = -bottomInset
 }
 ```
 
 Pass `gridMetrics?.iconSize ?? 64` in both `.app` and `.group` cell configuration branches.
 
-- [ ] **Step 4: Make reload reconfigure existing IDs, paginate search and keep rows section-aware**
+- [ ] **Step 10: Make reload reconfigure existing IDs, paginate search and keep rows section-aware**
+
+Execute the grid reload/accessibility/selection portions after the Grid RED
+gate. Execute `.searchPage`, `searchResultPages` and the reload forwarding hunk
+only after the Search RED gate, then commit the Search slice. This ordering
+keeps every intermediate commit compileable.
+
+After implementing only the Grid portion, run its GREEN gate and commit before
+adding either Search test:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AppGridCollectionViewTests|AppGridFlowLayoutTests'
+TASK4_GREEN_LIST=$(CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+  SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+  swift test --disable-sandbox list)
+while IFS= read -r id; do
+  test "$(printf '%s\n' "$TASK4_GREEN_LIST" | rg -c -x -F "${id}()")" -eq 1
+done <<'TASK4_GRID_GREEN_IDS'
+LaunchPadTests.AppGridCollectionViewTests/legacyUpdateLayoutUsesBothClipAxes
+LaunchPadTests.AppGridCollectionViewTests/legacyUpdateLayoutFallsBackOnlyForInvalidClipAxes
+LaunchPadTests.AppGridCollectionViewTests/applyGridMetricsReconfiguresVisibleAppAndFolderCells
+LaunchPadTests.AppGridCollectionViewTests/reloadReconfigureItemsRefreshesUnchangedVisibleIcon
+LaunchPadTests.AppGridCollectionViewTests/buildAccessibilityRowsPreservesOneThenTwoItemSections
+LaunchPadTests.AppGridCollectionViewTests/accessibilityRowsUsesRealSnapshotSections
+LaunchPadTests.AppGridCollectionViewTests/stableIDSelectionUpdatesActualSelectionIndexPaths
+LaunchPadTests.AppGridCollectionViewTests/nilAndUnknownStableIDsClearActualSelection
+TASK4_GRID_GREEN_IDS
+git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift
+git commit -m "fix: synchronize grid accessibility and selection"
+```
+
+Then add the two Search tests, run their Step 8 RED gate, implement only the
+Search portion, run GREEN and commit:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'DiffableDataSourceBuilderTests|DiffableDataSourceTests|AppGridCollectionViewTests'
+TASK4_GREEN_LIST=$(CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+  SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+  swift test --disable-sandbox list)
+while IFS= read -r id; do
+  test "$(printf '%s\n' "$TASK4_GREEN_LIST" | rg -c -x -F "${id}()")" -eq 1
+done <<'TASK4_SEARCH_GREEN_IDS'
+LaunchPadTests.DiffableDataSourceBuilderTests/searchResultPagesAreAuthoritative
+LaunchPadTests.DiffableDataSourceBuilderTests/nilSearchResultPagesUsesLegacySearchSection
+TASK4_SEARCH_GREEN_IDS
+git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/DiffableDataSourceBuilder.swift \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift
+git commit -m "fix: paginate authoritative search snapshots"
+```
 
 Extend `Section` and `DiffableDataSourceBuilder.buildSnapshot` without removing the old single-search-section compatibility path:
 
@@ -1475,7 +2798,7 @@ public func reload(
 }
 ```
 
-Change `animateEntrance()` to `guard let columns = gridMetrics?.columns else { return }`; remove its `calculate(screenWidth:)` call. Build `accessibilityRows()` from snapshot sections and `diffableDataSource.indexPath(for:)`, then implement the row helper exactly:
+Change `animateEntrance()` to `guard let columns = gridMetrics?.columns else { return }`; remove its `calculate(screenWidth:)` call. Build `accessibilityRows()` from snapshot sections and `diffableDataSource.indexPath(for:)`; when `gridMetrics` is nil, return an empty array. Then implement the row helper exactly:
 
 ```swift
 func buildAccessibilityRows(
@@ -1495,7 +2818,11 @@ func buildAccessibilityRows(
 }
 ```
 
-Add `var onSelectionChanged: ((PageItem?) -> Void)?`. In `didSelectItemsAt`, remove `deselectAll(nil)`, resolve the item, then call `onSelectionChanged?(item)` before `onItemSelected?(item)`. Implement stable selection:
+Do not add a grid selection callback. Remove `onItemSelected`, the existing
+grid-level `onSelectionChanged`, `dragController`, `pasteboardUUIDReader`,
+`delegate = self` and the entire `NSCollectionViewDelegate` conformance only in
+the coordinator GREEN commit from Step 12, so the intermediate Grid commit stays
+compileable. Implement stable programmatic selection without business output:
 
 ```swift
 @discardableResult
@@ -1505,7 +2832,7 @@ func selectItem(id: Int64?) -> IndexPath? {
             where: { $0.id == id }
           ),
           let indexPath = diffableDataSource.indexPath(for: item) else {
-        deselectAll(nil)
+        deselectItems(at: selectionIndexPaths)
         return nil
     }
     selectItems(at: [indexPath], scrollPosition: [])
@@ -1513,28 +2840,1051 @@ func selectItem(id: Int64?) -> IndexPath? {
 }
 ```
 
-- [ ] **Step 5: Run focused suites GREEN**
+- [ ] **Step 11: Move the complete interaction matrix to a coordinator RED suite**
+
+Create `@MainActor @Suite("AppGridInteractionCoordinator") struct
+AppGridInteractionCoordinatorTests`. Its fixture returns the host, the real
+`NSCollectionView`, coordinator and `DragController`; no test may recover a
+coordinator from a weak AppKit delegate without also retaining it:
+
+```swift
+@MainActor
+private final class InteractionHost: AppGridInteractionHosting {
+    let collectionViewForDelegateInstallation = NSCollectionView()
+    var itemsByPath: [IndexPath: PageItem] = [:]
+    var itemsByUUID: [String: PageItem] = [:]
+    var resolvedPath: IndexPath?
+    var renderedImages: [IndexPath: NSImage] = [:]
+    private(set) var snapshotMoves: [(PageItem, PageItem)] = []
+
+    func pageItem(at indexPath: IndexPath) -> PageItem? {
+        itemsByPath[indexPath]
+    }
+
+    func pageItem(uuid: String) -> PageItem? {
+        itemsByUUID[uuid]
+    }
+
+    func resolvedIndexPath(at point: NSPoint) -> IndexPath? {
+        resolvedPath
+    }
+
+    func dragImage(at indexPath: IndexPath) -> NSImage? {
+        renderedImages[indexPath]
+    }
+
+    func moveSnapshotItem(_ item: PageItem, before target: PageItem) {
+        snapshotMoves.append((item, target))
+    }
+}
+
+@MainActor
+private func makeInteractionSUT(
+    reader: @escaping (NSPasteboard) -> String? = {
+        $0.string(forType: .string)
+    }
+) -> (
+    host: InteractionHost,
+    collectionView: NSCollectionView,
+    coordinator: AppGridInteractionCoordinator,
+    dragController: DragController
+) {
+    let host = InteractionHost()
+    host.collectionViewForDelegateInstallation.frame = NSRect(
+        x: 0, y: 0, width: 800, height: 620
+    )
+    let dragController = DragController(scheduler: MockScheduler())
+    let coordinator = AppGridInteractionCoordinator(
+        dragController: dragController,
+        pasteboardUUIDReader: reader
+    )
+    coordinator.attach(to: host)
+    return (
+        host,
+        host.collectionViewForDelegateInstallation,
+        coordinator,
+        dragController
+    )
+}
+```
+
+Migrate the following 23 historical AppGrid interaction tests plus the pending
+callback-order behavior rather than copying them. In the migration report, keep
+each old discovery ID and change the new suite prefix to
+`LaunchPadTests.AppGridInteractionCoordinatorTests/`; rename only where the old
+name still says `onItemSelected`. Keep
+`makeDragImage_returns64x64Image` in `AppGridCollectionViewTests`, because image
+rendering is a host responsibility. The grid suite must no longer contain these
+interaction declarations:
+
+```text
+onItemSelected_callbackIsSettable
+pasteboardWriterForItemAt_appItem_writesUuid
+pasteboardWriterForItemAt_groupItem_writesUuid
+pasteboardWriterForItemAt_pageItem_returnsNil
+validateDrop_screenEdge_returnsGeneric
+validateDrop_rightEdge_returnsGeneric
+validateDrop_emptyArea_returnsMove
+acceptDrop_onGroupTarget_returnsTrue
+acceptDrop_invalidPasteboard_returnsFalse
+draggingImageForItemsAt_returnsImage
+onItemSelected_triggeredViaDidSelect
+onItemSelected_emptySelection_doesNotFire
+resolveHoverLocation_overIcon_whenGroupAtLocation
+resolveHoverLocation_empty_whenAppAtLocation
+resolveHoverLocation_empty_whenResolverReturnsNil
+acceptDrop_reorderSamePage_performsReorder
+acceptDrop_outOfRangeTarget_returnsFalse
+extractDraggedItem_validPasteboard_returnsItem
+extractDraggedItem_emptyPasteboard_returnsNil
+performDrop_onGroupTarget_returnsTrue
+performDrop_reorderSamePage_returnsTrue
+draggingImageForItemsAt_usesInjectedCellProvider
+performDrop_bothItemsNotInSnapshot_noOp
+selectionCallbacksPreserveChangedThenActivatedOrder
+```
+
+Add missing branch/lifecycle cases under these exact IDs. Every item in the
+right column is a required direct assertion, not merely a no-crash check:
+
+| Test ID | Exact proof |
+|---|---|
+| `selection_emptyAndStaleEmitNothing` | empty and unmapped index paths produce zero outputs |
+| `selection_validEmitsChangedThenActivated` | exact `changed:<id>`, `activated:<id>` order |
+| `selection_hasNoDeselectOutput` | coordinator implements no `didDeselectItemsAt`; programmatic clear emits nothing |
+| `writer_appGroupPageAndMissing` | app/group UUID payloads; page/missing nil |
+| `validation_allLocationAndStateBranches` | left/right edge, group, app, page, no path, stale path and non-dragging |
+| `validation_edgePreservesDropOperationSentinel` | both edge branches leave a `.before` sentinel unchanged |
+| `acceptance_allSourceAndTargetBranches` | nil/malformed/unknown source, missing target, group, ordinary move and both absent |
+| `dragImage_emptyMissingAndValid` | empty set/missing image return empty; valid image is identical |
+| `attach_isIdempotentAndMovesFromAToB` | repeated attach is stable; A delegate nil, B delegate coordinator |
+| `detach_preservesExternalDelegateAndIsIdempotent` | externally replaced delegate survives two detach calls |
+| `weakHostAndOwnerGraphReleaseWithoutCycle` | host, grid, coordinator and VC weak probes become nil as applicable |
+| `hostReleaseMakesAllFiveEntrypointsSafe` | nil/false/empty/none defaults and zero output after host deallocation |
+| `delegateWiringSelectionAndDragAreReal` | one selection and one writer/validation call enter through `collectionView.delegate` |
+| `programmaticSelectionNeverEmitsBusinessOutput` | valid, nil and unknown stable IDs leave event list empty |
+
+Use `#expect(collectionView.delegate === coordinator)` and
+`#expect(collectionView.delegate !== collectionView)` in every real-wiring
+fixture. Delegate integration calls use the retained delegate:
+
+```swift
+let delegate = try #require(collectionView.delegate)
+delegate.collectionView?(
+    collectionView,
+    didSelectItemsAt: [IndexPath(item: 0, section: 0)]
+)
+let writer = delegate.collectionView?(
+    collectionView,
+    pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
+)
+#expect(writer != nil)
+```
+
+The pure branch tests may call coordinator methods directly. They must not call
+`grid.collectionView(grid, ...)`; that expression is a permanent static-gate
+failure for the main grid.
+
+Run RED after moving tests and adding the exact inventories:
+
+```bash
+test "$(rg -c '^\s*@Test\b' \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift)" -ge 38
+! rg -n 'pasteboardWriterForItemAt|validateDrop|acceptDrop|draggingImageForItemsAt|resolveHoverLocation|extractDraggedItem|performDrop|selectionCallbacksPreserveChangedThenActivatedOrder' \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|LaunchPadViewControllerTests'
+```
+
+Expected: compile RED only because `AppGridInteractionHosting`,
+`AppGridInteractionCoordinator` and VC ownership/wiring do not yet exist. A
+zero-match filter, missing migrated ID or failure in an already migrated
+non-interaction grid test is not valid RED.
+
+- [ ] **Step 12: Implement the host and coordinator, then delete the old grid API**
+
+Create `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift` with this
+Task 4 interface and ownership. Task 16 extends the same protocol; it does not
+replace or broaden ownership back into the grid:
+
+```swift
+import AppKit
+import LaunchPadProtocols
+
+@MainActor
+protocol AppGridInteractionHosting: AnyObject {
+    var collectionViewForDelegateInstallation: NSCollectionView { get }
+    func pageItem(at indexPath: IndexPath) -> PageItem?
+    func pageItem(uuid: String) -> PageItem?
+    func resolvedIndexPath(at point: NSPoint) -> IndexPath?
+    func dragImage(at indexPath: IndexPath) -> NSImage?
+    func moveSnapshotItem(_ item: PageItem, before target: PageItem)
+}
+
+@MainActor
+final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
+    private(set) weak var host: (any AppGridInteractionHosting)?
+    private weak var collectionView: NSCollectionView?
+    let dragController: DragController
+
+    var onSelectionChanged: ((PageItem) -> Void)?
+    var onItemActivated: ((PageItem) -> Void)?
+    var pasteboardUUIDReader: (NSPasteboard) -> String?
+
+    init(
+        dragController: DragController,
+        pasteboardUUIDReader: @escaping (NSPasteboard) -> String?
+    ) {
+        self.dragController = dragController
+        self.pasteboardUUIDReader = pasteboardUUIDReader
+    }
+
+    func attach(to host: any AppGridInteractionHosting) {
+        detach()
+        let collectionView = host.collectionViewForDelegateInstallation
+        self.host = host
+        self.collectionView = collectionView
+        collectionView.delegate = self
+    }
+
+    func detach() {
+        if collectionView?.delegate === self {
+            collectionView?.delegate = nil
+        }
+        collectionView = nil
+        host = nil
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        didSelectItemsAt indexPaths: Set<IndexPath>
+    ) {
+        guard let indexPath = indexPaths.first,
+              let item = host?.pageItem(at: indexPath) else { return }
+        onSelectionChanged?(item)
+        onItemActivated?(item)
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        pasteboardWriterForItemAt indexPath: IndexPath
+    ) -> NSPasteboardWriting? {
+        guard let item = host?.pageItem(at: indexPath),
+              item.type != .page else { return nil }
+        let pasteboardItem = NSPasteboardItem()
+        pasteboardItem.setString(item.uuid, forType: .string)
+        return pasteboardItem
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        validateDrop draggingInfo: NSDraggingInfo,
+        proposedIndexPath: AutoreleasingUnsafeMutablePointer<NSIndexPath>,
+        dropOperation: UnsafeMutablePointer<NSCollectionView.DropOperation>
+    ) -> NSDragOperation {
+        guard host != nil else { return [] }
+        let location = draggingInfo.draggingLocation
+        let edgeWidth: CGFloat = 40
+        if location.x < edgeWidth
+            || location.x > collectionView.bounds.width - edgeWidth {
+            dragController.updateDragHover(location: .screenEdge)
+            return .generic
+        }
+        dragController.updateDragHover(location: resolveHoverLocation(at: location))
+        dropOperation.pointee = .on
+        return .move
+    }
+
+    func resolveHoverLocation(at location: NSPoint) -> DragController.HoverLocation {
+        guard let indexPath = host?.resolvedIndexPath(at: location),
+              let item = host?.pageItem(at: indexPath),
+              item.type == .group else { return .empty }
+        return .overIcon(targetId: item.id)
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        acceptDrop draggingInfo: NSDraggingInfo,
+        indexPath: IndexPath,
+        dropOperation: NSCollectionView.DropOperation
+    ) -> Bool {
+        guard let source = extractDraggedItem(from: draggingInfo),
+              let target = host?.pageItem(at: indexPath) else { return false }
+        return performDrop(draggedItem: source, targetItem: target)
+    }
+
+    func extractDraggedItem(from draggingInfo: NSDraggingInfo) -> PageItem? {
+        guard let uuid = pasteboardUUIDReader(draggingInfo.draggingPasteboard)
+        else { return nil }
+        return host?.pageItem(uuid: uuid)
+    }
+
+    func performDrop(draggedItem: PageItem, targetItem: PageItem) -> Bool {
+        if targetItem.type != .group {
+            host?.moveSnapshotItem(draggedItem, before: targetItem)
+        }
+        dragController.handleDrop()
+        return host != nil
+    }
+
+    func collectionView(
+        _ collectionView: NSCollectionView,
+        draggingImageForItemsAt indexPaths: Set<IndexPath>,
+        with event: NSEvent,
+        offset dragImageOffset: NSPointPointer
+    ) -> NSImage {
+        guard let indexPath = indexPaths.first else { return NSImage() }
+        return host?.dragImage(at: indexPath) ?? NSImage()
+    }
+}
+```
+
+Conform `AppGridCollectionView` through a narrow host extension. Keep
+`makeDragImage(from:)` as the rendering primitive and keep the current Task 4
+optimistic move exactly until Task 16 removes it:
+
+```swift
+@MainActor
+extension AppGridCollectionView: AppGridInteractionHosting {
+    var collectionViewForDelegateInstallation: NSCollectionView { self }
+
+    func pageItem(at indexPath: IndexPath) -> PageItem? {
+        diffableDataSource.itemIdentifier(for: indexPath)
+    }
+
+    func pageItem(uuid: String) -> PageItem? {
+        diffableDataSource.snapshot().itemIdentifiers.first { $0.uuid == uuid }
+    }
+
+    func resolvedIndexPath(at point: NSPoint) -> IndexPath? {
+        indexPathResolver?(point) ?? indexPathForItem(at: point)
+    }
+
+    func dragImage(at indexPath: IndexPath) -> NSImage? {
+        guard let cell = visibleCellProvider?(indexPath) ?? item(at: indexPath)
+        else { return nil }
+        return makeDragImage(from: cell.view)
+    }
+
+    func moveSnapshotItem(_ item: PageItem, before target: PageItem) {
+        var snapshot = diffableDataSource.snapshot()
+        guard snapshot.sectionIdentifier(containingItem: item) != nil
+                || snapshot.sectionIdentifier(containingItem: target) != nil
+        else { return }
+        snapshot.deleteItems([item])
+        snapshot.insertItems([item], beforeItem: target)
+        diffableDataSource.apply(snapshot, animatingDifferences: true)
+    }
+}
+```
+
+Delete the old delegate extension and the four obsolete grid properties. Keep
+`draggingSession(_:sourceOperationMaskFor:)` as the grid's existing
+`NSDraggingSource` override; it is not collection delegate ownership.
+
+- [ ] **Step 13: Make the ViewController the sole production owner and prove lifecycle wiring**
+
+Add the strong property and rebuild-safe installation in
+`LaunchPadViewController`:
+
+```swift
+private(set) var gridInteractionCoordinator: AppGridInteractionCoordinator?
+
+override public func loadView() {
+    gridInteractionCoordinator?.detach()
+    // Existing root view and subview construction remains unchanged.
+    collectionView = AppGridCollectionView(frame: .zero)
+    collectionView.configure(iconCache: iconCache, storage: storage)
+    let coordinator = AppGridInteractionCoordinator(
+        dragController: dragController,
+        pasteboardUUIDReader: { $0.string(forType: .string) }
+    )
+    gridInteractionCoordinator = coordinator
+    coordinator.attach(to: collectionView)
+    // Continue the existing scroll/document-view setup.
+}
+
+private func setupCallbacks() {
+    // Existing search callbacks remain unchanged.
+    gridInteractionCoordinator?.onItemActivated = { [weak self] item in
+        self?.handleItemSelection(item)
+    }
+    // Existing cell delete, page and DragController callbacks remain unchanged.
+}
+```
+
+Task 4 binds only activation. Task 5 owns the first introduction of
+`selectedItemID` and binds coordinator `onSelectionChanged` there. Replace all
+VC tests that invoke `collectionView.onItemSelected` with retained
+coordinator output or real delegate selection. Add tests for strong retention,
+view rebuild A-to-B detachment and weak release probes. Expected wiring after
+every rebuild is exactly:
+
+```swift
+let coordinator = try #require(sut.gridInteractionCoordinator)
+let grid = try #require(firstGrid(in: sut.view))
+#expect(grid.delegate === coordinator)
+#expect(grid.delegate !== grid)
+```
+
+Run GREEN and commit the coordinator ownership slice separately:
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'AppIconCellTests|FolderCellTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests|DiffableDataSourceTests'
+  --filter 'AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|LaunchPadViewControllerTests'
+! rg -n 'delegate\s*=\s*self|NSCollectionViewDelegate|onItemSelected|onSelectionChanged|dragController|pasteboardUUIDReader' \
+  Sources/LaunchPad/Views/AppGridCollectionView.swift
+! rg -n 'collectionView\.collectionView\(' \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift
+git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+  Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md
+git commit -m "fix: externalize app grid interactions"
 ```
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 14: Add the macOS 26 hot-loop regression and shared process watchdog**
+
+Add a real `NSWindow + NSScrollView + AppGridCollectionView` test to the
+coordinator suite. Load one app and one folder, attach the coordinator before
+the first reload, then execute initial metrics, reload/display, updated metrics,
+real delegate selection, programmatic clear and one second reload/selection
+cycle. Always assert the returning path against `ContinuousClock`:
+
+```swift
+@Test("macOS 26 reload display metrics selection cycle converges under one second")
+func appKitReloadDisplaySelectionCycleConverges() throws {
+    let clock = ContinuousClock()
+    let start = clock.now
+    let window = NSWindow(
+        contentRect: NSRect(x: 0, y: 0, width: 800, height: 620),
+        styleMask: [.borderless],
+        backing: .buffered,
+        defer: false
+    )
+    let scrollView = NSScrollView(frame: window.contentView!.bounds)
+    let grid = AppGridCollectionView(frame: scrollView.contentView.bounds)
+    let coordinator = AppGridInteractionCoordinator(
+        dragController: DragController(scheduler: MockScheduler()),
+        pasteboardUUIDReader: { _ in nil }
+    )
+    coordinator.attach(to: grid)
+    scrollView.documentView = grid
+    window.contentView = scrollView
+    window.orderFront(nil)
+    defer {
+        coordinator.detach()
+        window.orderOut(nil)
+    }
+
+    let app = TestDataFactory.makePageItem(id: 1, type: .app)
+    let folder = TestDataFactory.makePageItem(
+        id: 2,
+        type: .group,
+        group: TestDataFactory.makeGroupInfo(id: 2)
+    )
+    grid.applyGridMetrics(GridLayoutCalculator.calculate(
+        viewportSize: CGSize(width: 800, height: 620)
+    ))
+    grid.reload(
+        pages: [[app, folder]], searchResults: nil, searchQuery: nil,
+        animatingDifferences: false, animateEntrance: false
+    )
+    grid.layoutSubtreeIfNeeded()
+    let updatedMetrics = GridLayoutCalculator.calculate(
+        viewportSize: CGSize(width: 800, height: 496)
+    )
+    grid.applyGridMetrics(updatedMetrics)
+    grid.layoutSubtreeIfNeeded()
+    let appCell = try #require(
+        grid.item(at: IndexPath(item: 0, section: 0)) as? AppIconCell
+    )
+    let folderCell = try #require(
+        grid.item(at: IndexPath(item: 1, section: 0)) as? FolderCell
+    )
+    #expect(appCell.configuredIconSize == updatedMetrics.iconSize)
+    #expect(folderCell.configuredIconSize == updatedMetrics.iconSize)
+    grid.delegate?.collectionView?(
+        grid,
+        didSelectItemsAt: [IndexPath(item: 0, section: 0)]
+    )
+    _ = grid.selectItem(id: nil)
+    grid.reload(
+        pages: [[app, folder]], searchResults: nil, searchQuery: nil,
+        animatingDifferences: false, animateEntrance: false
+    )
+    grid.layoutSubtreeIfNeeded()
+    grid.delegate?.collectionView?(
+        grid,
+        didSelectItemsAt: [IndexPath(item: 1, section: 0)]
+    )
+
+    #expect(clock.now - start < .seconds(1))
+}
+```
+
+Create executable `scripts/run-with-timeout.sh`. Its public contract is exact:
+
+```text
+scripts/run-with-timeout.sh SECONDS -- COMMAND [ARG...]
+parameter error = 2; timeout = 124; HUP/INT/TERM = 129/130/143;
+ordinary nonzero and exec 127 are preserved; argv is exec'd without eval.
+```
+
+The implementation creates one process group in a Perl supervisor. A pipe ACK
+from the child makes process-group creation happen-before publication of the
+wrapper ready file; only then may the wrapper forward signals to the negative
+PGID. Cleanup sends TERM, waits a fixed two-second grace, sends KILL, reaps the
+direct child, and only then returns. The executable also exposes these exact
+internal verification entries:
 
 ```bash
-git add Sources/LaunchPad/Views/AppIconCell.swift \
+scripts/run-with-timeout.sh --self-test-timeout
+scripts/run-with-timeout.sh --self-test-signal
+scripts/run-with-timeout.sh --self-test-nonzero
+```
+
+The timeout, signal and ordinary-nonzero branches each start a fresh wrapper
+which starts `/bin/zsh`; that child forks a descendant `sleep`. The complete
+script records wrapper, supervisor, direct child and descendant exact PIDs and
+asserts all are gone after return. Signal self-test runs HUP, INT and TERM
+independently and asserts `129`, `130`, `143`; for each signal it first sends at
+the group-ready boundary before running the complete descendant-tree case.
+Nonzero self-test asserts `17` with residual descendant cleanup, then separately
+proves missing-command `127`. `RUN_TIMEOUT_SUPERVISOR_PIDFILE` and
+`RUN_TIMEOUT_CHILD_PIDFILE` are self-test-only hooks published after the group
+ACK. Implement the file exactly with this structure; do not use `eval`,
+shell-join argv or process-name-only cleanup:
+
+```zsh
+#!/bin/zsh
+set -u
+unsetopt BG_NICE
+
+SELF=${0:A}
+
+pid_is_gone() {
+  local pid=$1
+  ! kill -0 "$pid" 2>/dev/null
+}
+
+wait_for_pidfiles() {
+  local first=$1 second=$2 third=$3
+  local attempt
+  for attempt in {1..500}; do
+    [[ -s $first && -s $second && -s $third ]] && return 0
+    /bin/sleep 0.01
+  done
+  return 1
+}
+
+wait_for_two_pidfiles() {
+  local first=$1 second=$2
+  local attempt
+  for attempt in {1..500}; do
+    [[ -s $first && -s $second ]] && return 0
+    /bin/sleep 0.01
+  done
+  return 1
+}
+
+stop_wrapper() {
+  local wrapper=$1
+  kill -TERM "$wrapper" 2>/dev/null || true
+  wait "$wrapper" 2>/dev/null || true
+}
+
+run_command() {
+  local seconds=$1
+  shift
+  local supervisor_pid=0 supervisor_ready=0 forwarded_status=0 wait_status=0
+  local ready_file=$(mktemp /tmp/launchpad-supervisor-ready.XXXXXX)
+  trap 'forwarded_status=129; (( supervisor_ready == 1 )) && kill -HUP "$supervisor_pid" 2>/dev/null || true' HUP
+  trap 'forwarded_status=130; (( supervisor_ready == 1 )) && kill -INT "$supervisor_pid" 2>/dev/null || true' INT
+  trap 'forwarded_status=143; (( supervisor_ready == 1 )) && kill -TERM "$supervisor_pid" 2>/dev/null || true' TERM
+  /usr/bin/perl -e '
+    use Errno qw(EINTR);
+    use POSIX qw(SIGHUP SIGINT SIGTERM setpgid);
+    my $seconds = shift @ARGV;
+    my $ready_file = shift @ARGV;
+    pipe(my $group_ready_reader, my $group_ready_writer)
+      or die "pipe failed: $!";
+    my $pid = fork();
+    die "fork failed: $!" unless defined $pid;
+    if ($pid == 0) {
+      close $group_ready_reader;
+      setpgid(0, 0) or die "setpgid failed: $!";
+      my $written = syswrite($group_ready_writer, "1");
+      die "group ready write failed: $!"
+        unless defined($written) && $written == 1;
+      close $group_ready_writer or die "group ready close failed: $!";
+      exec { $ARGV[0] } @ARGV or exit 127;
+    }
+    close $group_ready_writer;
+    my ($group_ready_byte, $read_count);
+    do {
+      $read_count = sysread($group_ready_reader, $group_ready_byte, 1);
+    } while (!defined($read_count) && $! == EINTR);
+    close $group_ready_reader;
+    unless (defined($read_count) && $read_count == 1
+        && $group_ready_byte eq "1") {
+      waitpid($pid, 0);
+      die "child process group setup failed";
+    }
+    if (my $pidfile = $ENV{RUN_TIMEOUT_SUPERVISOR_PIDFILE}) {
+      open my $handle, ">", $pidfile or die "open pidfile failed: $!";
+      print {$handle} $$;
+      close $handle or die "close pidfile failed: $!";
+    }
+    if (my $pidfile = $ENV{RUN_TIMEOUT_CHILD_PIDFILE}) {
+      open my $handle, ">", $pidfile or die "open pidfile failed: $!";
+      print {$handle} $pid;
+      close $handle or die "close pidfile failed: $!";
+    }
+    my ($timed_out, $forwarded, $terminating) = (0, 0, 0);
+    my $terminate_group = sub {
+      my ($number, $name) = @_;
+      return if $terminating;
+      $terminating = 1;
+      $forwarded = $number if $number;
+      kill $name, -$pid;
+      select undef, undef, undef, 2.0;
+      kill "KILL", -$pid;
+    };
+    local $SIG{ALRM} = sub {
+      $timed_out = 1;
+      $terminate_group->(0, "TERM");
+    };
+    local $SIG{HUP} = sub {
+      alarm 0;
+      $terminate_group->(SIGHUP, "HUP");
+    };
+    local $SIG{INT} = sub {
+      alarm 0;
+      $terminate_group->(SIGINT, "INT");
+    };
+    local $SIG{TERM} = sub {
+      alarm 0;
+      $terminate_group->(SIGTERM, "TERM");
+    };
+    open my $ready, ">", $ready_file or die "open ready file failed: $!";
+    print {$ready} $$;
+    close $ready or die "close ready file failed: $!";
+    alarm $seconds;
+    my $waited;
+    do { $waited = waitpid($pid, 0) }
+      while $waited == -1 && $! == EINTR;
+    my $status = $?;
+    alarm 0;
+    $terminate_group->(0, "TERM")
+      if !$timed_out && !$forwarded && kill(0, -$pid);
+    exit 124 if $timed_out;
+    exit 128 + $forwarded if $forwarded;
+    exit 128 + ($status & 127) if $status & 127;
+    exit($status >> 8);
+  ' "$seconds" "$ready_file" "$@" &
+  supervisor_pid=$!
+  local attempt
+  for attempt in {1..500}; do
+    [[ -s $ready_file ]] && break
+    if ! kill -0 "$supervisor_pid" 2>/dev/null; then
+      wait "$supervisor_pid" || wait_status=$?
+      rm -f "$ready_file"
+      trap - HUP INT TERM
+      return "$wait_status"
+    fi
+    /bin/sleep 0.01
+  done
+  if [[ ! -s $ready_file ]]; then
+    kill -TERM "$supervisor_pid" 2>/dev/null || true
+    wait "$supervisor_pid" 2>/dev/null || true
+    rm -f "$ready_file"
+    trap - HUP INT TERM
+    return 125
+  fi
+  supervisor_ready=1
+  case $forwarded_status in
+    129) kill -HUP "$supervisor_pid" 2>/dev/null || true ;;
+    130) kill -INT "$supervisor_pid" 2>/dev/null || true ;;
+    143) kill -TERM "$supervisor_pid" 2>/dev/null || true ;;
+  esac
+  wait "$supervisor_pid" || wait_status=$?
+  if (( forwarded_status != 0 )) \
+      && kill -0 "$supervisor_pid" 2>/dev/null; then
+    wait "$supervisor_pid" || wait_status=$?
+  fi
+  rm -f "$ready_file"
+  trap - HUP INT TERM
+  (( forwarded_status != 0 )) && return "$forwarded_status"
+  return "$wait_status"
+}
+
+assert_tree_gone() {
+  local wrapper=$1 supervisor_file=$2 child_file=$3 descendant_file=$4
+  local supervisor=$(<"$supervisor_file")
+  local child=$(<"$child_file")
+  local descendant=$(<"$descendant_file")
+  pid_is_gone "$wrapper" \
+    && pid_is_gone "$supervisor" \
+    && pid_is_gone "$child" \
+    && pid_is_gone "$descendant"
+}
+
+start_tree() {
+  local seconds=$1 supervisor_file=$2 child_file=$3 descendant_file=$4
+  RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_file \
+    RUN_TIMEOUT_CHILD_PIDFILE=$child_file \
+    "$SELF" "$seconds" -- /bin/zsh -c '
+      /bin/sleep 30 &
+      print -r -- $! > "$1"
+      wait
+    ' _ "$descendant_file" &
+  REPLY=$!
+}
+
+self_test_timeout() {
+  local directory=$(mktemp -d /tmp/launchpad-timeout.XXXXXX)
+  trap "rm -rf ${(q)directory}" EXIT
+  start_tree 1 "$directory/supervisor" "$directory/child" "$directory/descendant"
+  local wrapper=$REPLY exit_code=0
+  if ! wait_for_pidfiles "$directory/supervisor" "$directory/child" \
+      "$directory/descendant"; then
+    stop_wrapper "$wrapper"
+    return 1
+  fi
+  wait "$wrapper" || exit_code=$?
+  [[ $exit_code -eq 124 ]] || return 1
+  assert_tree_gone "$wrapper" "$directory/supervisor" \
+    "$directory/child" "$directory/descendant"
+}
+
+self_test_signal() {
+  local pair signal expected race_directory race_wrapper directory wrapper exit_code
+  for pair in HUP:129 INT:130 TERM:143; do
+    signal=${pair%%:*}
+    expected=${pair##*:}
+    race_directory=$(mktemp -d /tmp/launchpad-signal-ready.XXXXXX)
+    trap "rm -rf ${(q)race_directory}" EXIT
+    RUN_TIMEOUT_SUPERVISOR_PIDFILE="$race_directory/supervisor" \
+      RUN_TIMEOUT_CHILD_PIDFILE="$race_directory/child" \
+      "$SELF" 30 -- /bin/sleep 30 &
+    race_wrapper=$!
+    if ! wait_for_two_pidfiles "$race_directory/supervisor" \
+        "$race_directory/child"; then
+      stop_wrapper "$race_wrapper"
+      return 1
+    fi
+    kill -"$signal" "$race_wrapper" || return 1
+    exit_code=0
+    wait "$race_wrapper" || exit_code=$?
+    [[ $exit_code -eq $expected ]] || return 1
+    pid_is_gone "$race_wrapper" \
+      && pid_is_gone "$(<"$race_directory/supervisor")" \
+      && pid_is_gone "$(<"$race_directory/child")" || return 1
+    rm -rf "$race_directory"
+
+    directory=$(mktemp -d /tmp/launchpad-signal.XXXXXX)
+    trap "rm -rf ${(q)directory}" EXIT
+    start_tree 30 "$directory/supervisor" "$directory/child" \
+      "$directory/descendant"
+    wrapper=$REPLY
+    if ! wait_for_pidfiles "$directory/supervisor" "$directory/child" \
+        "$directory/descendant"; then
+      stop_wrapper "$wrapper"
+      return 1
+    fi
+    kill -"$signal" "$wrapper" || return 1
+    exit_code=0
+    wait "$wrapper" || exit_code=$?
+    [[ $exit_code -eq $expected ]] || return 1
+    assert_tree_gone "$wrapper" "$directory/supervisor" \
+      "$directory/child" "$directory/descendant" || return 1
+    rm -rf "$directory"
+  done
+}
+
+self_test_nonzero() {
+  local directory=$(mktemp -d /tmp/launchpad-nonzero.XXXXXX)
+  trap "rm -rf ${(q)directory}" EXIT
+  local supervisor_file="$directory/supervisor"
+  local child_file="$directory/child"
+  local descendant_file="$directory/descendant"
+  RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_file \
+    RUN_TIMEOUT_CHILD_PIDFILE=$child_file \
+    "$SELF" 30 -- /bin/zsh -c '
+      /bin/sleep 30 &
+      print -r -- $! > "$1"
+      exit 17
+    ' _ "$descendant_file" &
+  local wrapper=$! exit_code=0
+  wait "$wrapper" || exit_code=$?
+  [[ $exit_code -eq 17 ]] || return 1
+  assert_tree_gone "$wrapper" "$supervisor_file" \
+    "$child_file" "$descendant_file" || return 1
+  exit_code=0
+  "$SELF" 5 -- /definitely/missing/launchpad-command || exit_code=$?
+  [[ $exit_code -eq 127 ]] || return 1
+}
+
+case ${1:-} in
+  --self-test-timeout) self_test_timeout; exit $? ;;
+  --self-test-signal) self_test_signal; exit $? ;;
+  --self-test-nonzero) self_test_nonzero; exit $? ;;
+esac
+
+if (( $# < 3 )) || [[ $1 != <-> ]] || (( $1 <= 0 )) || [[ $2 != -- ]]; then
+  print -u2 'usage: run-with-timeout.sh SECONDS -- COMMAND [ARG...]'
+  exit 2
+fi
+seconds=$1
+shift 2
+run_command "$seconds" "$@"
+exit $?
+```
+
+Run the mandatory watchdog gates and commit it with the regression:
+
+```bash
+chmod +x scripts/run-with-timeout.sh
+zsh -n scripts/run-with-timeout.sh
+test -x scripts/run-with-timeout.sh
+scripts/run-with-timeout.sh --self-test-timeout
+scripts/run-with-timeout.sh --self-test-signal
+scripts/run-with-timeout.sh --self-test-nonzero
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 900 -- \
+  swift test --disable-sandbox --no-parallel \
+  --filter 'AppIconCellTests|FolderCellTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|DiffableDataSourceBuilderTests|DiffableDataSourceTests|AppGridFlowLayoutTests'
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 30 -- \
+  swift test --disable-sandbox --no-parallel \
+  --filter 'AppGridInteractionCoordinatorTests|AppGridCollectionViewTests'
+git add scripts/run-with-timeout.sh \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift
+git commit -m "test: guard app grid convergence"
+```
+
+Expected: all three self-tests exit 0, the focused suite exits 0 in less than 30
+seconds, the hot-loop test's always-enabled `< 1s` assertion passes, and no
+recorded wrapper/supervisor/child/descendant PID remains alive.
+
+- [ ] **Step 15: Run the expanded cell/grid/coordinator regression GREEN**
+
+```bash
+set -euo pipefail
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 900 -- \
+  swift test --disable-sandbox --no-parallel \
+  --filter 'AppIconCellTests|FolderCellTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|LaunchPadViewControllerTests|DiffableDataSourceBuilderTests|DiffableDataSourceTests|AppGridFlowLayoutTests'
+
+full_status=0
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 900 -- /bin/zsh -o pipefail -c \
+  'swift test --disable-sandbox --no-parallel 2>&1 | tee "$1"' \
+  _ /tmp/launchpad-task-4-full.log || full_status=$?
+[[ $full_status -eq 0 || $full_status -eq 1 ]]
+test "$(rg -c "^Test Suite 'All tests' (passed|failed)" \
+  /tmp/launchpad-task-4-full.log)" -eq 1
+test "$(rg -c '^(✔|✘) Test run with ' \
+  /tmp/launchpad-task-4-full.log)" -eq 1
+! rg -n "Test Case '-\[LaunchPadTests\..*\]' skipped" \
+  /tmp/launchpad-task-4-full.log
+! rg -n '^↷ Test ' /tmp/launchpad-task-4-full.log
+
+cat > /tmp/launchpad-task-4-allowed-xctest-failures.txt <<'EOF'
+LaunchPadTests.FileWatcherTests.testStart_realFileChange_triggersOnChange
+LaunchPadTests.FolderOverlayViewTests.testMouseDown_outsidePanel_closesFolder
+EOF
+rg "Test Case '-\[LaunchPadTests\..*\]' failed" \
+  /tmp/launchpad-task-4-full.log \
+  > /tmp/launchpad-task-4-xctest-failure-lines.txt || true
+sed -E "s/^.*Test Case '-\[([^ ]+) ([^]]+)\]' failed.*$/\1.\2/" \
+  /tmp/launchpad-task-4-xctest-failure-lines.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-actual-xctest-failures.txt
+LC_ALL=C sort -u /tmp/launchpad-task-4-allowed-xctest-failures.txt \
+  > /tmp/launchpad-task-4-allowed-xctest-failures.sorted.txt
+comm -23 /tmp/launchpad-task-4-actual-xctest-failures.txt \
+  /tmp/launchpad-task-4-allowed-xctest-failures.sorted.txt \
+  > /tmp/launchpad-task-4-unexpected-xctest-failures.txt
+test ! -s /tmp/launchpad-task-4-unexpected-xctest-failures.txt
+
+cat > /tmp/launchpad-task-4-allowed-swift-issues.txt <<'EOF'
+LaunchPadTests.LaunchPadWindowControllerTests/openingTransition_triggersShowWindowAnimated()|opening 委托触发 showWindowAnimated（normal 分支）— 动画完成后进入 visible 且窗口可见|LaunchPadWindowControllerTests.swift:154:9
+LaunchPadTests.LaunchPadWindowControllerTests/openingTransition_triggersShowWindowAnimated()|opening 委托触发 showWindowAnimated（normal 分支）— 动画完成后进入 visible 且窗口可见|LaunchPadWindowControllerTests.swift:155:9
+LaunchPadTests.LaunchPadWindowControllerTests/launchAnimation_fadesWindowOut()|启动动画将窗口淡出至 alphaValue=0 并最终回到 hidden|LaunchPadWindowControllerTests.swift:227:9
+LaunchPadTests.LaunchPadWindowControllerTests/showWindowAnimated_reduceMotion_usesReducedBranch()|reduceMotion=true -> showWindowAnimated 用 reduced 分支|LaunchPadWindowControllerTests.swift:296:9
+EOF
+cut -d'|' -f2 /tmp/launchpad-task-4-allowed-swift-issues.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-allowed-swift-failures.txt
+rg '^✘ Test ".*" failed after' /tmp/launchpad-task-4-full.log \
+  > /tmp/launchpad-task-4-swift-failure-lines.txt || true
+sed -E 's/^✘ Test "(.*)" failed after.*$/\1/' \
+  /tmp/launchpad-task-4-swift-failure-lines.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-actual-swift-failures.txt
+comm -23 /tmp/launchpad-task-4-actual-swift-failures.txt \
+  /tmp/launchpad-task-4-allowed-swift-failures.txt \
+  > /tmp/launchpad-task-4-unexpected-swift-failures.txt
+test ! -s /tmp/launchpad-task-4-unexpected-swift-failures.txt
+rg ' recorded an issue at ' /tmp/launchpad-task-4-full.log \
+  > /tmp/launchpad-task-4-swift-issue-lines.txt || true
+sed -E \
+  's/^✘ Test "(.*)" recorded an issue at ([^/ ]+Tests\.swift:[0-9]+:[0-9]+):.*$/\1|\2/' \
+  /tmp/launchpad-task-4-swift-issue-lines.txt | \
+  LC_ALL=C sort > /tmp/launchpad-task-4-actual-swift-issues.txt
+cut -d'|' -f2-3 /tmp/launchpad-task-4-allowed-swift-issues.txt | \
+  LC_ALL=C sort > /tmp/launchpad-task-4-allowed-swift-issue-keys.txt
+comm -23 /tmp/launchpad-task-4-actual-swift-issues.txt \
+  /tmp/launchpad-task-4-allowed-swift-issue-keys.txt \
+  > /tmp/launchpad-task-4-unexpected-swift-issues.txt
+test ! -s /tmp/launchpad-task-4-unexpected-swift-issues.txt
+test "$(wc -l < /tmp/launchpad-task-4-actual-swift-issues.txt \
+  | tr -d ' ')" -le 4
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 120 -- swift test --disable-sandbox list \
+  > /tmp/launchpad-task-4-discovered-tests.txt
+cat > /tmp/launchpad-task-4-expected-xctest-ids.txt <<'EOF'
+LaunchPadTests.FileWatcherTests/testStart_realFileChange_triggersOnChange
+LaunchPadTests.FolderOverlayViewTests/testMouseDown_outsidePanel_closesFolder
+EOF
+rg '^LaunchPadTests\.(FileWatcherTests/testStart_realFileChange_triggersOnChange|FolderOverlayViewTests/testMouseDown_outsidePanel_closesFolder)$' \
+  /tmp/launchpad-task-4-discovered-tests.txt | \
+  LC_ALL=C sort > /tmp/launchpad-task-4-actual-xctest-ids.txt
+LC_ALL=C sort /tmp/launchpad-task-4-expected-xctest-ids.txt \
+  > /tmp/launchpad-task-4-expected-xctest-ids.sorted.txt
+diff -u /tmp/launchpad-task-4-expected-xctest-ids.sorted.txt \
+  /tmp/launchpad-task-4-actual-xctest-ids.txt
+cut -d'|' -f1 /tmp/launchpad-task-4-allowed-swift-issues.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-expected-swift-ids.txt
+rg '^LaunchPadTests\.LaunchPadWindowControllerTests/(openingTransition_triggersShowWindowAnimated|launchAnimation_fadesWindowOut|showWindowAnimated_reduceMotion_usesReducedBranch)\(\)$' \
+  /tmp/launchpad-task-4-discovered-tests.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-actual-swift-ids.txt
+diff -u /tmp/launchpad-task-4-expected-swift-ids.txt \
+  /tmp/launchpad-task-4-actual-swift-ids.txt
+cut -d'|' -f2 /tmp/launchpad-task-4-allowed-swift-issues.txt | \
+  LC_ALL=C sort -u > /tmp/launchpad-task-4-expected-swift-titles.txt
+rg -F -f /tmp/launchpad-task-4-expected-swift-titles.txt \
+  Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift | \
+  sed -E 's/.*@Test\("(.*)"\).*/\1/' | \
+  LC_ALL=C sort > /tmp/launchpad-task-4-actual-swift-titles.txt
+diff -u /tmp/launchpad-task-4-expected-swift-titles.txt \
+  /tmp/launchpad-task-4-actual-swift-titles.txt
+if [[ $full_status -eq 0 ]]; then
+  test ! -s /tmp/launchpad-task-4-actual-xctest-failures.txt
+  test ! -s /tmp/launchpad-task-4-actual-swift-failures.txt
+else
+  [[ -s /tmp/launchpad-task-4-actual-xctest-failures.txt \
+    || -s /tmp/launchpad-task-4-actual-swift-failures.txt ]]
+fi
+! pgrep -x swift-test
+! pgrep -x LaunchPadPackageTests
+```
+
+Expected: the original 158-test accounting remains one-to-one after moving 23
+historical interactions plus the callback-order behavior to the coordinator;
+14 new branch/lifecycle cases and one hot-loop regression bring the exact Task 4
+total to 173 tests, all pass with 0 fail and 0 skip. The coordinator suite has
+exactly 39 tests. Folder 96pt coverage asserts nine distinct thumbnail frames,
+non-overlap, non-positive bottom constants and exact positive inward inset
+magnitudes; stable selection asserts real `selectionIndexPaths`; coordinator
+selection asserts callback-before-activation; paged search asserts
+`.searchPage` is authoritative when supplied. The unfiltered run must complete
+and match the monotonically decreasing registered Task 3R baseline: a nonzero
+status is allowed only for still-open, explicitly registered later-task
+failures/issues. The executable subset comparison above rejects every new
+XCTest failure, Swift Testing qualified-ID/display-title/source-location issue,
+skip, unexpected exit status, missing framework summary or residual process;
+none may be accepted by count alone. Discovery also proves the two still-open
+XCTest IDs were not deleted or renamed. The unique `@Test` title and discovery
+checks make each logged Swift issue traceable back to its registered qualified
+test ID.
+
+- [ ] **Step 16: Run static/compile gates and confirm every Task 4 commit boundary**
+
+```bash
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift \
+  Tests/LaunchPadTests/Views/FolderCellTests.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift
+! rg -n 'accuracy:' Tests/LaunchPadTests --glob '*.swift'
+! rg -n 'delegate\s*=\s*self|extension AppGridCollectionView:\s*NSCollectionViewDelegate|onItemSelected|onSelectionChanged|dragController|pasteboardUUIDReader' \
+  Sources/LaunchPad/Views/AppGridCollectionView.swift
+! rg -n --glob 'AppGrid*.swift' '[Pp]roxy' \
+  Sources/LaunchPad/Views
+! rg -n -U --pcre2 \
+  '\b([A-Za-z_][A-Za-z0-9_]*)\.collectionView\(\s*\1\s*,' \
+  Tests --glob '*.swift'
+test "$(rg -c '^\s*@Test\b' Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift)" -eq 39
+zsh -n scripts/run-with-timeout.sh
+test -x scripts/run-with-timeout.sh
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+scripts/run-with-timeout.sh 900 -- swift build --disable-sandbox
+```
+
+The behavior slices were committed immediately at their GREEN gates. Step 16
+must not create or amend a behavior commit. Confirm that no
+Task 4 source or test delta remains unstaged or staged:
+
+```bash
+git diff --exit-code -- \
+  Sources/LaunchPad/Views/AppIconCell.swift \
   Sources/LaunchPad/Views/FolderCell.swift \
   Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+  Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
   Sources/LaunchPad/Views/DiffableDataSourceBuilder.swift \
   Tests/LaunchPadTests/Views/AppIconCellTests.swift \
   Tests/LaunchPadTests/Views/FolderCellTests.swift \
   Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
-  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift
-git commit -m "fix: synchronize grid cells and accessibility metrics"
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md \
+  scripts/run-with-timeout.sh
+git diff --cached --exit-code -- \
+  Sources/LaunchPad/Views/AppIconCell.swift \
+  Sources/LaunchPad/Views/FolderCell.swift \
+  Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+  Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
+  Sources/LaunchPad/Views/DiffableDataSourceBuilder.swift \
+  Tests/LaunchPadTests/Views/AppIconCellTests.swift \
+  Tests/LaunchPadTests/Views/FolderCellTests.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
+  Tests/LaunchPadTests/Views/DiffableDataSourceBuilderTests.swift \
+  docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md \
+  scripts/run-with-timeout.sh
 ```
+
+- [ ] **Step 17: Perform eight review gates and record the aggregate result**
+
+Review A: existing three failures/two skips and their deterministic repair.
+Review B: all four production-empty migrations and 128 mappings. Review C: cell
+constraints/frames. Review D: grid metrics, accessibility and stable selection.
+Review E: coordinator parity, all branches, real delegate wiring and lifecycle.
+Review F: macOS 26 hot-loop test, `< 1s` wall-clock assertion and all watchdog
+self-tests with exact PID cleanup. Review G: paged search authority. Review H:
+Task 4 base..head, exact 173-test accounting, static scans and build. Record
+exact commit ranges and commands in `.superpowers/sdd/task-4-review.md`.
 
 ---
 
@@ -1546,7 +3896,9 @@ git commit -m "fix: synchronize grid cells and accessibility metrics"
 - Modify: `Tests/LaunchPadTests/Integration/IntegrationTests.swift:113-124`
 
 **Interfaces:**
-- Consumes: Tasks 1-4.
+- Consumes: Tasks 1-4, including the Task 4-owned
+  `AppGridInteractionCoordinator` and callback contract
+  `onSelectionChanged: ((PageItem) -> Void)?`.
 - Consumes later: Task 20 reloads this controller after scan; first-scan storage capacity remains Task 20's responsibility.
 - Produces: `gridMetrics`, current-mode `visualPages`, stable selection and synchronized page control/scroll/keyboard/accessibility without storage writes.
 
@@ -1771,8 +4123,8 @@ Change `loadData` to update `allPages/itemsByPage` and call this method when met
 Bind collection, scroll and mouse selection state in `setupCallbacks`:
 
 ```swift
-collectionView.onSelectionChanged = { [weak self] item in
-    self?.selectedItemID = item?.id
+gridInteractionCoordinator?.onSelectionChanged = { [weak self] item in
+    self?.selectedItemID = item.id
 }
 scrollView.onPageChanged = { [weak self] page in
     guard let self else { return }
@@ -1840,7 +4192,13 @@ private func moveSelection(_ direction: SelectionDirection) {
 }
 ```
 
-At the start of `handleItemSelection(_:)`, call `_ = selectItem(id: item.id)`; this closes the mouse and folder-overlay path through the same state/page synchronization used by keyboard selection. `reloadProjectedLayout` already calls this same helper, so no second manual selection state exists.
+At the start of `handleItemSelection(_:)`, call `_ = selectItem(id: item.id)`;
+this is a programmatic grid selection and therefore emits no coordinator output.
+It closes the mouse and folder-overlay path through the same state/page
+synchronization used by keyboard selection without callback recursion.
+`reloadProjectedLayout` already calls this same helper, so no second manual
+selection state exists. Clearing nil/unknown IDs explicitly sets
+`selectedItemID = nil`; no nil payload is invented at the coordinator boundary.
 
 Finally, make `accessibilityRows()` use `gridMetrics.columns` and the same snapshot section/index paths from Task 4. The test `resizeSynchronizesKeyboardAndAccessibilityRows` must assert the 4-row metrics, a Down move by exactly 7 flattened items, the resolved selection section, and accessibility row count `visualPages.reduce(0) { $0 + ceilDiv($1.count, 7) }` using integer arithmetic `($1.count + 6) / 7`.
 
@@ -1852,7 +4210,7 @@ Update the fixed 1440-width integration test to pass `CGSize(width: 1440, height
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'GridLayoutCalculatorTests|LayoutProjectionTests|AppGridFlowLayoutTests|PageScrollViewTests|AppGridCollectionViewTests|LaunchPadViewControllerTests|IntegrationTests'
+  --filter 'GridLayoutCalculatorTests|LayoutProjectionTests|AppGridFlowLayoutTests|PageScrollViewTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|LaunchPadViewControllerTests|IntegrationTests'
 ```
 
 Expected: all dynamic grid, page geometry, resize and stable selection tests pass.
@@ -2059,9 +4417,9 @@ git commit -m "fix: apply initial search character atomically"
 - Modify: `Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift:418-495`
 
 **Interfaces:**
-- Consumes: `onKeyDown: (NSEvent) -> NSEvent?`.
+- Consumes: Task 3R-B `localMonitorInstaller`, `localMonitorRemover`, idempotent registration and `onKeyDown: (NSEvent) -> NSEvent?`.
 - Produces: callback `nil` is returned to AppKit unchanged for every key type.
-- Produces: idempotent `registerLocalMonitor()` with injectable install/remove boundaries.
+- Preserves: Task 3R-B's already-reviewed install/remove lifecycle; this task changes only event routing semantics.
 
 - [ ] **Step 1: Replace the special-key bypass test with RED entry tests**
 
@@ -2134,42 +4492,16 @@ swift test --disable-sandbox --no-parallel \
   --filter 'localMonitorForwardsSpecialKeysAndNil|localMonitorWithoutCallbackReturnsOriginal|localMonitorRegistrationIsIdempotent'
 ```
 
-- [ ] **Step 3: Make the handler optional-result preserving and idempotent**
+- [ ] **Step 3: Make the existing injected handler preserve optional results**
 
 ```swift
-var localMonitorHandler: ((NSEvent) -> NSEvent?)?
-var localMonitorInstaller: (@escaping (NSEvent) -> NSEvent?) -> Any? = { handler in
-    NSEvent.addLocalMonitorForEvents(
-        matching: [.keyDown, .flagsChanged],
-        handler: handler
-    )
-}
-var localMonitorRemover: (Any) -> Void = { NSEvent.removeMonitor($0) }
-
-public init() {
-    accessibilityChecker = HotkeyManager.defaultAccessibilityCheck
-    localMonitorHandler = { [weak self] event in
-        guard let self else { return event }
-        return self.handleLocalMonitorEvent(event)
-    }
-}
-
-public func registerLocalMonitor() {
-    guard localMonitor == nil, let localMonitorHandler else { return }
-    localMonitor = localMonitorInstaller(localMonitorHandler)
-}
-
 func handleLocalMonitorEvent(_ event: NSEvent) -> NSEvent? {
     guard let onKeyDown else { return event }
     return onKeyDown(event)
 }
-
-public func unregisterLocalMonitor() {
-    guard let localMonitor else { return }
-    localMonitorRemover(localMonitor)
-    self.localMonitor = nil
-}
 ```
+
+Keep Task 3R-B's initializer/register/unregister implementation byte-for-byte except for the handler's now-optional return type. The focused lifecycle test must still prove one install and one remove after duplicate calls.
 
 - [ ] **Step 4: Run the complete HotkeyManager suite and verify process exit**
 
@@ -2198,21 +4530,13 @@ git commit -m "fix: route all local keys through callback"
 - Modify: `Tests/LaunchPadTests/App/AppDelegateTests.swift`
 
 **Interfaces:**
-- Consumes: Task 8 optional monitor result and Tasks 6-7 keyboard APIs.
+- Consumes: Task 3R-B `workspaceURLOpener`/isolated manager factory, Task 8 optional monitor result and Tasks 6-7 keyboard APIs.
 - Produces: handled keyDown returns `nil`; hidden/unmapped/flagsChanged returns original event.
 - Rule: suppression is exactly `Action != .ignored`; mapping a key code is not proof that the current mode handled it.
 
-- [ ] **Step 1: Add real monitor-chain RED tests and a safe URL boundary**
+- [ ] **Step 1: Add real monitor-chain RED tests through the already isolated boundaries**
 
-Add to AppDelegate:
-
-```swift
-var workspaceURLOpener: (URL) -> Void = { url in
-    _ = NSWorkspace.shared.open(url)
-}
-```
-
-Set it to `{ _ in }` in the common test factory. Every test below calls `HotkeyManager.localMonitorHandler`, not AppDelegate's closure directly.
+Task 3R-B already added `workspaceURLOpener` and made the common factory non-system. Keep that injection unchanged. Every test below calls `HotkeyManager.localMonitorHandler`, not AppDelegate's closure directly.
 
 Use these exact helpers and test names so the RED command cannot succeed with zero matches:
 
@@ -2408,7 +4732,7 @@ hotkeyManager.onKeyDown = { @Sendable [weak self] event in
 }
 ```
 
-Replace the direct `NSWorkspace.shared.open` call with `workspaceURLOpener(url)`.
+The settings branch must continue using Task 3R-B's `workspaceURLOpener(url)`; do not add a second opener or direct `NSWorkspace.shared.open` call.
 
 - [ ] **Step 4: Run keyboard entry regression GREEN**
 
@@ -5632,9 +7956,6 @@ git commit -m "feat: make folder layout mutations atomic"
 - Modify: `Sources/LaunchPad/Controllers/DragController.swift:5-251`
 - Modify: `Sources/LaunchPad/Controllers/LaunchPadViewController.swift:29,195-271,509-526,560-605`
 - Modify: `Sources/LaunchPad/App/AppDelegate.swift:143-157`
-- Modify: `Sources/LaunchPad/Services/SearchDebouncer.swift`
-- Modify: `Sources/LaunchPadProtocols/Protocols.swift:92-98`
-- Modify: `Tests/LaunchPadTests/TestHelpers/MockProtocols.swift:150-176`
 - Modify: `Tests/LaunchPadTests/Controllers/DragControllerTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/CollectionViewDragTests.swift`
 - Modify: `Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift`
@@ -5643,8 +7964,8 @@ git commit -m "feat: make folder layout mutations atomic"
 - Modify: `Tests/LaunchPadTests/Models/ProtocolTests.swift:47-50`
 
 **Interfaces:**
-- Consumes: Task 10 `ItemPlacement`, `ItemType` and stable IDs.
-- Produces: immutable `DragSession`, directional edge timer, preview-only app hover, idempotent cleanup and a single-work-item `DispatchQueueScheduler` that Task 21 may safely reuse.
+- Consumes: Task 3R-A's MainActor `Scheduler`/`MockScheduler`/single-work-item `DispatchQueueScheduler`, plus Task 10 `ItemPlacement`, `ItemType` and stable IDs.
+- Produces: immutable `DragSession`, directional edge timer, preview-only app hover and idempotent cleanup. This task must not redefine scheduler actor or ownership contracts.
 - Removes in the same commit: `currentOrder`, `pendingCrossPageMove`, `beginEditing`, `simulateReorder`, `onCreateGroup`, `handleCreateGroup(targetId:)` and the `ItemWriting` constructor dependency.
 - Preserves: existing long-press idle/jiggling/dragging transitions; `handleCancel()` remains as a compatibility alias for edit-mode callers and delegates to `cancelDrag()` without writing.
 
@@ -5762,29 +8083,9 @@ func finishAndCancelClearTimerPreviewAndSession(useFinish: Bool) {
     #expect(scheduler.scheduledActions.isEmpty)
 }
 
-@Test("重复 schedule 取消旧任务，scheduler 释放时取消剩余任务")
-func schedulerReplacementAndDeinitCancelPendingWork() {
-    var first: DispatchWorkItem?
-    var second: DispatchWorkItem?
-    weak var weakScheduler: DispatchQueueScheduler?
-    do {
-        let scheduler = DispatchQueueScheduler()
-        weakScheduler = scheduler
-        scheduler.workItemObserver = { item in
-            if first == nil { first = item } else { second = item }
-        }
-        scheduler.schedule(after: 60) {}
-        scheduler.schedule(after: 60) {}
-        #expect(first?.isCancelled == true)
-        #expect(second?.isCancelled == false)
-    }
-
-    #expect(weakScheduler == nil)
-    #expect(second?.isCancelled == true)
-}
 ```
 
-Retain explicit long-press RED cases for `< 0.5s`, `0.5s/<=10pt`, `>10pt`, release, cancel and repeated state entry. Delete every assertion about `currentOrder`, `reorderItems` and synthetic cross-page IDs.
+Retain explicit long-press RED cases for `< 0.5s`, `0.5s/<=10pt`, `>10pt`, release, cancel and repeated state entry. Delete every assertion about `currentOrder`, `reorderItems` and synthetic cross-page IDs. Scheduler replacement/cancel/deinit remains covered only by Task 3R-A.
 
 - [ ] **Step 2: Run the new tests and confirm RED**
 
@@ -5797,86 +8098,9 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: compile RED for missing `DragSession`, `DragPageDirection`, `beginDrag`, `finishDrag` and `cancelDrag`.
 
-- [ ] **Step 3: Make Scheduler explicitly MainActor-bound**
+- [ ] **Step 3: Verify and consume the Task 3R-A scheduler contract**
 
-Replace the protocol:
-
-```swift
-@MainActor
-public protocol Scheduler: Sendable {
-    func schedule(
-        after interval: TimeInterval,
-        action: @escaping @MainActor @Sendable () -> Void
-    )
-    func cancelPending()
-}
-```
-
-Replace `DispatchQueueScheduler` with a main-queue implementation; do not retain its background queue or lock:
-
-```swift
-@MainActor
-public final class DispatchQueueScheduler: Scheduler {
-    private final class PendingWork: @unchecked Sendable {
-        private var item: DispatchWorkItem?
-
-        func replace(with newItem: DispatchWorkItem) {
-            item?.cancel()
-            item = newItem
-        }
-
-        func cancel() {
-            item?.cancel()
-            item = nil
-        }
-
-        deinit {
-            item?.cancel()
-        }
-    }
-
-    private let pendingWork = PendingWork()
-
-    // Internal test observation only; production leaves this nil.
-    var workItemObserver: ((DispatchWorkItem) -> Void)?
-
-    public init() {}
-
-    public func schedule(
-        after interval: TimeInterval,
-        action: @escaping @MainActor @Sendable () -> Void
-    ) {
-        cancelPending()
-        let workItem = DispatchWorkItem {
-            MainActor.assumeIsolated { action() }
-        }
-        pendingWork.replace(with: workItem)
-        workItemObserver?(workItem)
-        DispatchQueue.main.asyncAfter(
-            deadline: .now() + interval,
-            execute: workItem
-        )
-    }
-
-    public func cancelPending() {
-        pendingWork.cancel()
-    }
-}
-```
-
-Mark `MockScheduler` `@MainActor`; change its stored closure to `@MainActor @Sendable () -> Void`. `SearchDebouncer` is already `@MainActor`; remove its `nonisolated(unsafe)`/`MainActor.assumeIsolated` bridge and call the captured handler directly inside the scheduled closure. The production scheduler must retain exactly one pending work item: every `schedule` calls `cancelPending()` first, `cancelPending()` clears the reference, and the `@unchecked Sendable` holder cancels the last pending item in its own nonisolated `deinit`. The holder is a narrow ownership adapter: all mutation still occurs through the enclosing MainActor scheduler, and it exists because Swift 6 forbids an actor-isolated `deinit` from touching `DispatchWorkItem?` directly.
-
-The scheduler conformance test must cross the same actor boundary explicitly:
-
-```swift
-@Test("MockScheduler 遵循 Scheduler")
-@MainActor
-func mockScheduler_conformsToScheduler() {
-    let scheduler = MockScheduler()
-    let value: Scheduler = scheduler
-    #expect(value is Scheduler)
-}
-```
+Before adding drag session code, run the Task 3R-A scheduler ownership and actor tests. Expected: both pass. Keep `DragController` suite-level `@MainActor`, accept `Scheduler` in its initializer and schedule edge/preview actions directly. Do not edit `Scheduler`, `DispatchQueueScheduler`, `MockScheduler`, `SearchDebouncer` or their ownership tests in this task.
 
 - [ ] **Step 4: Create immutable drag model types**
 
@@ -6087,9 +8311,6 @@ git add Sources/LaunchPad/Models/DragSession.swift \
   Sources/LaunchPad/Controllers/DragController.swift \
   Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
   Sources/LaunchPad/App/AppDelegate.swift \
-  Sources/LaunchPad/Services/SearchDebouncer.swift \
-  Sources/LaunchPadProtocols/Protocols.swift \
-  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift \
   Tests/LaunchPadTests/Controllers/DragControllerTests.swift \
   Tests/LaunchPadTests/Views/CollectionViewDragTests.swift \
   Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
@@ -6107,18 +8328,39 @@ git commit -m "refactor: model drag state with immutable sessions"
 
 **Files:**
 - Modify: `Sources/LaunchPad/Views/AppGridCollectionView.swift:22-28,296-420`
+- Modify: `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift`
 - Modify: `Sources/LaunchPad/Views/AppIconCell.swift:12-21,31-83,190-218,274-284`
 - Modify: `Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/AppIconCellTests.swift`
 
 **Interfaces:**
-- Consumes: Task 15 `DragSession`, Task 10 `ItemPlacement`.
-- Produces: `GridDropDestination`, stable empty anchors, `topLevelPlacement(at:)`, synchronized visual-page state, preview UI and `onDropRequested`.
+- Consumes: Task 4's migrated suites, coordinator-owned
+  `pasteboardUUIDReader`, `AppGridInteractionHosting`, Task 15 `DragSession` and
+  Task 10 `ItemPlacement`.
+- Produces on `AppGridInteractionCoordinator`: `GridDropDestination`,
+  `topLevelPlacement(atLocalPoint:)`, `isDragEnabled`, source/extraction,
+  validation/acceptance/drag-ended policy and `onDropRequested`.
+- Produces on the grid host: stable empty anchors, synchronized visual-page
+  state, snapshot/layout queries and preview drawing only. FolderOverlay remains
+  a separate delegate owned by Task 19.
 - Constraint: source/validation/acceptance never mutate a diffable snapshot; only a later COMMIT-triggered VC reload may change it.
 
 - [ ] **Step 1: Add RED tests for source identity, all destinations and immutable snapshots**
 
-Use valid UUID strings in every accepted source fixture. Add these helpers and representative tests:
+Use valid UUID strings in every accepted source fixture. Extend the Task 4
+fixture without dropping its owner: it continues to return
+`(host, collectionView, coordinator, dragController)`, and every coordinator
+test retains all four for the whole test. This is mandatory because the
+coordinator holds `host` weakly; retaining only the collection view does not
+retain the fake host. Host-only empty placement/page clamp tests stay in
+`AppGridCollectionViewTests`; source, extraction, destination policy,
+validate/accept/ended and drop callback tests live in
+`AppGridInteractionCoordinatorTests`. When extending `InteractionHost`, delete
+the Task 4-only `itemsByUUID`, `snapshotMoves`, `pageItem(uuid:)` and
+`moveSnapshotItem(_:before:)` members; the fake must conform to the same
+complete Task 16 surface without retaining obsolete conveniences. Add these
+helpers and representative tests:
 
 ```swift
 private func makeApp(
@@ -6136,75 +8378,72 @@ private func makeApp(
     )
 }
 
-func testPasteboardWriterStartsSessionWithRealSourceIdentity() throws {
+@Test("pasteboard writer 使用真实稳定 source identity 建立会话")
+func pasteboardWriterStartsSessionWithRealSourceIdentity() throws {
     let source = makeApp(id: 10, parentID: 77, ordering: 2)
     loadSnapshot(pages: [[source]])
-    let dragController = DragController(scheduler: MockScheduler())
-    collectionView.dragController = dragController
-
-    let writer = collectionView.collectionView(
+    let delegate = try #require(collectionView.delegate)
+    let writer = delegate.collectionView?(
         collectionView,
         pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
     )
 
-    XCTAssertNotNil(writer)
-    let session = try XCTUnwrap(dragController.session)
-    XCTAssertEqual(session.itemID, 10)
-    XCTAssertEqual(session.sourceParentID, 77)
-    XCTAssertEqual(session.sourceVisualIndex, 0)
+    #expect(writer != nil)
+    let session = try #require(dragController.session)
+    #expect(session.itemID == 10)
+    #expect(session.sourceParentID == 77)
+    #expect(session.sourceVisualIndex == 0)
 }
 
-func testEmptyDropUsesLastVisibleStableID() {
+@Test("空白落点使用当前视觉页最后一个稳定 ID")
+func emptyDropUsesLastVisibleStableID() {
     let items = [makeApp(id: 10), makeApp(id: 20), makeApp(id: 30)]
     loadSnapshot(pages: [items])
 
-    XCTAssertEqual(
-        collectionView.emptyPlacement(inVisualPage: 0),
-        .afterItem(itemID: 30)
-    )
+    #expect(collectionView.emptyPlacement(inVisualPage: 0)
+        == .afterItem(itemID: 30))
 }
 
-func testDropForwardsStableAnchorWithoutChangingSnapshot() {
+@Test("drop 转发稳定 anchor 且不乐观修改 snapshot")
+func dropForwardsStableAnchorWithoutChangingSnapshot() throws {
     let source = makeApp(id: 1)
     let target = makeApp(id: 9, parentID: 200)
     loadSnapshot(pages: [[source], [target]])
     let before = collectionView.diffableDataSource.snapshot().itemIdentifiers
     var received: GridDropDestination?
-    collectionView.onDropRequested = { _, destination in
+    coordinator.onDropRequested = { _, destination in
         received = destination
         return true
     }
 
-    XCTAssertTrue(collectionView.performDrop(
+    let parentID = try #require(source.parentId)
+    #expect(coordinator.performDrop(
         session: DragSession(
-            itemID: source.id,
-            itemUUID: source.uuid,
-            itemType: source.type,
-            sourceKind: .topLevel,
-            sourceParentID: source.parentId!,
-            sourceVisualIndex: 0
+            itemID: source.id, itemUUID: source.uuid,
+            itemType: source.type, sourceKind: .topLevel,
+            sourceParentID: parentID, sourceVisualIndex: 0
         ),
         destination: .placement(.afterItem(itemID: target.id))
     ))
 
-    XCTAssertEqual(received, .placement(.afterItem(itemID: 9)))
-    XCTAssertEqual(
-        collectionView.diffableDataSource.snapshot().itemIdentifiers,
-        before
-    )
+    #expect(received == .placement(.afterItem(itemID: 9)))
+    #expect(collectionView.diffableDataSource.snapshot().itemIdentifiers
+        == before)
 }
 
-func testVisualPageSetterClampsAndEnablesBothEdgeDirections() {
+@Test("视觉页 setter 夹紧且启用中间页双向 edge")
+func visualPageSetterClampsAndEnablesBothEdgeDirections() {
     loadSnapshot(pages: [[makeApp(id: 1)], [makeApp(id: 2)], [makeApp(id: 3)]])
 
     collectionView.setCurrentVisualPageIndex(1)
 
-    XCTAssertEqual(collectionView.currentVisualPageIndex, 1)
-    XCTAssertTrue(collectionView.canHoverEdge(.backward))
-    XCTAssertTrue(collectionView.canHoverEdge(.forward))
+    #expect(collectionView.currentVisualPageIndex == 1)
+    #expect(coordinator.canHoverEdge(.backward))
+    #expect(coordinator.canHoverEdge(.forward))
 }
 
-func testValidateDropUsesVisibleEdgesOnMiddlePage() throws {
+@Test("validate drop 在中间页按可见边缘解析双向 hover")
+func validateDropUsesVisibleEdgesOnMiddlePage() throws {
     let source = makeApp(id: 1)
     loadSnapshot(pages: [[source], [makeApp(id: 2)], [makeApp(id: 3)]])
     collectionView.frame = NSRect(x: 0, y: 0, width: 2100, height: 500)
@@ -6220,8 +8459,6 @@ func testValidateDropUsesVisibleEdgesOnMiddlePage() throws {
     scrollView.contentView.scroll(to: NSPoint(x: 700, y: 0))
     collectionView.setCurrentVisualPageIndex(1)
 
-    let controller = DragController(scheduler: MockScheduler())
-    collectionView.dragController = controller
     let session = DragSession(
         itemID: source.id,
         itemUUID: source.uuid,
@@ -6230,7 +8467,8 @@ func testValidateDropUsesVisibleEdgesOnMiddlePage() throws {
         sourceParentID: source.parentId!,
         sourceVisualIndex: 0
     )
-    controller.beginDrag(session)
+    dragController.beginDrag(session)
+    coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
 
     func validate(at localPoint: NSPoint) -> NSDragOperation {
         let info = draggingInfo(
@@ -6241,29 +8479,25 @@ func testValidateDropUsesVisibleEdgesOnMiddlePage() throws {
         var operation: NSCollectionView.DropOperation = .on
         return withUnsafeMutablePointer(to: &operation) { operationPointer in
             withUnsafeMutablePointer(to: &proposed) { proposedPointer in
-                collectionView.collectionView(
+                collectionView.delegate?.collectionView?(
                     collectionView,
                     validateDrop: info,
                     proposedIndexPath: AutoreleasingUnsafeMutablePointer(
                         proposedPointer
                     ),
                     dropOperation: operationPointer
-                )
+                ) ?? []
             }
         }
     }
 
     let visible = collectionView.visibleRect
-    XCTAssertEqual(
-        validate(at: NSPoint(x: visible.minX + 1, y: visible.midY)),
-        .generic
-    )
-    XCTAssertEqual(controller.session?.hoverDestination, .edge(.backward))
-    XCTAssertEqual(
-        validate(at: NSPoint(x: visible.maxX - 1, y: visible.midY)),
-        .generic
-    )
-    XCTAssertEqual(controller.session?.hoverDestination, .edge(.forward))
+    #expect(validate(at: NSPoint(x: visible.minX + 1, y: visible.midY))
+        == .generic)
+    #expect(dragController.session?.hoverDestination == .edge(.backward))
+    #expect(validate(at: NSPoint(x: visible.maxX - 1, y: visible.midY))
+        == .generic)
+    #expect(dragController.session?.hoverDestination == .edge(.forward))
 }
 
 private func attachToWindow(
@@ -6290,16 +8524,14 @@ private func draggingInfo(
     let pasteboard = NSPasteboard(
         name: .init("grid-\(UUID().uuidString)")
     )
-    pasteboard.setString(session.itemUUID, forType: .string)
     return MockDraggingInfo(pasteboard: pasteboard, location: windowPoint)
 }
 
-func testValidateDropConvertsWindowPointForNonZeroViewOrigin() throws {
+@Test("validate drop 对非零 view origin 只转换一次 window point")
+func validateDropConvertsWindowPointForNonZeroViewOrigin() throws {
     let source = makeApp(id: 1)
     let target = makeApp(id: 2, ordering: 1)
     loadSnapshot(pages: [[source, target]])
-    let controller = DragController(scheduler: MockScheduler())
-    collectionView.dragController = controller
     let session = DragSession(
         itemID: source.id,
         itemUUID: source.uuid,
@@ -6308,7 +8540,8 @@ func testValidateDropConvertsWindowPointForNonZeroViewOrigin() throws {
         sourceParentID: source.parentId!,
         sourceVisualIndex: 0
     )
-    controller.beginDrag(session)
+    dragController.beginDrag(session)
+    coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
     let window = attachToWindow(
         collectionView,
         origin: NSPoint(x: 120, y: 80)
@@ -6328,7 +8561,7 @@ func testValidateDropConvertsWindowPointForNonZeroViewOrigin() throws {
     var operation: NSCollectionView.DropOperation = .on
     _ = withUnsafeMutablePointer(to: &operation) { operationPointer in
         withUnsafeMutablePointer(to: &proposed) { proposedPointer in
-            collectionView.collectionView(
+            collectionView.delegate?.collectionView?(
                 collectionView,
                 validateDrop: info,
                 proposedIndexPath: AutoreleasingUnsafeMutablePointer(
@@ -6339,17 +8572,16 @@ func testValidateDropConvertsWindowPointForNonZeroViewOrigin() throws {
         }
     }
 
-    let resolved = try XCTUnwrap(resolvedPoint)
-    XCTAssertEqual(resolved.x, localPoint.x, accuracy: 0.001)
-    XCTAssertEqual(resolved.y, localPoint.y, accuracy: 0.001)
+    let resolved = try #require(resolvedPoint)
+    #expect(abs(resolved.x - localPoint.x) <= 0.001)
+    #expect(abs(resolved.y - localPoint.y) <= 0.001)
 }
 
-func testAcceptDropConvertsWindowPointForNonZeroViewOrigin() throws {
+@Test("accept drop 对非零 view origin 只转换一次 window point")
+func acceptDropConvertsWindowPointForNonZeroViewOrigin() throws {
     let source = makeApp(id: 1)
     let target = makeApp(id: 2, ordering: 1)
     loadSnapshot(pages: [[source, target]])
-    let controller = DragController(scheduler: MockScheduler())
-    collectionView.dragController = controller
     let session = DragSession(
         itemID: source.id,
         itemUUID: source.uuid,
@@ -6358,7 +8590,8 @@ func testAcceptDropConvertsWindowPointForNonZeroViewOrigin() throws {
         sourceParentID: source.parentId!,
         sourceVisualIndex: 0
     )
-    controller.beginDrag(session)
+    dragController.beginDrag(session)
+    coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
     let window = attachToWindow(
         collectionView,
         origin: NSPoint(x: 120, y: 80)
@@ -6369,55 +8602,61 @@ func testAcceptDropConvertsWindowPointForNonZeroViewOrigin() throws {
         resolvedPoint = point
         return nil
     }
-    collectionView.onDropRequested = { _, _ in true }
+    coordinator.onDropRequested = { _, _ in true }
     let localPoint = NSPoint(x: 250, y: 180)
     let info = draggingInfo(
         for: session,
         at: collectionView.convert(localPoint, to: nil)
     )
 
-    XCTAssertTrue(collectionView.collectionView(
+    #expect(collectionView.delegate?.collectionView?(
         collectionView,
         acceptDrop: info,
         indexPath: IndexPath(item: 1, section: 0),
         dropOperation: .on
-    ))
-    let resolved = try XCTUnwrap(resolvedPoint)
-    XCTAssertEqual(resolved.x, localPoint.x, accuracy: 0.001)
-    XCTAssertEqual(resolved.y, localPoint.y, accuracy: 0.001)
+    ) == true)
+    let resolved = try #require(resolvedPoint)
+    #expect(abs(resolved.x - localPoint.x) <= 0.001)
+    #expect(abs(resolved.y - localPoint.y) <= 0.001)
 }
 ```
 
 Change the existing `MockDraggingInfo` declaration from `private final class`
 to module-internal `final class`; Task 19 reuses it for folder coordinate tests.
 
-The complete branch matrix uses these XCTest method identifiers:
+The complete branch matrix uses these Swift Testing IDs (leading `test` removed and next character lowercased):
 
 ```text
-testPasteboardWriter_groupStartsTopLevelSession
-testPasteboardWriter_pageSearchMissingParentAndMalformedUUIDReturnNil
-testExtractSession_unknownUUIDStaleSourceAndMismatchedActiveSessionReturnNil
-testValidateDrop_leftEdgeFirstPageAndRightEdgeLastPageReject
-testValidateDrop_leftEdgeMiddlePageArmsBackward
-testValidateDrop_rightEdgeMiddlePageArmsForward
-testResolveDestination_beforeAfterAndEmptyUseStableIDs
-testResolveDestination_appOnAppAndAppOnGroupAreOnItem
-testResolveDestination_groupOnAppGroupAndSelfReject
-testResolveDestination_staleTargetRejects
-testAcceptDrop_callbackFailureKeepsSnapshotUnchanged
-testDraggingSessionEndClearsSessionTimerAndPreview
+pasteboardWriter_groupStartsTopLevelSession
+pasteboardWriter_pageSearchMissingParentAndMalformedUUIDReturnNil
+extractSession_unknownUUIDStaleSourceAndMismatchedActiveSessionReturnNil
+validateDrop_leftEdgeFirstPageAndRightEdgeLastPageReject
+validateDrop_leftEdgeMiddlePageArmsBackward
+validateDrop_rightEdgeMiddlePageArmsForward
+resolveDestination_beforeAfterAndEmptyUseStableIDs
+resolveDestination_appOnAppAndAppOnGroupAreOnItem
+resolveDestination_groupOnAppGroupAndSelfReject
+resolveDestination_staleTargetRejects
+acceptDrop_callbackFailureKeepsSnapshotUnchanged
+draggingSessionEndClearsSessionTimerAndPreview
 ```
 
 - [ ] **Step 2: Run and confirm RED**
 
 ```bash
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppIconCellTests)/'
+
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'AppGridCollectionViewTests|AppIconCellTests'
+  --filter 'AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppIconCellTests'
 ```
 
-Expected: compile RED for `GridDropDestination`, page synchronization, placement resolution and preview APIs.
+Expected: the list command contains each named Task 16 ID in its owning suite;
+the run is compile RED for coordinator-owned `GridDropDestination`, policy,
+host page/snapshot queries and preview APIs. A zero-match filtered exit is a
+gate failure.
 
 - [ ] **Step 3: Add exact destination and page synchronization APIs**
 
@@ -6427,13 +8666,16 @@ public enum GridDropDestination: Sendable, Equatable {
     case onItem(itemID: Int64, itemType: ItemType)
 }
 
+// AppGridInteractionCoordinator
 public var isDragEnabled = true {
     didSet {
-        if !isDragEnabled { dragController?.cancelDrag() }
+        if !isDragEnabled { dragController.cancelDrag() }
     }
 }
-public private(set) var currentVisualPageIndex = 0
 public var onDropRequested: ((DragSession, GridDropDestination) -> Bool)?
+
+// AppGridCollectionView host state
+public private(set) var currentVisualPageIndex = 0
 
 public func setCurrentVisualPageIndex(_ index: Int) {
     let pageCount = diffableDataSource.snapshot().sectionIdentifiers.reduce(into: 0) {
@@ -6442,18 +8684,18 @@ public func setCurrentVisualPageIndex(_ index: Int) {
     currentVisualPageIndex = max(0, min(index, max(0, pageCount - 1)))
 }
 
+// AppGridInteractionCoordinator policy reads host state; it owns no snapshot.
 func canHoverEdge(_ direction: DragPageDirection) -> Bool {
-    let pageCount = diffableDataSource.snapshot().sectionIdentifiers.reduce(into: 0) {
-        if case .page = $1 { $0 += 1 }
-    }
+    guard let host else { return false }
     switch direction {
     case .backward:
-        return currentVisualPageIndex > 0
+        return host.currentVisualPageIndex > 0
     case .forward:
-        return currentVisualPageIndex + 1 < pageCount
+        return host.currentVisualPageIndex + 1 < host.visualPageCount
     }
 }
 
+// AppGridCollectionView stable anchor query
 func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement? {
     let snapshot = diffableDataSource.snapshot()
     let section = Section.page(pageIndex)
@@ -6465,11 +8707,43 @@ func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement? {
 }
 ```
 
-After every `reload`, call `setCurrentVisualPageIndex(currentVisualPageIndex)` so a reduced page count clamps immediately. Task 18 synchronizes this property with the VC/page-scroll source of truth.
+In the same source file, replace Task 4's host protocol with this complete Task
+16 surface. It remains class-bound so coordinator `weak host` is legal:
+
+```swift
+@MainActor
+protocol AppGridInteractionHosting: AnyObject {
+    var collectionViewForDelegateInstallation: NSCollectionView { get }
+    var interactionVisibleRect: NSRect { get }
+    var visualPageCount: Int { get }
+    var currentVisualPageIndex: Int { get }
+
+    func section(at index: Int) -> Section?
+    func pageItem(at indexPath: IndexPath) -> PageItem?
+    func pageItem(id: Int64) -> PageItem?
+    func visualIndex(of item: PageItem) -> Int?
+    func indexPath(forItemID itemID: Int64) -> IndexPath?
+    func resolvedIndexPath(at point: NSPoint) -> IndexPath?
+    func layoutFrame(at indexPath: IndexPath) -> NSRect?
+    func emptyPlacement(inVisualPage pageIndex: Int) -> ItemPlacement?
+    func dragImage(at indexPath: IndexPath) -> NSImage?
+    func setFolderCreationPreview(targetItemID: Int64?)
+}
+```
+
+Implement every member from the grid's existing diffable snapshot, layout,
+`visibleRect` and cell rendering primitives. Delete Task 4's obsolete
+`pageItem(uuid:)` query and `moveSnapshotItem(_:before:)`; Task 16 resolves the
+active source by session ID and forbids optimistic snapshot mutation. Keep
+`setCurrentVisualPageIndex(_:)` as a concrete grid/VC API instead of exposing it
+through the coordinator host protocol. After every grid `reload`, call
+`setCurrentVisualPageIndex(currentVisualPageIndex)` so a reduced page count
+clamps immediately. Task 18 synchronizes this host state with the
+VC/page-scroll source of truth.
 
 - [ ] **Step 4: Build and validate a real top-level source session**
 
-Replace the pasteboard writer with:
+Replace the coordinator's pasteboard writer with:
 
 ```swift
 public func collectionView(
@@ -6477,15 +8751,15 @@ public func collectionView(
     pasteboardWriterForItemAt indexPath: IndexPath
 ) -> NSPasteboardWriting? {
     guard isDragEnabled,
-          case .page = diffableDataSource.snapshot().sectionIdentifiers[indexPath.section],
-          let item = diffableDataSource.itemIdentifier(for: indexPath),
+          let host,
+          case .page = host.section(at: indexPath.section),
+          let item = host.pageItem(at: indexPath),
           item.type != .page,
           let parentID = item.parentId,
           UUID(uuidString: item.uuid) != nil,
-          let visualIndex = diffableDataSource.snapshot()
-            .itemIdentifiers.firstIndex(of: item) else { return nil }
+          let visualIndex = host.visualIndex(of: item) else { return nil }
 
-    dragController?.beginDrag(DragSession(
+    dragController.beginDrag(DragSession(
         itemID: item.id,
         itemUUID: item.uuid,
         itemType: item.type,
@@ -6501,39 +8775,38 @@ public func collectionView(
 
 func extractActiveSession(from draggingInfo: NSDraggingInfo) -> DragSession? {
     guard isDragEnabled,
-          let value = draggingInfo.draggingPasteboard.string(forType: .string),
+          let value = pasteboardUUIDReader(draggingInfo.draggingPasteboard),
           UUID(uuidString: value) != nil,
-          let session = dragController?.session,
+          let session = dragController.session,
+          session.sourceKind == .topLevel,
           session.itemUUID == value,
-          diffableDataSource.snapshot().itemIdentifiers.contains(where: {
-              $0.id == session.itemID && $0.uuid == value
-          }) else { return nil }
+          let source = host?.pageItem(id: session.itemID),
+          source.uuid == value else { return nil }
     return session
 }
 ```
 
 - [ ] **Step 5: Resolve edges, on-item, before/after and empty deterministically**
 
-Use a center rectangle for `.onItem`; outside it, compare x with the target midpoint. Expose the same placement-only resolver for folder drag-out:
+Every policy and delegate method in this step is implemented on
+`AppGridInteractionCoordinator`, never on the grid. Use host queries for all
+snapshot, layout and visible-rect data. Use a center rectangle for `.onItem`;
+outside it, compare x with the target midpoint. Expose the same placement-only
+resolver for folder drag-out:
 
 ```swift
 func resolveGridDestination(at location: NSPoint) -> GridDropDestination? {
-    let indexPath: IndexPath?
-    if let indexPathResolver {
-        indexPath = indexPathResolver(location)
-    } else {
-        indexPath = indexPathForItem(at: location)
-    }
-    guard let indexPath,
-          let item = diffableDataSource.itemIdentifier(for: indexPath),
-          let attributes = collectionViewLayout?
-            .layoutAttributesForItem(at: indexPath) else {
-        return emptyPlacement(inVisualPage: currentVisualPageIndex).map {
+    guard let host else { return nil }
+    guard let indexPath = host.resolvedIndexPath(at: location) else {
+        return host.emptyPlacement(
+            inVisualPage: host.currentVisualPageIndex
+        ).map {
             .placement($0)
         }
     }
+    guard let item = host.pageItem(at: indexPath),
+          let frame = host.layoutFrame(at: indexPath) else { return nil }
 
-    let frame = attributes.frame
     let onFrame = frame.insetBy(
         dx: frame.width * 0.25,
         dy: frame.height * 0.20
@@ -6548,16 +8821,13 @@ func resolveGridDestination(at location: NSPoint) -> GridDropDestination? {
     )
 }
 
-public func topLevelPlacement(at location: NSPoint) -> ItemPlacement? {
+public func topLevelPlacement(atLocalPoint location: NSPoint) -> ItemPlacement? {
     switch resolveGridDestination(at: location) {
     case .placement(let placement):
         return placement
     case .onItem(let itemID, _):
-        let snapshot = diffableDataSource.snapshot()
-        guard let item = snapshot.itemIdentifiers.first(where: { $0.id == itemID }),
-              let indexPath = diffableDataSource.indexPath(for: item),
-              let frame = collectionViewLayout?
-                .layoutAttributesForItem(at: indexPath)?.frame else {
+        guard let indexPath = host?.indexPath(forItemID: itemID),
+              let frame = host?.layoutFrame(at: indexPath) else {
             return nil
         }
         return location.x < frame.midX
@@ -6587,39 +8857,39 @@ public func collectionView(
         from: nil
     )
     guard let session = extractActiveSession(from: draggingInfo) else {
-        dragController?.updateDragHover(.empty)
+        dragController.updateDragHover(.empty)
         return []
     }
 
     let edgeWidth: CGFloat = 40
-    let visibleBounds = collectionView.visibleRect
+    let visibleBounds = host?.interactionVisibleRect ?? .zero
     if localPoint.x < visibleBounds.minX + edgeWidth {
         guard canHoverEdge(.backward) else {
-            dragController?.updateDragHover(.empty)
+            dragController.updateDragHover(.empty)
             return []
         }
-        dragController?.updateDragHover(.edge(.backward))
+        dragController.updateDragHover(.edge(.backward))
         return .generic
     }
     if localPoint.x > visibleBounds.maxX - edgeWidth {
         guard canHoverEdge(.forward) else {
-            dragController?.updateDragHover(.empty)
+            dragController.updateDragHover(.empty)
             return []
         }
-        dragController?.updateDragHover(.edge(.forward))
+        dragController.updateDragHover(.edge(.forward))
         return .generic
     }
 
     guard let destination = resolveGridDestination(at: localPoint),
           allows(session: session, destination: destination) else {
-        dragController?.updateDragHover(.empty)
+        dragController.updateDragHover(.empty)
         return []
     }
     switch destination {
     case .placement:
-        dragController?.updateDragHover(.empty)
+        dragController.updateDragHover(.empty)
     case .onItem(let itemID, let itemType):
-        dragController?.updateDragHover(
+        dragController.updateDragHover(
             .item(itemID: itemID, itemType: itemType)
         )
     }
@@ -6640,7 +8910,7 @@ public func collectionView(
     guard let session = extractActiveSession(from: draggingInfo),
           let destination = resolveGridDestination(at: localPoint),
           allows(session: session, destination: destination) else {
-        dragController?.cancelDrag()
+        dragController.cancelDrag()
         return false
     }
     return performDrop(session: session, destination: destination)
@@ -6673,18 +8943,19 @@ func performDrop(
     destination: GridDropDestination
 ) -> Bool {
     guard isDragEnabled else {
-        dragController?.cancelDrag()
+        dragController.cancelDrag()
         return false
     }
     return onDropRequested?(session, destination) ?? false
 }
 
-override public func draggingSession(
-    _ session: NSDraggingSession,
+public func collectionView(
+    _ collectionView: NSCollectionView,
+    draggingSession session: NSDraggingSession,
     endedAt screenPoint: NSPoint,
-    operation: NSDragOperation
+    dragOperation operation: NSDragOperation
 ) {
-    dragController?.finishDrag()
+    dragController.finishDrag()
 }
 ```
 
@@ -6737,7 +9008,23 @@ func setFolderCreationPreview(targetItemID: Int64?) {
 }
 ```
 
-When assigning `dragController`, bind `onFolderCreationPreviewChanged` to this method. Clear it before replacing controllers and during reload.
+The grid only draws through this host method. Bind and clear the preview from
+coordinator lifecycle, because the coordinator owns the `DragController`:
+
+```swift
+// At the end of coordinator.attach(to:)
+dragController.onFolderCreationPreviewChanged = { [weak self] targetID in
+    self?.host?.setFolderCreationPreview(targetItemID: targetID)
+}
+
+// At the start of coordinator.detach(), before clearing host
+host?.setFolderCreationPreview(targetItemID: nil)
+dragController.onFolderCreationPreviewChanged = nil
+```
+
+Grid `reload` also calls `setFolderCreationPreview(targetItemID: nil)` before
+applying its new snapshot. Tests cover valid app, stale/missing target, non-app
+target, old-target clearing, reload, detach and A-to-B reattach.
 
 - [ ] **Step 7: Run grid, icon and drag suites GREEN**
 
@@ -6745,17 +9032,39 @@ When assigning `dragController`, bind `onFolderCreationPreviewChanged` to this m
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'AppGridCollectionViewTests|AppIconCellTests|DragControllerTests|CollectionViewDragTests'
+  --filter 'AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppIconCellTests|DragControllerTests|CollectionViewDragTests'
 ```
 
 Expected: PASS; accepted/rejected drops leave the pre-COMMIT snapshot unchanged, edge direction respects the synchronized page, and preview border visibly toggles.
+
+Before committing, enforce the complete host contraction and real delegate
+wiring across production and tests:
+
+```bash
+! rg -n 'interactionBounds|pageItem\(uuid:|moveSnapshotItem\(|itemsByUUID|snapshotMoves' \
+  Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+  Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift
+! rg -n 'setCurrentVisualPageIndex' \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift
+! rg -n -U --pcre2 \
+  '\b([A-Za-z_][A-Za-z0-9_]*)\.collectionView\(\s*\1\s*,' \
+  Tests --glob '*.swift'
+```
+
+Expected: all three scans print nothing. The concrete grid still exposes
+`setCurrentVisualPageIndex(_:)` to the VC, but the host protocol/coordinator
+cannot mutate page state and no test can retain Task 4 lookup/move shortcuts.
 
 - [ ] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
   Sources/LaunchPad/Views/AppIconCell.swift \
   Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
   Tests/LaunchPadTests/Views/AppIconCellTests.swift
 git commit -m "feat: resolve stable grid drop destinations"
 ```
@@ -6774,48 +9083,61 @@ git commit -m "feat: resolve stable grid drop destinations"
 - [ ] **Step 1: Write deterministic RED tests without a window or sleep**
 
 ```swift
+import AppKit
+import Testing
+@testable import LaunchPad
+
 @MainActor
-final class TransientMessageViewTests: XCTestCase {
-    func testShowDisplaysExactTextAndPostsAnnouncement() {
+@Suite("TransientMessageView")
+struct TransientMessageViewTests {
+    @Test("show 设置文本、显示视图并发布 high priority announcement")
+    func showDisplaysExactTextAndPostsAnnouncement() {
         let sut = TransientMessageView(frame: .zero)
-        var announced: String?
-        sut.postAnnouncement = { announced = $0 }
-        sut.scheduleHide = { _, _ in }
+        var announcement: (String, Int)?
+        var delay: TimeInterval?
+        sut.postAnnouncement = {
+            announcement = ($0, $1.rawValue)
+        }
+        sut.scheduleHide = { value, _ in delay = value }
 
         sut.show(message: "无法更新布局，请重试")
 
-        XCTAssertEqual(sut.message, "无法更新布局，请重试")
-        XCTAssertFalse(sut.isHidden)
-        XCTAssertEqual(sut.accessibilityLabel(), "无法更新布局，请重试")
-        XCTAssertEqual(announced, "无法更新布局，请重试")
+        #expect(sut.message == "无法更新布局，请重试")
+        #expect(!sut.isHidden)
+        #expect(sut.accessibilityLabel() == "无法更新布局，请重试")
+        #expect(announcement?.0 == "无法更新布局，请重试")
+        #expect(announcement?.1 == NSAccessibilityPriorityLevel.high.rawValue)
+        #expect(delay == 2.5)
     }
 
-    func testRepeatedShowCancelsOldWorkAndReplacesText() throws {
+    @Test("重复 show 取消旧任务并替换文本")
+    func repeatedShowCancelsOldWorkAndReplacesText() throws {
         let sut = TransientMessageView(frame: .zero)
         var workItems: [DispatchWorkItem] = []
-        sut.postAnnouncement = { _ in }
-        sut.scheduleHide = { _, workItems.append($1) }
+        sut.postAnnouncement = { _, _ in }
+        sut.scheduleHide = { _, item in workItems.append(item) }
 
         sut.show(message: "first")
         sut.show(message: "second")
 
-        XCTAssertTrue(try XCTUnwrap(workItems.first).isCancelled)
-        XCTAssertFalse(try XCTUnwrap(workItems.last).isCancelled)
-        XCTAssertEqual(sut.message, "second")
+        #expect(try #require(workItems.first).isCancelled)
+        #expect(!(try #require(workItems.last)).isCancelled)
+        #expect(sut.message == "second")
     }
 
-    func testScheduledWorkHidesDeterministically() throws {
+    @Test("调度任务执行后确定性隐藏")
+    func scheduledWorkHidesDeterministically() throws {
         let sut = TransientMessageView(frame: .zero)
         var scheduled: DispatchWorkItem?
-        sut.postAnnouncement = { _ in }
-        sut.scheduleHide = { _, scheduled = $1 }
+        sut.postAnnouncement = { _, _ in }
+        sut.scheduleHide = { _, item in scheduled = item }
         sut.show(message: "error")
 
-        try XCTUnwrap(scheduled).perform()
+        try #require(scheduled).perform()
 
-        XCTAssertNil(sut.message)
-        XCTAssertTrue(sut.isHidden)
-        XCTAssertEqual(sut.accessibilityLabel(), "")
+        #expect(sut.message == nil)
+        #expect(sut.isHidden)
+        #expect(sut.accessibilityLabel() == "")
     }
 }
 ```
@@ -6846,13 +9168,14 @@ public final class TransientMessageView: NSView {
             execute: item
         )
     }
-    var postAnnouncement: (String) -> Void = { message in
+    var postAnnouncement:
+        (String, NSAccessibilityPriorityLevel) -> Void = { message, priority in
         NSAccessibility.post(
             element: NSApp as Any,
             notification: .announcementRequested,
             userInfo: [
                 .announcement: message,
-                .priority: NSAccessibilityPriorityLevel.high.rawValue,
+                .priority: priority.rawValue,
             ]
         )
     }
@@ -6897,7 +9220,7 @@ public final class TransientMessageView: NSView {
         label.stringValue = message
         setAccessibilityLabel(message)
         isHidden = false
-        postAnnouncement(message)
+        postAnnouncement(message, .high)
 
         let item = DispatchWorkItem { [weak self] in
             self?.hide()
@@ -6942,11 +9265,13 @@ git commit -m "feat: add deterministic layout error feedback"
 **Files:**
 - Modify: `Sources/LaunchPad/Controllers/LaunchPadViewController.swift:13-89,98-241,285-382,509-605`
 - Modify: `Sources/LaunchPad/Views/AppGridCollectionView.swift`
+- Modify: `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift`
 - Modify: `Sources/LaunchPad/Views/FolderOverlayView.swift:11-35`
 - Modify: `Sources/LaunchPad/App/AppDelegate.swift:12-18,111-160`
 - Modify: `Tests/LaunchPadTests/TestHelpers/MockProtocols.swift`
 - Modify: `Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift`
 - Modify: `Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift`
 - Modify: `Tests/LaunchPadTests/App/AppDelegateTests.swift`
 - Modify: `Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift`
 
@@ -7049,7 +9374,21 @@ func folderHoverPreviewsWithoutWriteAndDropCommitsExactlyOnce() throws {
         layoutMutator: mutator,
         dragScheduler: scheduler
     )
-    let apps = TestDataFactory.makeAppItems(count: 2)
+    let apps = (1...2).map { id in
+        TestDataFactory.makePageItem(
+            id: Int64(id),
+            uuid: "00000000-0000-0000-0000-\(String(
+                format: "%012lld", Int64(id)
+            ))",
+            type: .app,
+            ordering: id - 1,
+            parentId: 1,
+            app: TestDataFactory.makeAppInfo(
+                id: Int64(id),
+                title: "A\(id)"
+            )
+        )
+    }
     loadViewWithData(sut, storage: storage, apps: apps)
     sut.viewportSizeProvider = { CGSize(width: 1440, height: 620) }
     sut.viewDidLayout()
@@ -7059,7 +9398,14 @@ func folderHoverPreviewsWithoutWriteAndDropCommitsExactlyOnce() throws {
     grid.visibleCellProvider = { indexPath in
         indexPath == IndexPath(item: 1, section: 0) ? previewCell : nil
     }
-    let session = makeSession(itemID: apps[0].id, type: .app)
+    let session = DragSession(
+        itemID: apps[0].id,
+        itemUUID: apps[0].uuid,
+        itemType: .app,
+        sourceKind: .topLevel,
+        sourceParentID: 1,
+        sourceVisualIndex: 0
+    )
     sut.dragController.beginDrag(session)
 
     sut.dragController.updateDragHover(
@@ -7069,10 +9415,35 @@ func folderHoverPreviewsWithoutWriteAndDropCommitsExactlyOnce() throws {
 
     #expect(previewCell.isFolderCreationPreviewVisible)
     #expect(mutator.applyAttemptCount == 0)
-    #expect(grid.performDrop(
-        session: session,
-        destination: .onItem(itemID: apps[1].id, itemType: .app)
-    ))
+    let coordinator = try #require(sut.gridInteractionCoordinator)
+    coordinator.pasteboardUUIDReader = { _ in session.itemUUID }
+    let delegate = try #require(grid.delegate)
+    #expect(delegate === coordinator)
+    let targetPath = try #require(
+        grid.diffableDataSource.indexPath(for: apps[1])
+    )
+    grid.layoutSubtreeIfNeeded()
+    let targetFrame = try #require(
+        grid.collectionViewLayout?
+            .layoutAttributesForItem(at: targetPath)?.frame
+    )
+    grid.indexPathResolver = { _ in targetPath }
+    let info = MockDraggingInfo(
+        pasteboard: NSPasteboard(
+            name: .init("vc-drop-\(UUID().uuidString)")
+        ),
+        location: grid.convert(
+            NSPoint(x: targetFrame.midX, y: targetFrame.midY),
+            to: nil
+        )
+    )
+
+    #expect(delegate.collectionView?(
+        grid,
+        acceptDrop: info,
+        indexPath: targetPath,
+        dropOperation: .on
+    ) == true)
     #expect(mutator.applyAttemptCount == 1)
     #expect(mutator.attemptedIntents == [
         .createFolder(
@@ -7081,20 +9452,41 @@ func folderHoverPreviewsWithoutWriteAndDropCommitsExactlyOnce() throws {
             title: "New Folder"
         ),
     ])
+    delegate.collectionView?(
+        grid,
+        draggingSession: NSDraggingSession(),
+        endedAt: .zero,
+        dragOperation: .move
+    )
+    #expect(mutator.applyAttemptCount == 1)
     #expect(sut.dragController.session == nil)
+    #expect(scheduler.scheduledActions.isEmpty)
+    #expect(!previewCell.isFolderCreationPreviewVisible)
 }
 ```
+
+This test must keep the retained real delegate for both native calls. It proves
+the `acceptDrop -> draggingSession ended` sequence cannot introduce a second
+writer: mutation attempts remain exactly one after the sixth delegate entry.
 
 Add the mapping matrix as one exhaustive pure-controller test; same-page,
 cross-page and empty destinations are all stable placements and therefore must
 map identically without page numbers:
 
 ```swift
-@Test("全部 grid destination 映射稳定 intent 或明确拒绝")
-func gridDestinationMappingIsExhaustive() {
+@Test("全部 grid source 与 destination 映射稳定 intent 或明确拒绝")
+func gridSourceAndDestinationMappingIsExhaustive() {
     let (sut, _, _) = makeSUT(layoutMutator: MockLayoutMutator())
     let app = makeSession(itemID: 2, type: .app)
     let group = makeSession(itemID: 7, type: .group)
+    let folderChild = DragSession(
+        itemID: 2,
+        itemUUID: "00000000-0000-0000-0000-000000000002",
+        itemType: .app,
+        sourceKind: .folderChild,
+        sourceParentID: 50,
+        sourceVisualIndex: 0
+    )
 
     #expect(sut.makeGridIntent(
         session: app,
@@ -7141,6 +9533,10 @@ func gridDestinationMappingIsExhaustive() {
         session: app,
         destination: .onItem(itemID: 2, itemType: .app)
     ) == nil)
+    #expect(sut.makeGridIntent(
+        session: folderChild,
+        destination: .placement(.beforeItem(itemID: 1))
+    ) == nil)
 }
 
 @Test("当前动态容量原样传给 writer；stale anchor 失败不重试")
@@ -7167,7 +9563,7 @@ func dropForwardsCapacityAndStaleAnchorFailsOnce() {
 }
 ```
 
-In `AppGridCollectionViewTests`, set `isDragEnabled = false`, assert the
+In `AppGridInteractionCoordinatorTests`, set `coordinator.isDragEnabled = false`, assert the
 pasteboard writer returns nil, then feed a valid active session to both native
 validate/accept entries and assert `[]`/`false`, zero callback invocations and
 an unchanged snapshot. Re-enable drag and assert the same source is accepted;
@@ -7179,7 +9575,7 @@ this proves search toggles all three boundaries rather than only the writer.
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'LaunchPadViewControllerTests|AppGridCollectionViewTests|AppDelegateTests|LaunchPadWindowControllerTests'
+  --filter 'LaunchPadViewControllerTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppDelegateTests|LaunchPadWindowControllerTests'
 ```
 
 Expected: compile RED for the new VC initializer, message/log members, AppDelegate mutator property and page synchronization.
@@ -7308,6 +9704,7 @@ func makeGridIntent(
     session: DragSession,
     destination: GridDropDestination
 ) -> LayoutDropIntent? {
+    guard session.sourceKind == .topLevel else { return nil }
     switch destination {
     case .placement(let placement):
         guard placement.anchorItemID != session.itemID else { return nil }
@@ -7358,7 +9755,7 @@ func applyDropIntent(_ intent: LayoutDropIntent) -> Bool {
 Bind without a second writer or guessed source:
 
 ```swift
-collectionView.onDropRequested = { [weak self] session, destination in
+gridInteractionCoordinator?.onDropRequested = { [weak self] session, destination in
     guard let self,
           let intent = self.makeGridIntent(
               session: session,
@@ -7379,7 +9776,7 @@ Task 19 adds folder delegates, but add `public var isDragEnabled = true` to `Fol
 
 ```swift
 private func setDragEnabled(_ enabled: Bool) {
-    collectionView.isDragEnabled = enabled
+    gridInteractionCoordinator?.isDragEnabled = enabled
     folderOverlay.isDragEnabled = enabled
     if !enabled { dragController.cancelDrag() }
 }
@@ -7421,7 +9818,7 @@ Pass `MockLayoutMutator` from VC/window test factories and real `layoutMutator` 
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'LaunchPadViewControllerTests|AppGridCollectionViewTests|AppDelegateTests|LaunchPadWindowControllerTests|TransientMessageViewTests'
+  --filter 'LaunchPadViewControllerTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppDelegateTests|LaunchPadWindowControllerTests|TransientMessageViewTests'
 ```
 
 Expected: PASS; failure has one attempt and zero successful apply, search races make zero attempts, all page paths synchronize, and logs contain no underlying error text.
@@ -7431,11 +9828,13 @@ Expected: PASS; failure has one attempt and zero successful apply, search races 
 ```bash
 git add Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
   Sources/LaunchPad/Views/AppGridCollectionView.swift \
+  Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
   Sources/LaunchPad/Views/FolderOverlayView.swift \
   Sources/LaunchPad/App/AppDelegate.swift \
   Tests/LaunchPadTests/TestHelpers/MockProtocols.swift \
   Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift \
   Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+  Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift \
   Tests/LaunchPadTests/App/AppDelegateTests.swift \
   Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift
 git commit -m "feat: commit top-level drops through one domain writer"
@@ -7464,11 +9863,111 @@ git commit -m "feat: commit top-level drops through one domain writer"
 - Modify: `Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift`
 
 **Interfaces:**
-- Consumes: Task 16 `topLevelPlacement(at:)`, Task 18's only writer/error path, Task 14's atomic folder intents.
+- Consumes: Task 16 coordinator
+  `topLevelPlacement(atLocalPoint:)`, Task 18's only writer/error path and Task
+  14's atomic folder intents. `FolderOverlayView` deliberately keeps its own
+  delegate, `DragController`, pasteboard reader and `onDropRequested`; this Task
+  does not route overlay-local AppKit callbacks through the main-grid
+  coordinator.
 - Consumes: the actual folder clip viewport; both axes use the existing 72x80 item geometry and capacity never exceeds the existing maximum of 35.
 - Produces: width/height-derived folder rows, columns and capped capacity, one shared open/reload/resize reprojection path, inner and overlay-exterior drop destinations, stable child placement, drag-out, deterministic folder reload, real edit-mode delete control, confirmed safe delete and all lifecycle cleanup.
 
-- [ ] **Step 1: Add RED tests for inner folder and overlay-exterior branches**
+- [ ] **Step 1: Repair the existing external-click animation fixture as an isolated test commit**
+
+Keep the file in its current framework for this one fixture-only commit. Require the optional `NSEvent`, call `layoutSubtreeIfNeeded()`, recursively locate the panel `NSVisualEffectView`, choose `NSPoint(x: panel.frame.minX - 1, y: panel.frame.midY)` and prove the point is outside the panel. Inject `closeFolderCompletionRunner = { $0() }`; assert synchronously that `isHidden` is true and `onClosed` ran exactly once. Delete the 0.3-second dispatch, expectation and wait.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter FolderOverlayViewTests/testMouseDown_outsidePanel_closesFolder
+git add Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift
+git commit -m "test: make folder close completion deterministic"
+```
+
+- [ ] **Step 2: Migrate FolderOverlayViewTests 39/39 in a production-empty commit**
+
+Use `@MainActor @Suite("FolderOverlayView") struct FolderOverlayViewTests`. Do not migrate `setUp`/`tearDown` or IUO state; each test calls:
+
+```swift
+private func makeOverlay() -> FolderOverlayView {
+    let overlay = FolderOverlayView(
+        frame: NSRect(x: 0, y: 0, width: 800, height: 700)
+    )
+    overlay.folderViewportSizeProvider = {
+        CGSize(width: 800, height: 624)
+    }
+    overlay.closeFolderCompletionRunner = { $0() }
+    return overlay
+}
+```
+
+Convert all 39 methods one-to-one, preserve every assertion and replace optional event/object unwraps with `try #require`. Remove fixed waits and RunLoop polling; locally injected completion runners are synchronous. Add 39 explicit rows to `docs/superpowers/reports/2026-07-21-task-19-folder-overlay-migration.md`.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(FolderOverlayViewTests|FolderOverlayViewPagingTests)/' | \
+  LC_ALL=C sort > /tmp/task-19-folder-actual-before.txt
+test "$(wc -l < /tmp/task-19-folder-actual-before.txt | tr -d ' ')" -eq 47
+test "$(LC_ALL=C sort -u /tmp/task-19-folder-actual-before.txt | wc -l | tr -d ' ')" -eq 47
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter FolderOverlayViewTests
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:|RunLoop\.main\.run' \
+  Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift \
+  docs/superpowers/reports/2026-07-21-task-19-folder-overlay-migration.md
+git commit -m "test: migrate folder overlay tests to Swift Testing"
+```
+
+- [ ] **Step 3: Migrate FolderOverlayViewPagingTests 8/8 and audit all 47 mappings**
+
+Use `@MainActor @Suite("FolderOverlayView paging")` with a fresh overlay per test. Notification-driven paging posts to a local `NotificationCenter`; because the `.main` observer is synchronous on MainActor, assert immediately without RunLoop polling. Append all 8 mappings to the report. The complete old-name mapping is removal of `test` and lowercasing the next character, but the report must expand all 39+8 qualified IDs with assertion/actor/fixture/cleanup columns.
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'FolderOverlayViewTests|FolderOverlayViewPagingTests'
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(FolderOverlayViewTests|FolderOverlayViewPagingTests)/' | \
+  LC_ALL=C sort > /tmp/task-19-folder-actual-after.txt
+awk -F'`' \
+  '$0 ~ /^\| `LaunchPadTests\.(FolderOverlayViewTests|FolderOverlayViewPagingTests)\// { print $4 }' \
+  docs/superpowers/reports/2026-07-21-task-19-folder-overlay-migration.md | \
+  LC_ALL=C sort > /tmp/task-19-folder-expected-after.txt
+awk -F'`' \
+  '$0 ~ /^\| `LaunchPadTests\.(FolderOverlayViewTests|FolderOverlayViewPagingTests)\// { print $2 }' \
+  docs/superpowers/reports/2026-07-21-task-19-folder-overlay-migration.md | \
+  LC_ALL=C sort > /tmp/task-19-folder-expected-before.txt
+test "$(wc -l < /tmp/task-19-folder-expected-before.txt | tr -d ' ')" -eq 47
+test "$(wc -l < /tmp/task-19-folder-expected-after.txt | tr -d ' ')" -eq 47
+test "$(wc -l < /tmp/task-19-folder-actual-after.txt | tr -d ' ')" -eq 47
+diff -u /tmp/task-19-folder-actual-before.txt \
+  /tmp/task-19-folder-expected-before.txt
+diff -u /tmp/task-19-folder-expected-after.txt \
+  /tmp/task-19-folder-actual-after.txt
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:|RunLoop\.main\.run' \
+  Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift \
+  Tests/LaunchPadTests/Views/FolderOverlayViewPagingTests.swift
+git diff --exit-code HEAD -- Sources
+git add Tests/LaunchPadTests/Views/FolderOverlayViewPagingTests.swift \
+  docs/superpowers/reports/2026-07-21-task-19-folder-overlay-migration.md
+git commit -m "test: migrate folder paging tests to Swift Testing"
+```
+
+Expected: the captured old discovery, report old-ID column, report new-ID
+column and new discovery each contain exactly 47 qualified IDs. Both canonical
+`diff -u` commands are empty, proving old and new IDs are each unique and
+one-to-one; all tests pass, the static scan is empty and both migration commits
+have no production diff.
+
+- [ ] **Step 4: Add RED tests for inner folder and overlay-exterior branches**
 
 Use valid UUID fixtures and add:
 
@@ -7513,13 +10012,9 @@ private func makeFolderChildSession(
     )
 }
 
-// In FolderOverlayViewPagingTests.swift, mark the XCTestCase @MainActor,
-// retain paginateItems as a pure helper test, and add this fixture/state:
-private var pagingOverlay: FolderOverlayView!
-
-override func setUp() {
-    super.setUp()
-    pagingOverlay = FolderOverlayView(
+// In the migrated paging suite, retain paginateItems as a pure helper test.
+private func makePagingOverlay() -> FolderOverlayView {
+    FolderOverlayView(
         frame: NSRect(x: 0, y: 0, width: 800, height: 700)
     )
 }
@@ -7542,59 +10037,60 @@ private func sectionCounts(_ overlay: FolderOverlayView) -> [Int] {
     }
 }
 
-func testMetricsUseActualWidthHeightAndCapAtThirtyFive() {
+@Test("folder metrics 使用实际宽高并封顶 35")
+func metricsUseActualWidthHeightAndCapAtThirtyFive() {
     let one = FolderOverlayView.folderGridMetrics(
         forViewportSize: CGSize(width: 96, height: 96)
     )
-    XCTAssertEqual(one.columns, 1)
-    XCTAssertEqual(one.rows, 1)
-    XCTAssertEqual(one.pageCapacity, 1)
-    XCTAssertEqual(one.horizontalInset, 12)
+    #expect(one.columns == 1)
+    #expect(one.rows == 1)
+    #expect(one.pageCapacity == 1)
+    #expect(one.horizontalInset == 12)
 
     let medium = FolderOverlayView.folderGridMetrics(
         forViewportSize: CGSize(width: 496, height: 360)
     )
-    XCTAssertEqual(medium.columns, 6)
-    XCTAssertEqual(medium.rows, 4)
-    XCTAssertEqual(medium.pageCapacity, 24)
-    XCTAssertEqual(medium.horizontalInset, 12)
-    XCTAssertEqual(
+    #expect(medium.columns == 6)
+    #expect(medium.rows == 4)
+    #expect(medium.pageCapacity == 24)
+    #expect(medium.horizontalInset == 12)
+    #expect(
         FolderOverlayView.folderGridMetrics(
             forViewportSize: CGSize(
                 width: CGFloat(496).nextDown,
                 height: 360
             )
-        ).pageCapacity,
-        20
+        ).pageCapacity == 20
     )
-    XCTAssertEqual(
+    #expect(
         FolderOverlayView.folderGridMetrics(
             forViewportSize: CGSize(
                 width: 496,
                 height: CGFloat(360).nextDown
             )
-        ).pageCapacity,
-        18
+        ).pageCapacity == 18
     )
 
     let capped = FolderOverlayView.folderGridMetrics(
         forViewportSize: CGSize(width: 800, height: 624)
     )
-    XCTAssertEqual(capped.columns, 5)
-    XCTAssertEqual(capped.rows, 7)
-    XCTAssertEqual(capped.pageCapacity, 35)
-    XCTAssertEqual(capped.horizontalInset, 204)
+    #expect(capped.columns == 5)
+    #expect(capped.rows == 7)
+    #expect(capped.pageCapacity == 35)
+    #expect(capped.horizontalInset == 204)
 
     let invalid = FolderOverlayView.folderGridMetrics(
         forViewportSize: CGSize(width: .nan, height: .infinity)
     )
-    XCTAssertEqual(invalid.columns, 1)
-    XCTAssertEqual(invalid.rows, 1)
-    XCTAssertEqual(invalid.pageCapacity, 1)
-    XCTAssertTrue(invalid.horizontalInset.isFinite)
+    #expect(invalid.columns == 1)
+    #expect(invalid.rows == 1)
+    #expect(invalid.pageCapacity == 1)
+    #expect(invalid.horizontalInset.isFinite)
 }
 
-func testOpenUsesActualFolderViewportCapacity() {
+@Test("open 使用实际 folder viewport 容量")
+func openUsesActualFolderViewportCapacity() {
+    let pagingOverlay = makePagingOverlay()
     pagingOverlay.folderViewportSizeProvider = {
         CGSize(width: 500, height: 400)
     }
@@ -7604,12 +10100,14 @@ func testOpenUsesActualFolderViewportCapacity() {
         iconCache: nil
     )
 
-    XCTAssertEqual(pagingOverlay.currentPageCapacity, 24)
-    XCTAssertEqual(sectionCounts(pagingOverlay), [24, 17])
-    XCTAssertEqual(pagingOverlay.currentVisualPageIndex, 0)
+    #expect(pagingOverlay.currentPageCapacity == 24)
+    #expect(sectionCounts(pagingOverlay) == [24, 17])
+    #expect(pagingOverlay.currentVisualPageIndex == 0)
 }
 
-func testReloadRepaginatesAndClampsCurrentPage() {
+@Test("reload 重新分页并夹紧当前页")
+func reloadRepaginatesAndClampsCurrentPage() {
+    let pagingOverlay = makePagingOverlay()
     pagingOverlay.folderViewportSizeProvider = {
         CGSize(width: 500, height: 400)
     }
@@ -7622,22 +10120,22 @@ func testReloadRepaginatesAndClampsCurrentPage() {
         x: 0, y: 0, width: 500, height: 400
     )
     pagingOverlay.folderPageControl.onDotSelected?(2)
-    XCTAssertEqual(pagingOverlay.currentVisualPageIndex, 2)
+    #expect(pagingOverlay.currentVisualPageIndex == 2)
 
     pagingOverlay.reloadChildren(
         TestDataFactory.makeAppItems(count: 25)
     )
 
-    XCTAssertEqual(pagingOverlay.currentPageCapacity, 24)
-    XCTAssertEqual(sectionCounts(pagingOverlay), [24, 1])
-    XCTAssertEqual(pagingOverlay.currentVisualPageIndex, 1)
-    XCTAssertEqual(
-        pagingOverlay.emptyPlacement(inVisualPage: 1),
-        .afterItem(itemID: 25)
-    )
+    #expect(pagingOverlay.currentPageCapacity == 24)
+    #expect(sectionCounts(pagingOverlay) == [24, 1])
+    #expect(pagingOverlay.currentVisualPageIndex == 1)
+    #expect(pagingOverlay.emptyPlacement(inVisualPage: 1)
+        == .afterItem(itemID: 25))
 }
 
-func testResizeRepaginatesAndClampsCurrentPage() {
+@Test("resize 重新分页并夹紧当前页")
+func resizeRepaginatesAndClampsCurrentPage() {
+    let pagingOverlay = makePagingOverlay()
     var viewport = CGSize(width: 500, height: 400)
     pagingOverlay.folderViewportSizeProvider = { viewport }
     pagingOverlay.openFolder(
@@ -7649,63 +10147,57 @@ func testResizeRepaginatesAndClampsCurrentPage() {
         x: 0, y: 0, width: 500, height: 400
     )
     pagingOverlay.folderPageControl.onDotSelected?(2)
-    XCTAssertEqual(pagingOverlay.currentVisualPageIndex, 2)
+    #expect(pagingOverlay.currentVisualPageIndex == 2)
 
     viewport = CGSize(width: 500, height: 624)
     pagingOverlay.layout()
 
-    XCTAssertEqual(pagingOverlay.currentPageCapacity, 35)
-    XCTAssertEqual(sectionCounts(pagingOverlay), [35, 25])
-    XCTAssertEqual(pagingOverlay.currentVisualPageIndex, 1)
-    XCTAssertEqual(
-        pagingOverlay.emptyPlacement(inVisualPage: 1),
-        .afterItem(itemID: 60)
-    )
+    #expect(pagingOverlay.currentPageCapacity == 35)
+    #expect(sectionCounts(pagingOverlay) == [35, 25])
+    #expect(pagingOverlay.currentVisualPageIndex == 1)
+    #expect(pagingOverlay.emptyPlacement(inVisualPage: 1)
+        == .afterItem(itemID: 60))
 }
 
-// FolderOverlayViewTests keeps its historical 35-item expectations on one
-// deterministic viewport that reaches the cap; 500x400 drag tests override it.
-override func setUp() {
-    super.setUp()
-    overlay = FolderOverlayView(
-        frame: NSRect(x: 0, y: 0, width: 800, height: 700)
-    )
-    overlay.folderViewportSizeProvider = {
-        CGSize(width: 800, height: 624)
-    }
-}
+// Each FolderOverlayView test calls makeOverlay() from migration Step 2.
 
-func testFolderSourceCapturesCurrentFolderIdentity() throws {
+@Test("folder source 捕获当前 folder identity")
+func folderSourceCapturesCurrentFolderIdentityThroughRealDelegate() throws {
+    let overlay = makeOverlay()
     let folder = makeFolder(id: 50)
     let child = makeApp(id: 10, parentID: 50)
     overlay.openFolder(item: folder, childItems: [child], iconCache: nil)
     overlay.dragController = DragController(scheduler: MockScheduler())
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
 
-    let writer = overlay.collectionView(
+    let writer = delegate.collectionView?(
         overlay.folderCollectionView,
         pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
     )
 
-    XCTAssertNotNil(writer)
-    let session = try XCTUnwrap(overlay.dragController?.session)
-    XCTAssertEqual(session.sourceKind, .folderChild)
-    XCTAssertEqual(session.sourceParentID, 50)
+    #expect(writer != nil)
+    let session = try #require(overlay.dragController?.session)
+    #expect(session.sourceKind == .folderChild)
+    #expect(session.sourceParentID == 50)
 }
 
-func testFolderEmptyOnSecondVisualPageUsesLastStableChildID() {
+@Test("folder 第二视觉页空白使用最后稳定 child ID")
+func folderEmptyOnSecondVisualPageUsesLastStableChildID() {
+    let overlay = makeOverlay()
     let children = (1...40).map { makeApp(id: Int64($0), parentID: 50) }
     overlay.folderViewportSizeProvider = {
         CGSize(width: 500, height: 400)
     }
     overlay.openFolder(item: makeFolder(id: 50), childItems: children, iconCache: nil)
 
-    XCTAssertEqual(
-        overlay.emptyPlacement(inVisualPage: 1),
-        .afterItem(itemID: 40)
-    )
+    #expect(overlay.emptyPlacement(inVisualPage: 1)
+        == .afterItem(itemID: 40))
 }
 
-func testOverlayExteriorDropUsesResolvedTopLevelPlacement() {
+@Test("overlay 外部 drop 使用已解析 top-level placement")
+func overlayExteriorDropUsesResolvedTopLevelPlacement() {
+    let overlay = makeOverlay()
     let session = makeFolderChildSession(itemID: 10, folderID: 50)
     overlay.dragController = DragController(scheduler: MockScheduler())
     overlay.dragController?.beginDrag(session)
@@ -7716,19 +10208,254 @@ func testOverlayExteriorDropUsesResolvedTopLevelPlacement() {
         return true
     }
 
-    XCTAssertTrue(overlay.performExteriorDrop(at: NSPoint(x: 10, y: 10)))
-    XCTAssertEqual(received, .outside(.beforeItem(itemID: 99)))
+    #expect(overlay.performExteriorDrop(at: NSPoint(x: 10, y: 10)))
+    #expect(received == .outside(.beforeItem(itemID: 99)))
 }
 
-func testUnresolvedExteriorDropRejectsWithoutCallback() {
+@Test("未解析 external drop 拒绝且不回调")
+func unresolvedExteriorDropRejectsWithoutCallback() {
+    let overlay = makeOverlay()
     overlay.dragController = DragController(scheduler: MockScheduler())
     overlay.dragController?.beginDrag(makeFolderChildSession())
     overlay.topLevelPlacementResolver = { _ in nil }
     var called = false
     overlay.onDropRequested = { _, _ in called = true; return true }
 
-    XCTAssertFalse(overlay.performExteriorDrop(at: NSPoint(x: 10, y: 10)))
-    XCTAssertFalse(called)
+    #expect(!overlay.performExteriorDrop(at: NSPoint(x: 10, y: 10)))
+    #expect(!called)
+}
+
+@Test("folder stale 与非法 indexPath 拒绝且零回调")
+func staleInsideIndexPathsRejectWithoutCallback() throws {
+    let overlay = makeOverlay()
+    let window = makeWindowHosting(overlay)
+    _ = window
+    let child = makeApp(id: 10, parentID: 50)
+    overlay.openFolder(
+        item: makeFolder(id: 50),
+        childItems: [child],
+        iconCache: nil
+    )
+    overlay.layoutSubtreeIfNeeded()
+    let controller = DragController(scheduler: MockScheduler())
+    overlay.dragController = controller
+    let session = makeFolderChildSession(itemID: 10, folderID: 50)
+    overlay.pasteboardUUIDReader = { _ in session.itemUUID }
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
+    var callbackCount = 0
+    overlay.onDropRequested = { _, _ in
+        callbackCount += 1
+        return true
+    }
+    let stalePaths = [
+        IndexPath(item: -1, section: 0),
+        IndexPath(item: 0, section: -1),
+        IndexPath(item: 0, section: 1),
+        IndexPath(item: 1, section: 0),
+    ]
+
+    for stalePath in stalePaths {
+        controller.beginDrag(session)
+        overlay.folderIndexPathResolver = { _ in stalePath }
+        let info = makeDraggingInfo(
+            session: session,
+            windowPoint: overlay.folderCollectionView.convert(
+                NSPoint(x: 10, y: 10),
+                to: nil
+            )
+        )
+        var proposed = NSIndexPath(forItem: 0, inSection: 0)
+        var operation: NSCollectionView.DropOperation = .before
+        let validation = withUnsafeMutablePointer(
+            to: &operation
+        ) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                delegate.collectionView?(
+                    overlay.folderCollectionView,
+                    validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(
+                        proposedPointer
+                    ),
+                    dropOperation: operationPointer
+                ) ?? []
+            }
+        }
+        #expect(validation == [])
+        #expect(delegate.collectionView?(
+            overlay.folderCollectionView,
+            acceptDrop: info,
+            indexPath: stalePath,
+            dropOperation: .before
+        ) == false)
+    }
+
+    #expect(callbackCount == 0)
+}
+
+@Test("folder native delegate 拒绝全部无效 source/session 分支")
+func folderNativeDelegateRejectsInvalidSourceSessions() throws {
+    let source = makeApp(id: 10, parentID: 50)
+    let target = makeApp(id: 11, parentID: 50, ordering: 1)
+    let valid = makeFolderChildSession(itemID: 10, folderID: 50)
+
+    func session(
+        itemID: Int64 = 10,
+        itemUUID: String =
+            "00000000-0000-0000-0000-000000000010",
+        itemType: ItemType = .app,
+        sourceKind: DragSourceKind = .folderChild,
+        parentID: Int64 = 50
+    ) -> DragSession {
+        DragSession(
+            itemID: itemID,
+            itemUUID: itemUUID,
+            itemType: itemType,
+            sourceKind: sourceKind,
+            sourceParentID: parentID,
+            sourceVisualIndex: 0
+        )
+    }
+
+    func assertRejected(
+        activeSession: DragSession?,
+        pasteboardValue: String?,
+        isDragEnabled: Bool = true,
+        opensFolder: Bool = true,
+        children: [PageItem]? = nil,
+        resolvedIndexPath: IndexPath? = nil,
+        resolvedFrame: NSRect? = nil
+    ) throws {
+        let overlay = makeOverlay()
+        let window = makeWindowHosting(overlay)
+        _ = window
+        overlay.openFolder(
+            item: makeFolder(id: 50),
+            childItems: children ?? [source, target],
+            iconCache: nil
+        )
+        if !opensFolder {
+            overlay.closeFolder()
+            #expect(overlay.currentFolderID == nil)
+        }
+        overlay.layoutSubtreeIfNeeded()
+        let controller = DragController(scheduler: MockScheduler())
+        overlay.dragController = controller
+        if let activeSession { controller.beginDrag(activeSession) }
+        overlay.isDragEnabled = isDragEnabled
+        overlay.pasteboardUUIDReader = { _ in pasteboardValue }
+        overlay.folderIndexPathResolver = { _ in resolvedIndexPath }
+        overlay.folderItemFrameResolver = { _ in resolvedFrame }
+        var callbackCount = 0
+        overlay.onDropRequested = { _, _ in
+            callbackCount += 1
+            return true
+        }
+        let delegate = try #require(overlay.folderCollectionView.delegate)
+        #expect(delegate === overlay)
+        let info = makeDraggingInfo(
+            session: valid,
+            windowPoint: overlay.folderCollectionView.convert(
+                NSPoint(x: 10, y: 10),
+                to: nil
+            )
+        )
+        var proposed = NSIndexPath(forItem: 0, inSection: 0)
+        var operation: NSCollectionView.DropOperation = .before
+        let validation = withUnsafeMutablePointer(
+            to: &operation
+        ) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                delegate.collectionView?(
+                    overlay.folderCollectionView,
+                    validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(
+                        proposedPointer
+                    ),
+                    dropOperation: operationPointer
+                ) ?? []
+            }
+        }
+        #expect(validation == [])
+        #expect(delegate.collectionView?(
+            overlay.folderCollectionView,
+            acceptDrop: info,
+            indexPath: IndexPath(item: 1, section: 0),
+            dropOperation: .before
+        ) == false)
+        #expect(callbackCount == 0)
+        #expect(controller.session == nil)
+    }
+
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: nil
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: "malformed"
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: "00000000-0000-0000-0000-000000000099"
+    )
+    try assertRejected(
+        activeSession: nil,
+        pasteboardValue: valid.itemUUID
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: valid.itemUUID,
+        isDragEnabled: false
+    )
+    try assertRejected(
+        activeSession: session(itemType: .group),
+        pasteboardValue: valid.itemUUID
+    )
+    try assertRejected(
+        activeSession: session(sourceKind: .topLevel),
+        pasteboardValue: valid.itemUUID
+    )
+    try assertRejected(
+        activeSession: session(parentID: 99),
+        pasteboardValue: valid.itemUUID
+    )
+    try assertRejected(
+        activeSession: session(
+            itemID: 99,
+            itemUUID: "00000000-0000-0000-0000-000000000099"
+        ),
+        pasteboardValue: "00000000-0000-0000-0000-000000000099"
+    )
+    let mismatchedUUIDChild = TestDataFactory.makePageItem(
+        id: 10,
+        uuid: "00000000-0000-0000-0000-000000000099",
+        type: .app,
+        parentId: 50,
+        app: TestDataFactory.makeAppInfo(id: 10, title: "Mismatch UUID")
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: valid.itemUUID,
+        children: [mismatchedUUIDChild, target]
+    )
+    let mismatchedParentChild = makeApp(id: 10, parentID: 99)
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: valid.itemUUID,
+        children: [mismatchedParentChild, target]
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: valid.itemUUID,
+        resolvedIndexPath: IndexPath(item: 1, section: 0),
+        resolvedFrame: nil
+    )
+    try assertRejected(
+        activeSession: valid,
+        pasteboardValue: valid.itemUUID,
+        opensFolder: false
+    )
 }
 
 private func makeWindowHosting(
@@ -7755,7 +10482,6 @@ private func makeDraggingInfo(
     let pasteboard = NSPasteboard(
         name: .init("folder-\(UUID().uuidString)")
     )
-    pasteboard.setString(session.itemUUID, forType: .string)
     return MockDraggingInfo(pasteboard: pasteboard, location: windowPoint)
 }
 
@@ -7763,6 +10489,7 @@ private func assertSecondVisualPageBlankDrop(
     itemCount: Int,
     expectedAnchorID: Int64
 ) throws {
+    let overlay = makeOverlay()
     let window = makeWindowHosting(overlay)
     _ = window
     overlay.folderViewportSizeProvider = {
@@ -7781,12 +10508,13 @@ private func assertSecondVisualPageBlankDrop(
         x: 0, y: 0, width: 500, height: 400
     )
     overlay.folderPageControl.onDotSelected?(1)
-    XCTAssertEqual(overlay.currentVisualPageIndex, 1)
+    #expect(overlay.currentVisualPageIndex == 1)
 
     let controller = DragController(scheduler: MockScheduler())
     overlay.dragController = controller
     let session = makeFolderChildSession(itemID: 1, folderID: 50)
     controller.beginDrag(session)
+    overlay.pasteboardUUIDReader = { _ in session.itemUUID }
     var resolvedPoints: [NSPoint] = []
     overlay.folderIndexPathResolver = { point in
         resolvedPoints.append(point)
@@ -7805,6 +10533,8 @@ private func assertSecondVisualPageBlankDrop(
             to: nil
         )
     )
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
 
     var proposed = NSIndexPath(forItem: 0, inSection: 1)
     var operation: NSCollectionView.DropOperation = .before
@@ -7812,49 +10542,50 @@ private func assertSecondVisualPageBlankDrop(
         to: &operation
     ) { operationPointer in
         withUnsafeMutablePointer(to: &proposed) { proposedPointer in
-            overlay.collectionView(
+            delegate.collectionView?(
                 overlay.folderCollectionView,
                 validateDrop: info,
                 proposedIndexPath: AutoreleasingUnsafeMutablePointer(
                     proposedPointer
                 ),
                 dropOperation: operationPointer
-            )
+            ) ?? []
         }
     }
-    XCTAssertEqual(validation, .move)
-    XCTAssertTrue(overlay.collectionView(
+    #expect(validation == .move)
+    #expect(delegate.collectionView?(
         overlay.folderCollectionView,
         acceptDrop: info,
         indexPath: IndexPath(item: 0, section: 1),
         dropOperation: .before
-    ))
-    XCTAssertEqual(
-        received,
-        .inside(.afterItem(itemID: expectedAnchorID))
-    )
-    XCTAssertEqual(resolvedPoints.count, 2)
+    ) == true)
+    #expect(received == .inside(.afterItem(itemID: expectedAnchorID)))
+    #expect(resolvedPoints.count == 2)
     for point in resolvedPoints {
-        XCTAssertEqual(point.x, localPoint.x, accuracy: 0.001)
-        XCTAssertEqual(point.y, localPoint.y, accuracy: 0.001)
+        #expect(abs(point.x - localPoint.x) <= 0.001)
+        #expect(abs(point.y - localPoint.y) <= 0.001)
     }
 }
 
-func testSecondVisualPageItem36BlankDropUsesItem36() throws {
+@Test("第二视觉页 item36 空白 drop 使用 item36")
+func secondVisualPageItem36BlankDropUsesItem36() throws {
     try assertSecondVisualPageBlankDrop(
         itemCount: 36,
         expectedAnchorID: 36
     )
 }
 
-func testSecondVisualPageItem40BlankDropUsesItem40() throws {
+@Test("第二视觉页 item40 空白 drop 使用 item40")
+func secondVisualPageItem40BlankDropUsesItem40() throws {
     try assertSecondVisualPageBlankDrop(
         itemCount: 40,
         expectedAnchorID: 40
     )
 }
 
-func testScrollSynchronizesCurrentVisualPageAndBlankAnchor() {
+@Test("scroll 同步当前视觉页和空白 anchor")
+func scrollSynchronizesCurrentVisualPageAndBlankAnchor() {
+    let overlay = makeOverlay()
     let children = (1...40).map {
         makeApp(id: Int64($0), parentID: 50, ordering: $0 - 1)
     }
@@ -7877,16 +10608,15 @@ func testScrollSynchronizesCurrentVisualPageAndBlankAnchor() {
         object: overlay.folderScrollView.contentView
     )
 
-    XCTAssertEqual(overlay.currentVisualPageIndex, 1)
-    XCTAssertEqual(
-        overlay.emptyPlacement(
-            inVisualPage: overlay.currentVisualPageIndex
-        ),
-        .afterItem(itemID: 40)
-    )
+    #expect(overlay.currentVisualPageIndex == 1)
+    #expect(overlay.emptyPlacement(
+        inVisualPage: overlay.currentVisualPageIndex
+    ) == .afterItem(itemID: 40))
 }
 
-func testExteriorDragEntriesConvertWindowPointForNonZeroOrigin() {
+@Test("外部 drag entries 对非零 origin 只转换一次 window point")
+func exteriorDragEntriesConvertWindowPointForNonZeroOrigin() {
+    let overlay = makeOverlay()
     let window = makeWindowHosting(overlay)
     _ = window
     let child = makeApp(id: 10, parentID: 50)
@@ -7900,6 +10630,7 @@ func testExteriorDragEntriesConvertWindowPointForNonZeroOrigin() {
     overlay.dragController = controller
     let session = makeFolderChildSession(itemID: 10, folderID: 50)
     controller.beginDrag(session)
+    overlay.pasteboardUUIDReader = { _ in session.itemUUID }
     var points: [NSPoint] = []
     overlay.topLevelPlacementResolver = { point in
         points.append(point)
@@ -7912,41 +10643,52 @@ func testExteriorDragEntriesConvertWindowPointForNonZeroOrigin() {
         windowPoint: overlay.convert(localPoint, to: nil)
     )
 
-    XCTAssertEqual(overlay.draggingEntered(info), .move)
-    XCTAssertEqual(overlay.draggingUpdated(info), .move)
-    XCTAssertTrue(overlay.prepareForDragOperation(info))
-    XCTAssertTrue(overlay.performDragOperation(info))
-    XCTAssertEqual(points.count, 4)
+    #expect(overlay.draggingEntered(info) == .move)
+    #expect(overlay.draggingUpdated(info) == .move)
+    #expect(overlay.prepareForDragOperation(info))
+    #expect(overlay.performDragOperation(info))
+    #expect(points.count == 4)
     for point in points {
-        XCTAssertEqual(point.x, localPoint.x, accuracy: 0.001)
-        XCTAssertEqual(point.y, localPoint.y, accuracy: 0.001)
+        #expect(abs(point.x - localPoint.x) <= 0.001)
+        #expect(abs(point.y - localPoint.y) <= 0.001)
     }
 }
 
-func testFolderDraggingSessionEndClearsCancelledSession() {
+@Test("folder dragging session end 清理取消会话")
+func folderDraggingSessionEndClearsCancelledSessionThroughRealDelegate() throws {
+    let overlay = makeOverlay()
+    overlay.openFolder(
+        item: makeFolder(id: 50),
+        childItems: [makeApp(id: 10, parentID: 50)],
+        iconCache: nil
+    )
     let scheduler = MockScheduler()
     let controller = DragController(scheduler: scheduler)
     overlay.dragController = controller
     controller.beginDrag(makeFolderChildSession())
     controller.updateDragHover(.item(itemID: 11, itemType: .app))
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
 
-    overlay.collectionView(
+    delegate.collectionView?(
         overlay.folderCollectionView,
         draggingSession: NSDraggingSession(),
         endedAt: .zero,
         dragOperation: []
     )
 
-    XCTAssertEqual(controller.state, .idle)
-    XCTAssertNil(controller.session)
-    XCTAssertTrue(scheduler.scheduledActions.isEmpty)
+    #expect(controller.state == .idle)
+    #expect(controller.session == nil)
+    #expect(scheduler.scheduledActions.isEmpty)
 }
 ```
 
 Add the remaining source and intent branches explicitly:
 
 ```swift
-func testFolderSourceRejectsGroupAndInvalidChild() {
+@Test("folder source 拒绝 group、非法 child 与 stale indexPath")
+func folderSourceRejectsGroupInvalidChildAndStaleIndexPaths() throws {
+    let overlay = makeOverlay()
     let folder = makeFolder(id: 50)
     let group = makeFolder(id: 60)
     let wrongParent = makeApp(id: 10, parentID: 99)
@@ -7956,35 +10698,92 @@ func testFolderSourceRejectsGroupAndInvalidChild() {
         iconCache: nil
     )
     overlay.dragController = DragController(scheduler: MockScheduler())
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
 
-    XCTAssertNil(overlay.collectionView(
+    #expect(delegate.collectionView?(
         overlay.folderCollectionView,
         pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
-    ))
-    XCTAssertNil(overlay.collectionView(
+    ) == nil)
+    #expect(delegate.collectionView?(
         overlay.folderCollectionView,
         pasteboardWriterForItemAt: IndexPath(item: 1, section: 0)
-    ))
-    XCTAssertNil(overlay.dragController?.session)
+    ) == nil)
+    for stalePath in [
+        IndexPath(item: -1, section: 0),
+        IndexPath(item: 0, section: -1),
+        IndexPath(item: 0, section: 1),
+        IndexPath(item: 2, section: 0),
+    ] {
+        #expect(delegate.collectionView?(
+            overlay.folderCollectionView,
+            pasteboardWriterForItemAt: stalePath
+        ) == nil)
+    }
+    #expect(overlay.dragController?.session == nil)
 }
 
-func testFolderDropRejectsSelfAndCallbackFailure() {
+@Test("folder source 拒绝 disabled、closed folder 与 malformed UUID")
+func folderSourceRejectsDisabledClosedAndMalformedUUID() throws {
+    let overlay = makeOverlay()
+    let valid = makeApp(id: 10, parentID: 50)
+    let malformed = TestDataFactory.makePageItem(
+        id: 11,
+        uuid: "malformed",
+        type: .app,
+        ordering: 1,
+        parentId: 50,
+        app: TestDataFactory.makeAppInfo(id: 11, title: "Malformed")
+    )
+    overlay.openFolder(
+        item: makeFolder(id: 50),
+        childItems: [valid, malformed],
+        iconCache: nil
+    )
+    overlay.dragController = DragController(scheduler: MockScheduler())
+    let delegate = try #require(overlay.folderCollectionView.delegate)
+    #expect(delegate === overlay)
+
+    overlay.isDragEnabled = false
+    #expect(delegate.collectionView?(
+        overlay.folderCollectionView,
+        pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
+    ) == nil)
+
+    overlay.isDragEnabled = true
+    #expect(delegate.collectionView?(
+        overlay.folderCollectionView,
+        pasteboardWriterForItemAt: IndexPath(item: 1, section: 0)
+    ) == nil)
+
+    overlay.closeFolder()
+    #expect(overlay.currentFolderID == nil)
+    #expect(delegate.collectionView?(
+        overlay.folderCollectionView,
+        pasteboardWriterForItemAt: IndexPath(item: 0, section: 0)
+    ) == nil)
+    #expect(overlay.dragController?.session == nil)
+}
+
+@Test("folder drop 拒绝 self 和 callback failure")
+func folderDropRejectsSelfAndCallbackFailure() {
+    let overlay = makeOverlay()
     let session = makeFolderChildSession(itemID: 10, folderID: 50)
     overlay.dragController = DragController(scheduler: MockScheduler())
     overlay.dragController?.beginDrag(session)
     var calls = 0
     overlay.onDropRequested = { _, _ in calls += 1; return false }
 
-    XCTAssertFalse(overlay.performFolderDrop(
+    #expect(!overlay.performFolderDrop(
         session: session,
         destination: .inside(.beforeItem(itemID: 10))
     ))
-    XCTAssertEqual(calls, 0)
-    XCTAssertFalse(overlay.performFolderDrop(
+    #expect(calls == 0)
+    #expect(!overlay.performFolderDrop(
         session: session,
         destination: .inside(.afterItem(itemID: 11))
     ))
-    XCTAssertEqual(calls, 1)
+    #expect(calls == 1)
 }
 
 @Test("folder inside/outside 分别映射 reorder/remove intent")
@@ -8021,22 +10820,82 @@ reloads the original children, returns false and shows exactly
 `无法更新布局，请重试`. Each fixture asserts one mutation attempt and no second
 writer path.
 
-- [ ] **Step 2: Add RED safe-delete and lifecycle tests**
+- [ ] **Step 5: Add RED safe-delete and lifecycle tests**
+
+First remove the window-test fixed-wait fixture completely. Delete
+`pumpRunloopBriefly(for:)` and `flushMainQueue(for:)`; replace all 11
+`flushMainQueue` call sites and the direct run-loop pump in
+`applyAccessibilitySettings_onNotification_updatesMaterial`. Tests that cross
+the controller's main-actor dispatch boundary use the following synchronous
+boundary fixture, which is RED until Step 13 adds `mainActorDispatcher` and the
+application lookup/open seams:
 
 ```swift
-func testFolderCellEditingShowsWorkingDeleteButton() {
+private func makeSynchronousWindowSUT() -> SUT {
+    let sut = makeSUT()
+    sut.controller.mainActorDispatcher = { operation in
+        MainActor.assumeIsolated { operation() }
+    }
+    sut.controller.runAnimated = { _, animations, completion in
+        animations()
+        completion()
+    }
+    sut.controller.mainAsyncRunner = { $0() }
+    sut.controller.applicationURLProvider = { _ in
+        URL(fileURLWithPath: "/Applications/LaunchPad-Test.app")
+    }
+    sut.controller.applicationOpener = { _ in }
+    return sut
+}
+```
+
+Use this fixture in the existing opening, closing, hidden, launch, reduced
+motion and short-duration tests and remove `async` from those methods. The
+notification test posts on `@MainActor` and asserts immediately; Task 21 later
+injects its local notification center/settings source. Replace the existing
+Finder lookup test with an exact side-effect-free assertion:
+
+```swift
+@Test("launch request 使用注入 URL 并只调用一次 opener")
+func launchRequestUsesInjectedApplicationBoundary() {
+    let sut = makeSynchronousWindowSUT()
+    let expected = URL(fileURLWithPath: "/Applications/Target.app")
+    var requestedBundleID: String?
+    var openedURLs: [URL] = []
+    sut.controller.applicationURLProvider = {
+        requestedBundleID = $0
+        return expected
+    }
+    sut.controller.applicationOpener = { openedURLs.append($0) }
+
+    sut.controller.lifecycle(
+        sut.lifecycle,
+        shouldLaunchApp: "com.test.target"
+    )
+
+    #expect(requestedBundleID == "com.test.target")
+    #expect(openedURLs == [expected])
+}
+```
+
+No `LaunchPadWindowControllerTests` method may call a real application URL
+lookup/open operation or wait for elapsed wall-clock time.
+
+```swift
+@Test("FolderCell edit mode 显示可用删除按钮")
+func folderCellEditingShowsWorkingDeleteButton() {
     let cell = FolderCell()
     _ = cell.view
     var deleted = false
     cell.onDelete = { deleted = true }
 
     cell.setEditing(true)
-    XCTAssertTrue(cell.isDeleteControlVisible)
+    #expect(cell.isDeleteControlVisible)
     cell.performDeleteForTesting()
-    XCTAssertTrue(deleted)
+    #expect(deleted)
 
     cell.setEditing(false)
-    XCTAssertFalse(cell.isDeleteControlVisible)
+    #expect(!cell.isDeleteControlVisible)
 }
 
 @Test("文件夹删除取消时零 mutation，确认后只提交安全删除 intent")
@@ -8057,18 +10916,18 @@ func folderDeleteRequiresConfirmation() {
 }
 
 @Test("窗口进入 closing 会清理活动拖拽")
-func closingWindowClearsDragSession() async {
-    let sut = makeSUT()
+func closingWindowClearsDragSession() {
+    let sut = makeSynchronousWindowSUT()
     sut.viewController.dragController.beginDrag(makeSession())
 
     sut.controller.lifecycle(sut.lifecycle, didTransitionTo: .closing)
-    await flushMainQueue(for: 0.01)
 
     #expect(sut.viewController.dragController.session == nil)
 }
 
-func testRepeatedOpenKeepsOneObserverAndCloseRemovesIt() {
-    let sut = FolderOverlayView(frame: overlay.frame)
+@Test("重复 open 只保留一个 observer 且 close 移除")
+func repeatedOpenKeepsOneObserverAndCloseRemovesIt() {
+    let sut = makeOverlay()
     sut.closeFolderCompletionRunner = { $0() }
     var scrollUpdateCount = 0
     sut.scrollPositionDidUpdate = { scrollUpdateCount += 1 }
@@ -8078,55 +10937,56 @@ func testRepeatedOpenKeepsOneObserverAndCloseRemovesIt() {
     }
     sut.openFolder(item: folder, childItems: children, iconCache: nil)
     sut.openFolder(item: folder, childItems: children, iconCache: nil)
-    XCTAssertTrue(sut.isObservingScrollPosition)
+    #expect(sut.isObservingScrollPosition)
     let beforePost = scrollUpdateCount
     NotificationCenter.default.post(
         name: NSView.boundsDidChangeNotification,
         object: sut.folderScrollView.contentView
     )
-    XCTAssertEqual(scrollUpdateCount, beforePost + 1)
+    #expect(scrollUpdateCount == beforePost + 1)
 
     sut.closeFolder()
-    XCTAssertFalse(sut.isObservingScrollPosition)
+    #expect(!sut.isObservingScrollPosition)
     let afterClose = scrollUpdateCount
     NotificationCenter.default.post(
         name: NSView.boundsDidChangeNotification,
         object: sut.folderScrollView.contentView
     )
-    XCTAssertEqual(scrollUpdateCount, afterClose)
+    #expect(scrollUpdateCount == afterClose)
 }
 
-func testDeinitReleasesOverlayWithInstalledScrollObserver() {
+@Test("deinit 释放带 scroll observer 的 overlay")
+func deinitReleasesOverlayWithInstalledScrollObserver() {
     weak var weakOverlay: FolderOverlayView?
     autoreleasepool {
-        var sut: FolderOverlayView? = FolderOverlayView(frame: overlay.frame)
+        var sut: FolderOverlayView? = makeOverlay()
         sut?.openFolder(
             item: makeFolder(),
             childItems: [makeApp(id: 1)],
             iconCache: nil
         )
-        XCTAssertTrue(sut?.isObservingScrollPosition == true)
+        #expect(sut?.isObservingScrollPosition == true)
         weakOverlay = sut
         sut = nil
     }
-    XCTAssertNil(weakOverlay)
+    #expect(weakOverlay == nil)
 }
 ```
 
-- [ ] **Step 3: Run and confirm RED**
+- [ ] **Step 6: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'FolderOverlayViewTests|FolderOverlayViewPagingTests|FolderCellTests|AppGridCollectionViewTests|FolderControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests'
+  --filter 'FolderOverlayViewTests|FolderOverlayViewPagingTests|FolderCellTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|FolderControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests'
 ```
 
 Expected: compile RED for folder viewport capacity/reprojection, folder
 destination, overlay-exterior destination methods, reload API, delete control
-and window cleanup.
+window cleanup, `mainActorDispatcher` and application URL/open boundaries.
 
-- [ ] **Step 4: Add complete FolderOverlay source, inner destination and reload APIs**
+- [ ] **Step 7: Add complete FolderOverlay source, inner destination and reload APIs**
 
 Add state and callbacks:
 
@@ -8433,8 +11293,10 @@ public func collectionView(
 ) -> NSPasteboardWriting? {
     guard isDragEnabled,
           let folderID = currentFolderID,
-          indexPath.section < pages.count,
-          indexPath.item < pages[indexPath.section].count else { return nil }
+          pages.indices.contains(indexPath.section),
+          pages[indexPath.section].indices.contains(indexPath.item) else {
+        return nil
+    }
     let item = pages[indexPath.section][indexPath.item]
     guard item.type == .app,
           item.parentId == folderID,
@@ -8457,6 +11319,14 @@ public func collectionView(
 }
 ```
 
+Add the same narrow boundary name used by Task 4, local to the overlay:
+
+```swift
+internal var pasteboardUUIDReader: (NSPasteboard) -> String? = {
+    $0.string(forType: .string)
+}
+```
+
 Implement the inner resolver and both AppKit collection-view entries completely.
 Each native entry converts the window point once before any local frame lookup:
 
@@ -8466,7 +11336,8 @@ private func activeFolderSession(
 ) -> DragSession? {
     guard isDragEnabled,
           let folderID = currentFolderID,
-          let uuid = draggingInfo.draggingPasteboard.string(forType: .string),
+          let uuid = pasteboardUUIDReader(draggingInfo.draggingPasteboard),
+          UUID(uuidString: uuid) != nil,
           let session = dragController?.session,
           session.itemUUID == uuid,
           session.itemType == .app,
@@ -8489,12 +11360,14 @@ private func insideDestination(
     } else {
         indexPath = collectionView.indexPathForItem(at: localPoint)
     }
-    guard let indexPath,
-          indexPath.section < pages.count,
-          indexPath.item < pages[indexPath.section].count else {
+    guard let indexPath else {
         return emptyPlacement(
             inVisualPage: currentVisualPageIndex
         ).map { .inside($0) }
+    }
+    guard pages.indices.contains(indexPath.section),
+          pages[indexPath.section].indices.contains(indexPath.item) else {
+        return nil
     }
     let target = pages[indexPath.section][indexPath.item]
     let frame: NSRect?
@@ -8594,7 +11467,7 @@ extension FolderDropDestination {
 }
 ```
 
-- [ ] **Step 5: Make FolderOverlay itself receive exterior drops**
+- [ ] **Step 8: Make FolderOverlay itself receive exterior drops**
 
 `NSDraggingInfo.draggingLocation` is in window coordinates. Every exterior
 AppKit entry converts independently; the helper accepts only an overlay-local
@@ -8660,7 +11533,7 @@ func performExteriorDrop(at localPoint: NSPoint) -> Bool {
 
 The final helper is internal and exists only for deterministic tests; production uses the AppKit overrides.
 
-- [ ] **Step 6: Bind overlay-local points to main-grid stable placements and reload folder state**
+- [ ] **Step 9: Bind overlay-local points to main-grid stable placements and reload folder state**
 
 In VC setup:
 
@@ -8670,7 +11543,8 @@ folderOverlay.topLevelPlacementResolver = { [weak self] overlayPoint in
     guard let self else { return nil }
     let windowPoint = self.folderOverlay.convert(overlayPoint, to: nil)
     let gridPoint = self.collectionView.convert(windowPoint, from: nil)
-    return self.collectionView.topLevelPlacement(at: gridPoint)
+    return self.gridInteractionCoordinator?
+        .topLevelPlacement(atLocalPoint: gridPoint)
 }
 folderOverlay.onDropRequested = { [weak self] session, destination in
     self?.handleFolderDrop(session: session, destination: destination) ?? false
@@ -8729,7 +11603,7 @@ func handleFolderDrop(
 
 Because `applyDropIntent` reloads on both success and failure, failure reloads the original database children and returns false for AppKit snapback; auto-dissolve removes the folder from reloaded top-level state and closes the overlay.
 
-- [ ] **Step 7: Remove FolderController's non-atomic layout APIs**
+- [ ] **Step 10: Remove FolderController's non-atomic layout APIs**
 
 Delete `createFolder`, `addToFolder`, `dissolveFolder`, and `removeFromFolder` plus tests that assert multi-CRUD calls. Keep exactly:
 
@@ -8759,7 +11633,7 @@ public final class FolderController {
 
 All drag and safe-delete writes now go only through `LaunchPadViewController -> LayoutMutating`.
 
-- [ ] **Step 8: Add a real FolderCell edit/delete control and wire it**
+- [ ] **Step 11: Add a real FolderCell edit/delete control and wire it**
 
 Add `deleteButton`, `onDelete`, state and methods:
 
@@ -8815,7 +11689,7 @@ if let appCell = collectionView.item(at: indexPath) as? AppIconCell {
 
 Update existing test injection to provide either cell type, or add a separate `folderJiggleCellProvider` used before the real collection fallback.
 
-- [ ] **Step 9: Confirm safe folder delete and retain app deletion**
+- [ ] **Step 12: Confirm safe folder delete and retain app deletion**
 
 Add to VC:
 
@@ -8855,7 +11729,7 @@ func handleItemDelete(_ item: PageItem) {
 
 The app failure log also avoids interpolating storage details. Tests inject confirmation; no test displays a real alert.
 
-- [ ] **Step 10: Clear drag state on ESC, window close and window lifecycle closing**
+- [ ] **Step 13: Clear drag state and make window lifecycle boundaries deterministic**
 
 Add one idempotent VC entry:
 
@@ -8866,6 +11740,35 @@ func cancelActiveDrag() {
 ```
 
 Call it before `onClose?()` in `.closeWindow`, in `.exitEditMode`, and before disabling drag for search. Task 16 already handles native drag-session end. In `LaunchPadWindowController.lifecycle(_:didTransitionTo:)`:
+
+Add narrow boundaries whose production defaults preserve the existing main
+queue and `NSWorkspace` behavior:
+
+```swift
+internal nonisolated(unsafe) var mainActorDispatcher:
+    (@escaping @MainActor @Sendable () -> Void) -> Void = { operation in
+    DispatchQueue.main.async(execute: operation)
+}
+
+internal var applicationURLProvider: (String) -> URL? = {
+    NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0)
+}
+
+internal var applicationOpener: (URL) -> Void = { url in
+    let configuration = NSWorkspace.OpenConfiguration()
+    NSWorkspace.shared.openApplication(
+        at: url,
+        configuration: configuration
+    )
+}
+```
+
+Replace the outer `DispatchQueue.main.async` in all three nonisolated delegate
+entries (`didTransitionTo`, `shouldLaunchApp`, and
+`lifecycleRequestsLaunchAnimation`) with `mainActorDispatcher`. The application
+branch resolves through `applicationURLProvider` and calls
+`applicationOpener`; it never reaches either system API from a unit test.
+Then apply the closing/hidden behavior:
 
 ```swift
 case .closing:
@@ -8879,22 +11782,31 @@ case .hidden:
 
 Add tests for accepted drop, rejected drop/session end, explicit cancel, ESC edit exit, normal ESC close, search activation, `.closing` and `.hidden`; all assert timer actions empty, preview cleared and `session == nil`.
 
-- [ ] **Step 11: Run all folder/drag suites GREEN**
+- [ ] **Step 14: Run all folder/drag suites GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'DragControllerTests|CollectionViewDragTests|AppGridCollectionViewTests|AppIconCellTests|FolderOverlayViewTests|FolderOverlayViewPagingTests|FolderCellTests|FolderControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests|TransientMessageViewTests'
+  --filter 'DragControllerTests|CollectionViewDragTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppIconCellTests|FolderOverlayViewTests|FolderOverlayViewPagingTests|FolderCellTests|FolderControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests|TransientMessageViewTests'
+! rg -n 'Task\.sleep|RunLoop\.main\.run|flushMainQueue|pumpRunloopBriefly' \
+  Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift
+! rg -n 'NSWorkspace\.shared\.(urlForApplication|openApplication)' \
+  Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift
 ```
 
 Expected: PASS; folder capacity follows the real clip height, open/reload/resize
 repaginate and clamp, child before/after/empty and item 36 use stable IDs,
-exterior drop reaches the grid resolver, safe delete has a real edit control,
-failure reloads and returns false, and every lifecycle exit clears
-session/timer/preview.
+stale negative/out-of-range child paths reject with zero callback, exterior
+drop reaches the grid resolver, safe delete has a real edit control, failure
+reloads and returns false, and every lifecycle exit clears session/timer/preview.
+The retained overlay delegate handles source, validation, acceptance and
+drag-ended wiring; disabled, absent-folder, nil/malformed/mismatched pasteboard,
+missing session, wrong type/kind/parent and stale-child inputs all reject with
+zero callback. Both window-test scans print nothing: all former fixed waits are
+event/boundary driven and application launch is fully injected.
 
-- [ ] **Step 12: Commit**
+- [ ] **Step 15: Commit behavior and run aggregate review**
 
 ```bash
 git add Sources/LaunchPad/Views/FolderOverlayView.swift \
@@ -8913,6 +11825,8 @@ git add Sources/LaunchPad/Views/FolderOverlayView.swift \
   Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift
 git commit -m "feat: support responsive folder drag and safe delete"
 ```
+
+Review the external-click fixture commit, both production-empty migration commits, each behavior commit and the full Task 19 base..head separately. Record 47 mapping checks, exact focused counts, static output and aggregate command in `.superpowers/sdd/task-19-review.md`.
 
 ---
 
@@ -8952,6 +11866,7 @@ private final class RecordingScanBatchWriter:
 {
     var result = ScanSyncResult()
     var error: Error?
+    var onSynchronize: (@Sendable () -> Void)?
     private(set) var receivedApps: [[ScannedApp]] = []
     private(set) var receivedCapacities: [Int] = []
 
@@ -8962,6 +11877,7 @@ private final class RecordingScanBatchWriter:
         receivedApps.append(apps)
         receivedCapacities.append(initialPageCapacity)
         if let error { throw error }
+        onSynchronize?()
         return result
     }
 }
@@ -9069,10 +11985,33 @@ writer and assert the callback, rather than leaving the IUO nil or using a
 no-op assertion:
 
 ```swift
+private enum AppDelegateTestTimeout: Error { case elapsed }
+
+private func withAppDelegateTestTimeout<T: Sendable>(
+    _ duration: Duration,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask(operation: operation)
+        group.addTask {
+            try await ContinuousClock().sleep(for: duration)
+            throw AppDelegateTestTimeout.elapsed
+        }
+        guard let result = try await group.next() else {
+            throw AppDelegateTestTimeout.elapsed
+        }
+        group.cancelAll()
+        return result
+    }
+}
+
 @Test("setupFileWatcher：文件变更触发一次批量增量扫描")
 func setupFileWatcher_triggersIncrementalScan() async throws {
     let sut = makeDelegate()
     let writer = RecordingScanBatchWriter()
+    let events = AsyncStream<Void>.makeStream()
+    writer.onSynchronize = { events.continuation.yield() }
+    defer { events.continuation.finish() }
     sut.scanBatchWriter = writer
     sut.appScanner = AppScanner(
         fileSystemService: MockFileSystemService(),
@@ -9096,7 +12035,11 @@ func setupFileWatcher_triggersIncrementalScan() async throws {
         encoding: .utf8
     )
 
-    try await Task.sleep(for: .seconds(2))
+    let received = try await withAppDelegateTestTimeout(.seconds(10)) {
+        for await _ in events.stream { return true }
+        return false
+    }
+    #expect(received)
     #expect(writer.receivedApps.count == 1)
 }
 ```
@@ -9935,27 +12878,54 @@ git commit -m "fix: commit app scans atomically"
 ### Task 21: Isolate System Side Effects and Close Every Process-global Resource
 
 **Files:**
-- Modify: `Sources/LaunchPad/Services/AppScanner.swift:10-40`
 - Modify: `Sources/LaunchPad/Services/FileWatcher.swift:5-129`
+- Modify: `Sources/LaunchPad/Utilities/AccessibilityObservers.swift`
+- Modify: `Sources/LaunchPad/App/LaunchPadWindowController.swift`
 - Modify: `Sources/LaunchPad/App/HotkeyManager.swift:22-183`
 - Modify: `Sources/LaunchPad/App/AppDelegate.swift:14-83,174-218,292-300,378`
-- Modify: `Tests/LaunchPadTests/Services/AppScannerTests.swift:130-175`
 - Modify: `Tests/LaunchPadTests/Services/FileWatcherTests.swift`
+- Modify: `Tests/LaunchPadTests/Utilities/AccessibilitySettingsTests.swift`
+- Modify: `Tests/LaunchPadTests/Utilities/AccessibilityObserversTests.swift`
+- Create: `Tests/LaunchPadTests/Services/FileWatcherLifecycleTests.swift`
 - Modify: `Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift`
+- Modify: `Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift`
 - Modify: `Tests/LaunchPadTests/App/AppDelegateTests.swift`
 - Modify: `Tests/LaunchPadTests/TestHelpers/MockProtocols.swift`
+- Create: `docs/superpowers/reports/2026-07-21-task-21-system-boundary-migration.md`
+- Create: `.superpowers/sdd/task-21-migration.md`
 
 **Interfaces:**
-- Consumes: Task 15's MainActor `Scheduler` for deterministic debounce.
-- Produces: injected Dock plist, local monitor, event stream and status item boundaries plus idempotent shutdown.
-- Removes from tests: real FSEvents, real status items, real login-item calls, real Dock plist writes and arbitrary sleeps.
+- Consumes: Task 3R-A's MainActor `Scheduler`, Task 3R-B/8's hotkey/local-monitor boundaries and Task 3R-C's injected read-only Dock exclusion parser.
+- Produces: injected event stream, accessibility source/observer and status item boundaries plus idempotent shutdown.
+- Produces: `FileWatcher.start(...) -> Bool`; AppDelegate must expose and handle backend startup failure.
+- Keeps one non-skipped host integration test against a UUID temporary directory; all orchestration/lifecycle tests use injected backends and never touch user paths.
+- Migrates: FileWatcher 14 + Accessibility 16 = 30 old methods one-to-one with zero legacy framework symbols.
 
-- [ ] **Step 1: Add resource lifecycle and side-effect isolation RED tests**
+- [ ] **Step 1: Capture the 30-test baseline and qualified mapping inventory**
 
-Replace `FileWatcherTests.swift`'s XCTest-only header with `import Testing` and
-an `@MainActor @Suite("FileWatcher lifecycle") struct FileWatcherTests`; remove
-the real FSEvents tests rather than retaining a second XCTest class. Add tests
-for all branches before production changes:
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(FileWatcherTests|AccessibilitySettingsTests|AccessibilityObserverTests)/' | \
+  LC_ALL=C sort > /tmp/task-21-system-boundary-actual-before.txt
+test "$(wc -l < /tmp/task-21-system-boundary-actual-before.txt | tr -d ' ')" -eq 30
+test "$(LC_ALL=C sort -u /tmp/task-21-system-boundary-actual-before.txt | wc -l | tr -d ' ')" -eq 30
+rg -n '^\s*func test' \
+  Tests/LaunchPadTests/Services/FileWatcherTests.swift \
+  Tests/LaunchPadTests/Utilities/AccessibilitySettingsTests.swift
+```
+
+Expected: FileWatcher has 14 old methods and Accessibility has 16. The migration report must list qualified old/new IDs because both groups contain an `init_doesNotCrash` name. Required new FileWatcher IDs are `init_doesNotCrash`, `init_customDebounceInterval`, `stop_withoutStart_doesNotCrash`, `start_emptyPaths_doesNotCrash`, `start_thenStop_releasesProperly`, `deinit_afterStart_doesNotCrash`, `start_withMultiplePaths_doesNotCrash`, `start_stopThenStartAgain_doesNotCrash`, `init_zeroDebounceInterval_doesNotCrash`, `deinit_withoutStart_isSafe`, `start_realFileChange_triggersOnChange`, `start_streamCreationFails_doesNotCrash`, `start_streamCreationFails_thenStop_isSafe`, `handleEvents_clientCallBackInfoNil_returnsEarly`. Required Accessibility IDs are `current_returnsValidSettings`, `current_reduceMotion_isBool`, `current_reduceTransparency_isBool`, `current_increaseContrast_isBool`, `init_withExplicitValues`, `init_allFalse`, `init_allTrue`, `animationFallback_reduceMotion_returnsFadeOrInstant`, `animationFallback_normalMotion_returnsSpring`, `backgroundMaterial_reduceTransparency_returnsSolidColor`, `backgroundMaterial_normalTransparency_returnsHudWindow`, `contrastFallback_increaseContrast_returnsHighContrast`, `contrastFallback_normalContrast_returnsSystemColors`, `init_doesNotCrash`, `stop_multipleCalls_doesNotCrash`, `deinit_doesNotCrash`.
+
+- [ ] **Step 2: Add resource lifecycle and side-effect isolation RED tests**
+
+Add deterministic lifecycle tests in new Swift Testing files before production
+changes. Put the shared `MockFileEventStream` below in
+`Tests/LaunchPadTests/TestHelpers/MockProtocols.swift` so the lifecycle,
+legacy FileWatcher and AppDelegate fixtures consume one backend double. Keep
+the existing 14-method file intact until the production lifecycle is green,
+then migrate it in Step 9. Add tests for all branches:
 
 ```swift
 final class MockFileEventStream: FileEventStreaming, @unchecked Sendable {
@@ -10076,7 +13046,7 @@ func localMonitorLifecycleIsIdempotent() {
     let token = NSObject()
     var installs = 0
     var removals = 0
-    manager.localMonitorAdder = { _, _ in
+    manager.localMonitorInstaller = { _ in
         installs += 1
         return token
     }
@@ -10095,8 +13065,8 @@ func localMonitorLifecycleIsIdempotent() {
 }
 ```
 
-Add corresponding global-tap counter tests after Step 5's injection API and
-AppDelegate shutdown counter tests after Step 6. Each asserts exact add/remove,
+Add corresponding global-tap counter tests after Step 6's injection API and
+AppDelegate shutdown counter tests after Step 7. Each asserts exact add/remove,
 enable/disable and context-presence transitions; no test calls real FSEvents,
 `NSStatusBar.system`, `AXIsProcessTrusted`, `SMAppService`, `NSWorkspace.open`
 or a real event tap.
@@ -10123,68 +13093,42 @@ func eventBurstFiresLatestOnce() async {
 }
 ```
 
-- [ ] **Step 2: Run four focused suites and confirm RED**
+- [ ] **Step 3: Run every old and new focused suite and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'AppScannerTests|FileWatcherTests|HotkeyManagerTests|AppDelegateTests'
+  --filter 'AppScannerTests|FileWatcherTests|FileWatcherLifecycleTests|AccessibilitySettingsTests|AccessibilityObserverTests|AccessibilityObserversTests|HotkeyManagerTests|AppDelegateTests'
 ```
 
-- [ ] **Step 3: Parse Dock exclusions through an injected read-only data provider**
+Expected: the newly created lifecycle/observer tests are discovered and fail
+for missing production interfaces; a zero-match filter or a run that exercises
+only the four pre-existing suites is not RED evidence.
 
-Replace the path-writing test with a pure parser and add this initializer boundary:
+- [ ] **Step 4: Verify the pre-landed Dock exclusion boundary**
 
-```swift
-typealias ExcludedDataProvider = @Sendable () -> Data?
+Task 3R-C owns this implementation and its focused/full evidence. Do not
+duplicate or redesign it in Task 21. Verify the boundary remains intact after
+Tasks 4-20:
 
-init(
-    fileSystemService: FileSystemService,
-    excludedBundleIds: Set<String>? = nil,
-    excludedDataProvider: @escaping ExcludedDataProvider = AppScanner.systemExcludedData
-) {
-    self.fileSystemService = fileSystemService
-    self.excludedBundleIds = excludedBundleIds
-        ?? Self.parseExcludedBundleIDs(from: excludedDataProvider())
-}
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppScannerTests
 
-static func systemExcludedData() -> Data? {
-    let path = NSHomeDirectory()
-        + "/Library/Application Support/Dock/LaunchPadLayout.plist"
-    return FileManager.default.contents(atPath: path)
-}
-
-static func parseExcludedBundleIDs(from data: Data?) -> Set<String> {
-    guard let data,
-          let root = try? PropertyListSerialization.propertyList(
-            from: data,
-            format: nil
-          ) as? [String: Any],
-          let pages = root["pages"] as? [[String: Any]] else {
-        return []
-    }
-    var result = Set<String>()
-    for page in pages {
-        guard let items = page["items"] as? [[String: Any]] else {
-            continue
-        }
-        for item in items {
-            guard let id = item["bundleid"] as? String,
-                  let visible = item["visible"] as? Bool,
-                  visible == false else { continue }
-            result.insert(id)
-        }
-    }
-    return result
-}
+! rg -n "backup_test|createDirectory|removeItem|moveItem|data.write|try!" \
+  Tests/LaunchPadTests/Services/AppScannerTests.swift
+rg -n "ExcludedDataProvider|systemExcludedData|parseExcludedBundleIDs" \
+  Sources/LaunchPad/Services/AppScanner.swift
 ```
 
-Tests pass nil, malformed data, missing pages, malformed items, visible entries
-and hidden string IDs as in-memory plist data; they never create or delete the
-user's Dock directory.
+Expected: all AppScanner tests pass using explicit exclusions or in-memory
+data, the test file contains no Dock path mutation, and production retains one
+read-only system provider plus the pure parser. Any regression is fixed in the
+Task 21 behavior commit; there is no separate AppScanner commit in this task.
 
-- [ ] **Step 4: Separate FileWatcher orchestration from the FSEvent backend**
+- [ ] **Step 5: Separate FileWatcher orchestration from the FSEvent backend**
 
 Define an internal backend contract in `FileWatcher.swift`:
 
@@ -10360,20 +13304,22 @@ public final class FileWatcher {
         self.scheduler = scheduler
     }
 
+    @discardableResult
     public func start(
         paths: [String],
         onChange: @escaping @MainActor @Sendable () -> Void
-    ) {
+    ) -> Bool {
         stop()
-        guard !paths.isEmpty else { return }
+        guard !paths.isEmpty else { return false }
         self.onChange = onChange
         guard backend.start(paths: paths, onEvents: { [weak self] in
             Task { @MainActor in self?.receiveEvents() }
         }) else {
             self.onChange = nil
-            return
+            return false
         }
         isStarted = true
+        return true
     }
 
     private func receiveEvents() {
@@ -10385,9 +13331,10 @@ public final class FileWatcher {
 
     public func stop() {
         scheduler.cancelPending()
-        if isStarted { backend.stop() }
+        let shouldStopBackend = isStarted
         isStarted = false
         onChange = nil
+        if shouldStopBackend { backend.stop() }
     }
 
     deinit {
@@ -10397,39 +13344,69 @@ public final class FileWatcher {
 ```
 
 The production backend alone touches live FSEvents. Its own `deinit` also calls
-idempotent `stop`; Task 15's scheduler holder must cancel its pending work item.
-Orchestration tests inject `MockFileEventStream`, while the single production
-backend cleanup test injects `FSEventStreamFunctions` with a sentinel handle and
-never calls a system FSEvents function. Remove the real temp-directory FSEvent
-test, 10-second expectation and Mirror-only assertion.
+idempotent `stop`; Task 3R-A's scheduler holder cancels its pending work item.
+Orchestration tests inject `MockFileEventStream`, while production backend cleanup tests inject `FSEventStreamFunctions` with a sentinel handle and never call a system function. Cover empty paths, create nil, create-success/start-false, successful start, active stop, stop after failed start, restart, double stop, active deinit, nil callback context and exactly-once context release. Keep one host integration test for a UUID temporary directory; it is added in Step 10 and may not be skipped.
 
-- [ ] **Step 5: Make HotkeyManager monitor/tap ownership injectable and balanced**
+Removing `streamCreationOverride` is a test-target compile cascade. Before
+running any Step 5 filter, move `MockFileEventStream` to
+`Tests/LaunchPadTests/TestHelpers/MockProtocols.swift` and replace every
+`streamCreationOverride:` initializer in `FileWatcherTests.swift` and
+`AppDelegateTests.swift` with the internal `backend:scheduler:` initializer.
+Preserve the legacy FileWatcher assertions and names here; Step 9 performs the
+framework-only conversion after these deterministic fixture call sites are
+committed. Do not retain a production compatibility initializer solely for the
+deleted override.
 
-Inject local monitor functions:
+Also replace Task 20's temporary real-FSEvents
+`setupFileWatcher_triggersIncrementalScan` fixture with `MockFileEventStream`
+and `MockScheduler`: call `backend.emit()`, `await Task.yield()`, advance the
+scheduler by the configured debounce interval, then assert one exact
+`synchronizeInstalledApps` call. Delete `withAppDelegateTestTimeout` when its
+last call is removed. After this step, only Step 10's UUID-directory host test
+may start a real FSEvents stream.
+
+AppDelegate must consume startup failure rather than retaining a dead watcher:
 
 ```swift
-var localMonitorAdder: (
-    NSEvent.EventTypeMask,
-    @escaping (NSEvent) -> NSEvent?
-) -> Any? = { NSEvent.addLocalMonitorForEvents(matching: $0, handler: $1) }
-var localMonitorRemover: (Any) -> Void = { NSEvent.removeMonitor($0) }
-
-typealias EventTapCreator = (
-    CGEventMask,
-    CGEventTapCallBack,
-    UnsafeMutableRawPointer?
-) -> CFMachPort?
-
-var eventTapCreator: EventTapCreator = { mask, callback, context in
-    CGEvent.tapCreate(
-        tap: .cgSessionEventTap,
-        place: .headInsertEventTap,
-        options: .defaultTap,
-        eventsOfInterest: mask,
-        callback: callback,
-        userInfo: context
-    )
+func setupFileWatcher() {
+    let watcher = fileWatcherFactory()
+    guard watcher.start(paths: watchedPaths, onChange: { [weak self] in
+        self?.performIncrementalScan()
+    }) else {
+        fileWatcher = nil
+        NSLog("[AppDelegate] File watcher failed to start")
+        return
+    }
+    fileWatcher = watcher
 }
+```
+
+Run the watcher lifecycle and AppDelegate suites, then commit the complete
+watcher production range before any legacy migration:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'FileWatcherTests|FileWatcherLifecycleTests|AppDelegateTests'
+git add Sources/LaunchPad/Services/FileWatcher.swift \
+  Sources/LaunchPad/App/AppDelegate.swift \
+  Tests/LaunchPadTests/Services/FileWatcherTests.swift \
+  Tests/LaunchPadTests/Services/FileWatcherLifecycleTests.swift \
+  Tests/LaunchPadTests/App/AppDelegateTests.swift \
+  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift
+git commit -m "fix: expose and balance file watcher lifecycle"
+```
+
+- [ ] **Step 6: Complete HotkeyManager tap ownership without duplicating 3R/8 boundaries**
+
+Keep Task 3R-B's MainActor contract, weak `HotkeyCallbackBox`, exact callback
+context ownership, `localMonitorInstaller`/`localMonitorRemover` names,
+already-injected `EventTapCreator`/`eventTapCreator`, and Task 8's optional-result
+handler. Add only the remaining global tap/run-loop boundaries below; do not
+redeclare the event-tap creator, callback box, callback or context storage:
+
+```swift
 var runLoopSourceCreator: (CFMachPort) -> CFRunLoopSource? = {
     CFMachPortCreateRunLoopSource(kCFAllocatorDefault, $0, 0)
 }
@@ -10442,22 +13419,6 @@ var runLoopSourceRemover: (CFRunLoopSource) -> Void = {
 var eventTapEnabler: (CFMachPort, Bool) -> Void = {
     CGEvent.tapEnable(tap: $0, enable: $1)
 }
-
-private final class HotkeyCallbackBox {
-    weak var manager: HotkeyManager?
-    init(manager: HotkeyManager) { self.manager = manager }
-}
-
-static let tapCallback: CGEventTapCallBack = { _, type, event, refcon in
-    guard let refcon else { return Unmanaged.passUnretained(event) }
-    let box = Unmanaged<HotkeyCallbackBox>
-        .fromOpaque(refcon).takeUnretainedValue()
-    box.manager?.handleGlobalEvent(type: type, event: event)
-    return Unmanaged.passUnretained(event)
-}
-
-private var callbackContext: UnsafeMutableRawPointer?
-var hasCallbackContext: Bool { callbackContext != nil }
 
 @discardableResult
 public func registerGlobalHotkey(
@@ -10504,14 +13465,18 @@ public func unregisterGlobalHotkey() {
 }
 ```
 
-Delete `retainedSelf`, its lock and the old `tapProvider`. Keep Task 8's
+Delete `retainedSelf`, its lock and the old `tapProvider`. Keep Task 3R-B's
 `localMonitor == nil` guard; only assign `localMonitor` when
-`localMonitorAdder` returns a nonnil token. Tests inject every closure above,
+`localMonitorInstaller` returns a nonnil token. Tests inject every closure above,
 capture the callback context passed to `eventTapCreator`, and assert no real
 run-loop source is installed. Cover permission failure, tap failure, source
 failure, success, re-register cleanup, double unregister and deinit; cover
 local add failure/success, register twice, double unregister and deinit with
-installer/remover counters.
+installer/remover counters. In the same step, replace every AppDelegate test
+assignment to `tapProvider` with the corresponding `eventTapCreator`,
+`runLoopSourceCreator`, adder/remover and enabler injection. This call-site
+migration is required before the package can compile and may not be deferred
+to Step 7.
 
 ```swift
 @Test("global hotkey 重注册与注销平衡 source、tap 和 context")
@@ -10572,7 +13537,22 @@ func globalHotkeyCreationFailuresLeaveNoContext() throws {
 }
 ```
 
-- [ ] **Step 6: Abstract status items and add one idempotent AppDelegate shutdown path**
+Run and commit the global-tap ownership range before changing status-item
+shutdown behavior:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'HotkeyManagerTests|AppDelegateTests'
+git add Sources/LaunchPad/App/HotkeyManager.swift \
+  Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift \
+  Tests/LaunchPadTests/App/AppDelegateTests.swift \
+  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift
+git commit -m "fix: balance global hotkey ownership"
+```
+
+- [ ] **Step 7: Abstract status items and add one idempotent AppDelegate shutdown path**
 
 Add:
 
@@ -10609,33 +13589,354 @@ public func applicationWillTerminate(_ notification: Notification) {
 
 Task 9 already injects the System Settings URL opener. Delete tests that directly call real `SMAppService.register/unregister`, `AXIsProcessTrusted`, `NSStatusBar.system`, and real `NSWorkspace.open`. Replace the `Task.sleep` assertions in AppDelegate/Hotkey tests with synchronous injected runners or `withCheckedContinuation` completion signals.
 
-- [ ] **Step 7: Run lifecycle suites twice and prove clean process exit**
+Run and commit the status-item/shutdown range independently:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter AppDelegateTests
+git add Sources/LaunchPad/App/AppDelegate.swift \
+  Tests/LaunchPadTests/App/AppDelegateTests.swift
+git commit -m "fix: release app process resources on shutdown"
+```
+
+- [ ] **Step 8: Read accessibility settings and notifications through local sources**
+
+Add:
+
+```swift
+struct AccessibilitySettingsSource: Sendable {
+    let reduceMotion: @Sendable () -> Bool
+    let reduceTransparency: @Sendable () -> Bool
+    let increaseContrast: @Sendable () -> Bool
+
+    static let system = AccessibilitySettingsSource(
+        reduceMotion: {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceMotion
+        },
+        reduceTransparency: {
+            NSWorkspace.shared.accessibilityDisplayShouldReduceTransparency
+        },
+        increaseContrast: {
+            NSWorkspace.shared.accessibilityDisplayShouldIncreaseContrast
+        }
+    )
+}
+
+public static func current() -> AccessibilitySettings {
+    current(source: .system)
+}
+
+static func current(
+    source: AccessibilitySettingsSource
+) -> AccessibilitySettings {
+    AccessibilitySettings(
+        reduceMotion: source.reduceMotion(),
+        reduceTransparency: source.reduceTransparency(),
+        increaseContrast: source.increaseContrast()
+    )
+}
+```
+
+This replaces the incorrect `UserDefaults.standard` reads that treated full
+domain names as keys. Make `AccessibilitySettings` conform to `Sendable`, and
+give `AccessibilityObserver` exact local dependencies:
+
+```swift
+public init(
+    notificationCenter: NotificationCenter = .default,
+    settingsProvider: @escaping @Sendable () -> AccessibilitySettings = {
+        AccessibilitySettings.current()
+    },
+    callback: @escaping ChangeCallback
+) {
+    self.notificationCenter = notificationCenter
+    self.settingsProvider = settingsProvider
+    self.callback = callback
+    observer = notificationCenter.addObserver(
+        forName: NSWorkspace.accessibilityDisplayOptionsDidChangeNotification,
+        object: nil,
+        queue: .main
+    ) { [weak self] _ in
+        guard let self else { return }
+        callback(self.settingsProvider())
+    }
+}
+
+public func stop() {
+    guard let observer else { return }
+    notificationCenter.removeObserver(observer)
+    self.observer = nil
+}
+```
+
+Extend the existing `LaunchPadWindowController` initializer with defaulted
+dependencies so production call sites are unchanged:
+
+```diff
+- public init(lifecycle: WindowLifecycle, viewController: LaunchPadViewController) {
++ public init(
+    lifecycle: WindowLifecycle,
+    viewController: LaunchPadViewController,
+    accessibilityNotificationCenter: NotificationCenter = .default,
+    accessibilitySettingsProvider: @escaping @Sendable ()
+        -> AccessibilitySettings = { AccessibilitySettings.current() }
++) {
+```
+
+Keep the existing window construction body unchanged. Replace only its current
+observer assignment with the following block. Assigning the same provider to
+the existing animation property is required so opening and closing never fall
+back to a real system read in tests:
+
+```swift
+self.accessibilitySettingsProvider = accessibilitySettingsProvider
+accessibilityObserver = AccessibilityObserver(
+    notificationCenter: accessibilityNotificationCenter,
+    settingsProvider: accessibilitySettingsProvider
+) { [weak self] settings in
+    self?.applyAccessibilitySettings(settings)
+}
+```
+
+Every `LaunchPadWindowControllerTests.makeSUT()` creates its own
+`NotificationCenter`, passes a constant settings provider and returns the center
+in `SUT`. The notification test posts only to that center, asserts immediately
+on `@MainActor`, and never calls `AccessibilitySettings.current()`. Observer
+tests likewise post only to their local center and use
+`defer { observer.stop() }`. Cover all false/true combinations, each
+animation/material/contrast branch, one notification update, duplicate start,
+duplicate stop and deinit cleanup.
+
+Add an initializer-path regression that proves the injected settings provider
+drives both animation branches:
+
+```swift
+private final class AccessibilitySettingsProviderSpy: @unchecked Sendable {
+    private let lock = NSLock()
+    private var reads = 0
+    private let settings: AccessibilitySettings
+
+    init(settings: AccessibilitySettings) {
+        self.settings = settings
+    }
+
+    func read() -> AccessibilitySettings {
+        lock.lock()
+        defer { lock.unlock() }
+        reads += 1
+        return settings
+    }
+
+    var callCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return reads
+    }
+}
+
+@Test("initializer settings provider 同时驱动 opening 和 closing 动画")
+func initializerSettingsProviderDrivesBothAnimations() {
+    var durations: [TimeInterval] = []
+    let provider = AccessibilitySettingsProviderSpy(
+        settings: AccessibilitySettings(
+            reduceMotion: true,
+            reduceTransparency: false,
+            increaseContrast: false
+        )
+    )
+    let sut = makeSUT(accessibilitySettingsProvider: provider.read)
+    sut.controller.mainActorDispatcher = { operation in
+        MainActor.assumeIsolated { operation() }
+    }
+    sut.controller.mainAsyncRunner = { $0() }
+    sut.controller.runAnimated = { duration, animations, completion in
+        durations.append(duration)
+        animations()
+        completion()
+    }
+
+    sut.controller.toggle()
+    #expect(sut.lifecycle.state == .visible)
+    sut.controller.toggle()
+
+    #expect(sut.lifecycle.state == .hidden)
+    #expect(provider.callCount == 2)
+    #expect(durations == [0.1, 0.1])
+}
+```
+
+Run and commit the new accessibility production behavior and its new observer
+tests. This commit is not a framework migration:
+
+```bash
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AccessibilitySettingsTests|AccessibilityObserverTests|AccessibilityObserversTests|LaunchPadWindowControllerTests'
+git add Sources/LaunchPad/Utilities/AccessibilityObservers.swift \
+  Sources/LaunchPad/App/LaunchPadWindowController.swift \
+  Tests/LaunchPadTests/Utilities/AccessibilityObserversTests.swift \
+  Tests/LaunchPadTests/Controllers/LaunchPadWindowControllerTests.swift
+git commit -m "fix: isolate accessibility settings and observer sources"
+```
+
+- [ ] **Step 9: Migrate FileWatcher 14/14 and Accessibility 16/16 in pure commits**
+
+After Steps 5 and 8 are green, migrate each touched legacy file completely.
+Both AppKit suites are suite-level `@MainActor`; use `#expect`, `try #require`,
+`Issue.record` and structured concurrency only. The old real-file-change method
+must become the exact timeout-protected UUID-directory test shown in Step 10
+during this pure migration commit, so no `XCTestExpectation` or fixed wait
+survives the static scan below. Create all 30 explicit qualified mapping rows
+in the Task 21 report. In every data row, the first two backtick-delimited
+fields are the exact old and new fully-qualified discovery IDs.
+
+```bash
+TASK21_MIGRATION_BASE=$(git rev-parse HEAD)
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel --filter FileWatcherTests
+git add Tests/LaunchPadTests/Services/FileWatcherTests.swift \
+  docs/superpowers/reports/2026-07-21-task-21-system-boundary-migration.md
+git commit -m "test: migrate file watcher tests to Swift Testing"
+git diff --exit-code "$TASK21_MIGRATION_BASE"..HEAD -- Sources
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'AccessibilitySettingsTests|AccessibilityObserverTests'
+git add Tests/LaunchPadTests/Utilities/AccessibilitySettingsTests.swift \
+  docs/superpowers/reports/2026-07-21-task-21-system-boundary-migration.md
+git commit -m "test: migrate accessibility tests to Swift Testing"
+git diff --exit-code "$TASK21_MIGRATION_BASE"..HEAD -- Sources
+
+! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests/LaunchPadTests/Services/FileWatcherTests.swift \
+  Tests/LaunchPadTests/Utilities/AccessibilitySettingsTests.swift
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox list | \
+  rg '^LaunchPadTests\.(FileWatcherTests|AccessibilitySettingsTests|AccessibilityObserverTests)/' | \
+  LC_ALL=C sort > /tmp/task-21-system-boundary-actual-after.txt
+awk -F'`' \
+  '$0 ~ /^\| `LaunchPadTests\.(FileWatcherTests|AccessibilitySettingsTests|AccessibilityObserverTests)\// { print $2 }' \
+  docs/superpowers/reports/2026-07-21-task-21-system-boundary-migration.md | \
+  LC_ALL=C sort > /tmp/task-21-system-boundary-expected-before.txt
+awk -F'`' \
+  '$0 ~ /^\| `LaunchPadTests\.(FileWatcherTests|AccessibilitySettingsTests|AccessibilityObserverTests)\// { print $4 }' \
+  docs/superpowers/reports/2026-07-21-task-21-system-boundary-migration.md | \
+  LC_ALL=C sort > /tmp/task-21-system-boundary-expected-after.txt
+test "$(wc -l < /tmp/task-21-system-boundary-expected-before.txt | tr -d ' ')" -eq 30
+test "$(wc -l < /tmp/task-21-system-boundary-expected-after.txt | tr -d ' ')" -eq 30
+test "$(wc -l < /tmp/task-21-system-boundary-actual-after.txt | tr -d ' ')" -eq 30
+diff -u /tmp/task-21-system-boundary-actual-before.txt \
+  /tmp/task-21-system-boundary-expected-before.txt
+diff -u /tmp/task-21-system-boundary-expected-after.txt \
+  /tmp/task-21-system-boundary-actual-after.txt
+```
+
+Expected: 30 migrated IDs pass; the old discovery/report-old diff and the
+report-new/new-discovery diff are both empty, proving 30 unique one-to-one
+mappings. Static output is empty and `TASK21_MIGRATION_BASE..HEAD` has no
+production diff. The existing `AccessibilityObserversTests.swift` remains in
+Step 8's behavior commit and is never relabeled as a pure migration.
+
+- [ ] **Step 10: Validate lifecycle suites twice, the real host test and the full zero-residue gate**
+
+Confirm Step 9 contains this non-skipped host integration test byte-for-byte;
+it touches only a test-owned UUID directory and uses structured timeout rather
+than sleep/retry:
+
+```swift
+private enum WatcherTimeout: Error { case elapsed }
+
+private func withTimeout<T: Sendable>(
+    _ duration: Duration,
+    operation: @escaping @Sendable () async throws -> T
+) async throws -> T {
+    try await withThrowingTaskGroup(of: T.self) { group in
+        group.addTask(operation: operation)
+        group.addTask {
+            try await ContinuousClock().sleep(for: duration)
+            throw WatcherTimeout.elapsed
+        }
+        guard let result = try await group.next() else {
+            throw WatcherTimeout.elapsed
+        }
+        group.cancelAll()
+        return result
+    }
+}
+
+@Test("真实 FSEvents 在 UUID 临时目录变更后触发 callback")
+func realTemporaryDirectoryChangeTriggersCallback() async throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("LaunchPadWatcher-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let events = AsyncStream<Void>.makeStream()
+    let watcher = FileWatcher(debounceInterval: 0.05)
+    #expect(watcher.start(paths: [directory.path]) {
+        events.continuation.yield()
+    })
+    defer {
+        watcher.stop()
+        events.continuation.finish()
+    }
+
+    try Data("event".utf8).write(
+        to: directory.appendingPathComponent("probe.txt"),
+        options: .atomic
+    )
+    let received = try await withTimeout(.seconds(10)) {
+        for await _ in events.stream { return true }
+        return false
+    }
+    #expect(received)
+}
+```
 
 ```bash
 for run in 1 2; do
   CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
   SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
   swift test --disable-sandbox --no-parallel \
-    --filter 'AppScannerTests|FileWatcherTests|HotkeyManagerTests|AppDelegateTests'
+    --filter 'AppScannerTests|FileWatcherTests|FileWatcherLifecycleTests|AccessibilitySettingsTests|AccessibilityObserverTests|AccessibilityObserversTests|HotkeyManagerTests|AppDelegateTests'
 done
+
+! rg -n \
+  'import XCTest|XCTestCase|XCTAssert[A-Za-z]*|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
+  Tests --glob '*.swift'
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel
 ```
 
-Expected: both invocations exit 0 without manual termination, real sleeps or persistent system resources.
+Expected: both focused invocations and the complete suite exit 0 with summaries, the real temporary-directory test executes, static output is empty, and no manual termination, skip, signal or persistent system resource occurs.
 
-- [ ] **Step 8: Commit**
+- [ ] **Step 11: Review every committed boundary and the aggregate range**
 
-```bash
-git add Sources/LaunchPad/Services/AppScanner.swift \
-  Sources/LaunchPad/Services/FileWatcher.swift \
-  Sources/LaunchPad/App/HotkeyManager.swift \
-  Sources/LaunchPad/App/AppDelegate.swift \
-  Tests/LaunchPadTests/Services/AppScannerTests.swift \
-  Tests/LaunchPadTests/Services/FileWatcherTests.swift \
-  Tests/LaunchPadTests/Controllers/HotkeyManagerTests.swift \
-  Tests/LaunchPadTests/App/AppDelegateTests.swift \
-  Tests/LaunchPadTests/TestHelpers/MockProtocols.swift
-git commit -m "fix: isolate and release process-global system resources"
-```
+Review the already committed ranges independently in execution order:
+
+1. AppScanner read-only exclusion parsing.
+2. FileWatcher production lifecycle and startup failure.
+3. Global hotkey ownership.
+4. AppDelegate shutdown/status-item ownership.
+5. Accessibility production sources and new observer behavior.
+6. FileWatcher 14/14 pure migration.
+7. Accessibility 16/16 pure migration.
+
+Then review Task 21 base..head and record all commit ranges, focused commands,
+the real host result, 30 mappings and zero-residue scan in
+`.superpowers/sdd/task-21-migration.md`. Any review fix is committed to its
+own range, reruns the exact affected suite and invalidates the old aggregate
+review package.
 
 ---
 
@@ -10646,8 +13947,10 @@ git commit -m "fix: isolate and release process-global system resources"
 - Create: `scripts/test-release.sh`
 
 **Interfaces:**
-- Consumes: all production behavior from Tasks 1-21.
-- Produces: `ContinuousClock` median/p95 assertions and one timeout-protected release command.
+- Consumes: all production behavior from Tasks 1-21 and Task 4's executable
+  `scripts/run-with-timeout.sh` process-group watchdog.
+- Produces: `ContinuousClock` median/p95 assertions, release artifacts and one
+  timeout-protected release command. It does not produce another supervisor.
 - Constraint: no environment switch, test trait, `--skip PerformanceTests`, or relaxed threshold.
 
 - [ ] **Step 1: Add deterministic benchmark helpers and first RED conversions**
@@ -10872,7 +14175,8 @@ Do not add `.enabled(if:)`, `ProcessInfo.processInfo.environment`, compile flags
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
-swift test --disable-sandbox --no-parallel --filter PerformanceTests
+scripts/run-with-timeout.sh 180 -- \
+  swift test --disable-sandbox --no-parallel --filter PerformanceTests
 ```
 
 Expected: 6/6 tests pass and the process exits 0. If a threshold fails, capture a sample of the test process and optimize the measured production path; do not skip, condition, retry or widen the assertion.
@@ -10890,195 +14194,187 @@ ROOT_DIR=${0:A:h:h}
 export CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache
 export SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache
 
-run_with_timeout() {
-  local seconds=$1
-  shift
-  local supervisor_pid=0
-  local forwarded_signal=0
-  local wait_status=0
-  trap 'forwarded_signal=129; (( supervisor_pid > 0 )) && kill -HUP "$supervisor_pid" 2>/dev/null || true' HUP
-  trap 'forwarded_signal=130; (( supervisor_pid > 0 )) && kill -INT "$supervisor_pid" 2>/dev/null || true' INT
-  trap 'forwarded_signal=143; (( supervisor_pid > 0 )) && kill -TERM "$supervisor_pid" 2>/dev/null || true' TERM
-  /usr/bin/perl -e '
-    use Errno qw(EINTR);
-    use POSIX qw(SIGHUP SIGINT SIGTERM);
-    my $seconds = shift @ARGV;
-    my $pid = fork();
-    die "fork failed: $!" unless defined $pid;
-    if ($pid == 0) {
-      setpgrp(0, 0) or die "setpgrp failed: $!";
-      exec { $ARGV[0] } @ARGV or exit 127;
-    }
-    my $timed_out = 0;
-    my $forwarded_signal = 0;
-    my $terminating = 0;
-    my $terminate_group = sub {
-      my ($number, $name) = @_;
-      return if $terminating;
-      $terminating = 1;
-      $forwarded_signal = $number if $number;
-      kill $name, -$pid;
-      select undef, undef, undef, 2.0;
-      kill "KILL", -$pid;
-    };
-    local $SIG{ALRM} = sub {
-      $timed_out = 1;
-      $terminate_group->(0, "TERM");
-    };
-    local $SIG{HUP} = sub {
-      alarm 0;
-      $terminate_group->(SIGHUP, "HUP");
-    };
-    local $SIG{INT} = sub {
-      alarm 0;
-      $terminate_group->(SIGINT, "INT");
-    };
-    local $SIG{TERM} = sub {
-      alarm 0;
-      $terminate_group->(SIGTERM, "TERM");
-    };
-    if (my $pidfile = $ENV{RUN_TIMEOUT_SUPERVISOR_PIDFILE}) {
-      open my $handle, ">", $pidfile or die "open pidfile failed: $!";
-      print {$handle} $$;
-      close $handle or die "close pidfile failed: $!";
-    }
-    alarm $seconds;
-    my $waited;
-    do { $waited = waitpid($pid, 0) } while $waited == -1 && $! == EINTR;
-    my $status = $?;
-    alarm 0;
-    $terminate_group->(0, "TERM")
-      if !$timed_out && !$forwarded_signal && kill(0, -$pid);
-    exit 124 if $timed_out;
-    exit 128 + $forwarded_signal if $forwarded_signal;
-    exit 128 + ($status & 127) if $status & 127;
-    exit($status >> 8);
-  ' "$seconds" "$@" &
-  supervisor_pid=$!
-  case $forwarded_signal in
-    129) kill -HUP "$supervisor_pid" 2>/dev/null || true ;;
-    130) kill -INT "$supervisor_pid" 2>/dev/null || true ;;
-    143) kill -TERM "$supervisor_pid" 2>/dev/null || true ;;
-  esac
-  wait "$supervisor_pid" || wait_status=$?
-  if (( forwarded_signal != 0 )) && kill -0 "$supervisor_pid" 2>/dev/null; then
-    wait "$supervisor_pid" || wait_status=$?
-  fi
-  trap - HUP INT TERM
-  (( forwarded_signal != 0 )) && return "$forwarded_signal"
-  return "$wait_status"
-}
+WATCHDOG="$ROOT_DIR/scripts/run-with-timeout.sh"
+[[ -x "$WATCHDOG" ]]
 
 assert_no_test_process() {
-  if pgrep -f '[L]aunchPadPackageTests' >/dev/null; then
-    print -u2 'release gate: residual LaunchPadPackageTests process detected'
+  ! pgrep -x swift-test >/dev/null
+  ! pgrep -x LaunchPadPackageTests >/dev/null
+  ! pgrep -f \
+    '/LaunchPadPackageTests\.xctest/Contents/MacOS/LaunchPadPackageTests' \
+    >/dev/null
+}
+
+assert_static_policy() {
+  local legacy_pattern='import XCTest|XCTestCase|XCTAssert[A-Za-z]*|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:'
+  local bypass_pattern='XCTSkip|\.disabled\(|\.enabled\(if:|Task\.sleep|RunLoop\.main\.run'
+  local grid_legacy_pattern='delegate[[:space:]]*=[[:space:]]*self|NSCollectionViewDelegate|onItemSelected|onSelectionChanged|dragController|pasteboardUUIDReader'
+  local host_legacy_pattern='interactionBounds|pageItem\(uuid:|moveSnapshotItem\(|itemsByUUID|snapshotMoves'
+
+  if rg -n --glob '*.swift' "$legacy_pattern" Tests; then
+    print -u2 'release gate: legacy test framework residue detected'
+    return 1
+  fi
+  if rg -n --glob '*.swift' "$bypass_pattern" Tests; then
+    print -u2 'release gate: skip or fixed-wait API detected'
+    return 1
+  fi
+  if rg -n "$grid_legacy_pattern" \
+      Sources/LaunchPad/Views/AppGridCollectionView.swift; then
+    print -u2 'release gate: obsolete main-grid delegate API detected'
+    return 1
+  fi
+  if rg -n --glob 'AppGrid*.swift' '[Pp]roxy' \
+      Sources/LaunchPad/Views; then
+    print -u2 'release gate: main-grid proxy detected'
+    return 1
+  fi
+  if rg -n "$host_legacy_pattern" \
+      Sources/LaunchPad/Views/AppGridCollectionView.swift \
+      Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift \
+      Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift \
+      Tests/LaunchPadTests/Views/AppGridInteractionCoordinatorTests.swift; then
+    print -u2 'release gate: obsolete grid-host surface detected'
+    return 1
+  fi
+  if rg -n 'setCurrentVisualPageIndex' \
+      Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift; then
+    print -u2 'release gate: grid-host page mutation detected'
+    return 1
+  fi
+  if rg -n -U --pcre2 \
+      '\b([A-Za-z_][A-Za-z0-9_]*)\.collectionView\(\s*\1\s*,' \
+      Tests --glob '*.swift'; then
+    print -u2 'release gate: direct main-grid delegate bypass detected'
     return 1
   fi
 }
 
-if [[ ${1:-} == '--self-test-timeout' ]]; then
-  pidfile=$(mktemp /tmp/launchpad-timeout.XXXXXX)
-  trap 'rm -f "$pidfile"' EXIT
-  timeout_status=0
-  run_with_timeout 1 /bin/zsh -c \
-    'print -r -- $$ > "$1"; exec /bin/sleep 2' \
-    _ "$pidfile" || timeout_status=$?
-  [[ $timeout_status -eq 124 ]]
-  child_pid=$(<"$pidfile")
-  ! kill -0 "$child_pid" 2>/dev/null
-  exit 0
-fi
+assert_run_log() {
+  local log=$1
+  local expected_count=$2
+  local summary="✔ Test run with ${expected_count} tests"
 
-if [[ ${1:-} == '--self-test-signal' ]]; then
-  child_pidfile=$(mktemp /tmp/launchpad-signal-child.XXXXXX)
-  supervisor_pidfile=$(mktemp /tmp/launchpad-signal-supervisor.XXXXXX)
-  trap 'rm -f "$child_pidfile" "$supervisor_pidfile"' EXIT
-  signal_status=0
-  RUN_TIMEOUT_SUPERVISOR_PIDFILE=$supervisor_pidfile \
-    run_with_timeout 30 /bin/zsh -c \
-      'print -r -- $$ > "$1"; exec /bin/sleep 30' \
-      _ "$child_pidfile" &
-  wrapper_pid=$!
-  for _ in {1..500}; do
-    [[ -s $child_pidfile && -s $supervisor_pidfile ]] && break
-    /bin/sleep 0.01
+  [[ $(rg -c '^✔ Test run with ' "$log") -eq 1 ]]
+  rg -q -F "$summary" "$log"
+  ! rg -n '↷|[Ss]kipped|✘|failed after|unexpected signal|signal [0-9]+' "$log"
+
+  local name
+  for name in \
+    'SearchEngine 1000 项无缓存 median/p95 < 50ms' \
+    'SearchEngine 缓存命中 median/p95 < 1ms' \
+    'Diffable snapshot 1002 项 median/p95 < 10ms' \
+    '动态 GridMetrics 三种 viewport median/p95 < 1ms' \
+    'IconCache 1000 次内存命中 median/p95 < 300ms' \
+    'IconCache 1000 次访问后无磁盘重复写入'
+  do
+    rg -q -F "Test \"$name\" passed" "$log"
   done
-  [[ -s $child_pidfile && -s $supervisor_pidfile ]]
-  supervisor_pid=$(<"$supervisor_pidfile")
-  child_pid=$(<"$child_pidfile")
-  kill -TERM "$wrapper_pid"
-  wait "$wrapper_pid" || signal_status=$?
-  [[ $signal_status -eq 143 ]]
-  ! kill -0 "$supervisor_pid" 2>/dev/null
-  ! kill -0 "$child_pid" 2>/dev/null
-  exit 0
-fi
-
-if [[ ${1:-} == '--self-test-nonzero' ]]; then
-  descendant_pidfile=$(mktemp /tmp/launchpad-nonzero-child.XXXXXX)
-  trap 'rm -f "$descendant_pidfile"' EXIT
-  nonzero_status=0
-  run_with_timeout 30 /usr/bin/perl -e '
-    my $pid = fork();
-    die "fork failed: $!" unless defined $pid;
-    if ($pid == 0) { exec "/bin/sleep", "30" or exit 127; }
-    open my $handle, ">", $ARGV[0] or die "open pidfile failed: $!";
-    print {$handle} $pid;
-    close $handle or die "close pidfile failed: $!";
-    exit 17;
-  ' "$descendant_pidfile" || nonzero_status=$?
-  [[ $nonzero_status -eq 17 ]]
-  descendant_pid=$(<"$descendant_pidfile")
-  ! kill -0 "$descendant_pid" 2>/dev/null
-  exit 0
-fi
+}
 
 cd "$ROOT_DIR"
+zsh -n "$0"
+assert_static_policy
+"$WATCHDOG" --self-test-timeout
+"$WATCHDOG" --self-test-signal
+"$WATCHDOG" --self-test-nonzero
 assert_no_test_process
+
+ARTIFACT_DIR=${LAUNCHPAD_RELEASE_ARTIFACT_DIR:-\
+"$ROOT_DIR/.superpowers/sdd/release-gate-$(date +%Y%m%d-%H%M%S)"}
+mkdir -p "$ARTIFACT_DIR"
+
 for run in 1 2 3; do
   print "release gate: test run ${run}/3"
-  run_with_timeout 900 swift test --disable-sandbox --no-parallel
+  raw_list="$ARTIFACT_DIR/tests-${run}.raw"
+  list="$ARTIFACT_DIR/tests-${run}.list"
+  log="$ARTIFACT_DIR/tests-${run}.log"
+
+  "$WATCHDOG" 180 -- swift test --disable-sandbox \
+    --disable-xctest --enable-swift-testing list >"$raw_list"
+  LC_ALL=C rg '^LaunchPadTests\.' "$raw_list" >"$list"
+  [[ -s "$list" ]]
+  ! rg -n -v '^LaunchPadTests\.' "$list"
+  [[ $(rg -c '^LaunchPadTests\.PerformanceTests/' "$list") -eq 6 ]]
+  if (( run > 1 )); then
+    cmp -s "$ARTIFACT_DIR/tests-1.list" "$list"
+  fi
+  expected_count=$(wc -l <"$list" | tr -d ' ')
+
+  "$WATCHDOG" 900 -- /bin/zsh -o pipefail -c \
+    'swift test --disable-sandbox --disable-xctest \
+      --enable-swift-testing --no-parallel 2>&1 | tee "$1"' \
+    _ "$log"
+  assert_run_log "$log" "$expected_count"
   assert_no_test_process
 done
 
 print 'release gate: release build'
-run_with_timeout 900 swift build -c release --product LaunchPadApp
+"$WATCHDOG" 900 -- /bin/zsh -o pipefail -c \
+  'swift build -c release --product LaunchPadApp 2>&1 | tee "$1"' \
+  _ "$ARTIFACT_DIR/release-build.log"
 assert_no_test_process
+print "release gate: artifacts $ARTIFACT_DIR"
 ```
 
-The top-level zsh function traps HUP, INT and TERM, forwards them to its current
-Perl supervisor, waits for that supervisor to finish cleanup, then returns
-`128 + signal`. The macOS-available Perl supervisor puts the command and all
-inherited children in a dedicated process group. Timeout sends TERM to the
-whole group, waits two seconds, sends KILL, reaps the child and exits 124;
-forwarded signals use the same cleanup. After any ordinary command exit, a
-still-live process group is also terminated while the original exit/signal
-status is preserved. Ctrl-C and nonzero exits cannot strand the supervisor,
-`swift test` or `swift build`. The PID-file hook exists only for the signal
-self-test. Any timeout/signal/nonzero status propagates through `set -e`. Do not
-suppress or redirect build output, so every warning remains in the gate log.
+`scripts/test-release.sh` contains no supervisor, signal trap, `setpgrp`,
+`setpgid` or inline Perl. It validates Task 4's shared watchdog, runs all three watchdog
+self-tests, rejects legacy XCTest/fixed waits, rejects any reintroduced main-grid
+self-delegate/proxy/old interaction API and rejects direct main-grid delegate
+bypass calls. It then invokes every discovery, full-suite and release-build
+command through `"$WATCHDOG" SECONDS -- ...`. Any timeout/signal/nonzero status
+propagates through `set -e`; Task 4 remains the single owner of process-group
+creation, TERM/grace/KILL, reaping and exact-PID self-test behavior.
+Normal execution then performs three independent
+discovery runs and three matching serial test runs. Raw discovery stdout is retained
+as `tests-N.raw` for diagnostics, but only strict `^LaunchPadTests\.` test-ID lines
+enter `tests-N.list`; build planning/progress lines can never inflate the count or
+break list equality. Each filtered list contains exactly six Performance tests and
+is byte-identical to run 1; each log contains one complete summary with the filtered
+test count, all six named performance pass lines and no skip/failure/signal marker.
+Release-build stdout/stderr is retained in `release-build.log`; do not suppress it,
+so every warning remains visible in the artifact directory.
 Run `chmod +x scripts/test-release.sh`.
 
 - [ ] **Step 5: Validate script syntax and anti-skip invariants**
 
 ```bash
-zsh -n scripts/test-release.sh
+zsh -n scripts/run-with-timeout.sh scripts/test-release.sh
+test -x scripts/run-with-timeout.sh
 test -x scripts/test-release.sh
-scripts/test-release.sh --self-test-timeout
-scripts/test-release.sh --self-test-signal
-scripts/test-release.sh --self-test-nonzero
+scripts/run-with-timeout.sh --self-test-timeout
+scripts/run-with-timeout.sh --self-test-signal
+scripts/run-with-timeout.sh --self-test-nonzero
+! rg -n 'run_with_timeout\(\)|setpgrp|setpgid|/usr/bin/perl' scripts/test-release.sh
+rg -q -F 'scripts/run-with-timeout.sh' scripts/test-release.sh
 ! rg -n 'enabled\(if:|ProcessInfo\.processInfo\.environment|--skip.*PerformanceTests' \
   Tests/LaunchPadTests/Performance/PerformanceTests.swift scripts/test-release.sh
-rg -n 'for run in 1 2 3|--no-parallel|swift build -c release' scripts/test-release.sh
+rg -q -F 'assert_static_policy' scripts/test-release.sh
+rg -q -F 'obsolete main-grid delegate API detected' scripts/test-release.sh
+rg -q -F 'main-grid proxy detected' scripts/test-release.sh
+rg -q -F 'obsolete grid-host surface detected' scripts/test-release.sh
+rg -q -F 'grid-host page mutation detected' scripts/test-release.sh
+rg -q -F 'direct main-grid delegate bypass detected' scripts/test-release.sh
+rg -q -F 'Sources/LaunchPad/Views/AppGridCollectionView.swift' \
+  scripts/test-release.sh
+rg -q -F -- '--pcre2' scripts/test-release.sh
+rg -q -F -- "Tests --glob '*.swift'" scripts/test-release.sh
+rg -q -F 'assert_run_log' scripts/test-release.sh
+rg -q -F 'for run in 1 2 3' scripts/test-release.sh
+rg -q -F "LC_ALL=C rg '^LaunchPadTests\\.'" scripts/test-release.sh
+rg -q -F -- '--disable-xctest --enable-swift-testing' scripts/test-release.sh
+rg -q -F -- '--enable-swift-testing --no-parallel' scripts/test-release.sh
+rg -q -F 'release-build.log' scripts/test-release.sh
+rg -q -F 'swift build -c release --product LaunchPadApp' scripts/test-release.sh
 ```
 
-Expected: syntax/executable/timeout/signal/nonzero cleanup checks exit 0, the negative
-scan prints nothing, and all three required gate fragments are found. The
-self-tests run no Swift command: one proves timeout exit 124 leaves its exact
-child PID dead; one signals the real top-level zsh wrapper and proves TERM exit
-143 leaves both its exact supervisor PID and child PID dead; the third preserves
-exit 17 while killing an exact forked descendant.
-Neither test inspects or kills unrelated system `sleep` processes.
+Expected: both scripts pass syntax/executable checks, all shared watchdog
+self-tests exit 0, the negative scan prints nothing, and all required gate
+fragments are found. The self-tests run no Swift command and prove exact
+wrapper/supervisor/child/descendant PID cleanup for timeout, HUP/INT/TERM and
+ordinary nonzero, while the separate exec-failure branch proves status `127`.
+Neither script inspects or kills unrelated system `sleep` processes.
+The normal path, not only manual validation, invokes all three self-tests before discovery. `--xunit-output` is intentionally not used because the current Swift Testing runner did not produce a reliable XML artifact; discovery lists, complete logs, exact summaries, named performance pass lines and exit codes are the authority.
 
 - [ ] **Step 6: Commit**
 
@@ -11096,10 +14392,14 @@ git commit -m "test: enforce deterministic release performance gates"
 - Modify: `Tests/LaunchPadTests/Integration/IntegrationTests.swift`
 - Modify: `README.md`
 - Modify: `docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md`
+- Modify: `docs/superpowers/specs/2026-07-21-swift-testing-unification-design.md`
+- Modify: `docs/superpowers/specs/2026-07-22-app-grid-interaction-coordinator-design.md`
+- Modify: `.superpowers/sdd/progress.md`
 
 **Interfaces:**
-- Consumes: Tasks 1-22.
-- Produces: file-backed SQLite durability evidence, final P0 regression evidence and documentation matching production.
+- Consumes: Tasks 1-22, Task 22's timestamped artifact directory and, through
+  the sole `scripts/test-release.sh` entry, Task 4's shared watchdog.
+- Produces: file-backed SQLite durability evidence, three-run test/list/log evidence, release-build evidence and documentation matching production.
 - Preserves: `docs/2026-07-15-release-readiness-review.md` as immutable historical evidence.
 
 - [ ] **Step 1: Add top-level blank/cross-page and complete folder durability RED tests**
@@ -11376,48 +14676,88 @@ swift test --disable-sandbox --no-parallel \
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
 SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel \
-  --filter 'GridLayoutCalculatorTests|LayoutProjectionTests|ViewLayerTests|PageScrollViewTests|DiffableDataSourceBuilderTests|DiffableDataSourceTests|AppGridCollectionViewTests|AppIconCellTests|FolderCellTests|FolderOverlayViewTests|FolderOverlayViewPagingTests|CollectionViewDragTests|SearchDebounceTests|ProtocolTests|KeyboardNavigatorTests|HotkeyManagerTests|DragControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests|TransientMessageViewTests|AppScannerTests|FileWatcherTests|AppDelegateTests|StorageManager|LayoutDomainStateTests|IntegrationTests|PerformanceTests'
+  --filter 'GridLayoutCalculatorTests|LayoutProjectionTests|AnimationRunnerTests|LayoutPersistenceTests|EmptyStateViewTests|SearchBarTests|AppGridFlowLayoutTests|PageControlViewTests|PageScrollViewTests|DiffableDataSourceBuilderTests|DiffableDataSourceTests|AppGridInteractionCoordinatorTests|AppGridCollectionViewTests|AppIconCellTests|FolderCellTests|FolderOverlayViewTests|FolderOverlayViewPagingTests|CollectionViewDragTests|SearchDebounceTests|ProtocolTests|KeyboardNavigatorTests|HotkeyManagerTests|DragControllerTests|LaunchPadViewControllerTests|LaunchPadWindowControllerTests|TransientMessageViewTests|AppScannerTests|FileWatcherTests|FileWatcherLifecycleTests|AccessibilitySettingsTests|AccessibilityObserverTests|AccessibilityObserversTests|AppDelegateTests|StorageManager|LayoutDomainStateTests|IntegrationTests|PerformanceTests'
 ```
 
 Expected: all selected suites pass, performance assertions execute, and the process exits without a residual test process.
 
-- [ ] **Step 4: Run the only release gate and retain fresh output**
+- [ ] **Step 4: Commit and independently review durability evidence**
+
+```bash
+git add Tests/LaunchPadTests/Integration/IntegrationTests.swift
+git commit -m "test: prove layout durability across reopen"
+
+CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
+SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
+swift test --disable-sandbox --no-parallel \
+  --filter 'StorageManager|LayoutDomainStateTests|IntegrationTests'
+```
+
+Review the integration commit by itself and require the focused command to exit 0. No documentation file enters this commit.
+
+- [ ] **Step 5: Run the sole final-authority gate and retain its artifact directory**
 
 ```bash
 set -o pipefail
-./scripts/test-release.sh 2>&1 | tee /tmp/launchpad-release-gate.log
+./scripts/test-release.sh 2>&1 | tee /tmp/launchpad-release-gate-final.log
 ```
 
-Expected: three complete test passes, including `PerformanceTests` each time,
-followed by a release build; the command exits 0 with no timeout or signal, no
-warning suppression and no residual `LaunchPadPackageTests` process.
+Expected: three discovery commands, three complete test passes including all six
+`PerformanceTests` each time, and one release build all execute through Task 4's
+shared watchdog; the sole outer command exits 0 with no timeout, signal, skip,
+warning suppression or residual test process. Record the artifact directory
+printed by the script. This is the only final-authority gate run; Task 23 must
+not call the watchdog directly or run a pre-document duplicate.
 
-- [ ] **Step 5: Synchronize README and design with shipped behavior**
+- [ ] **Step 6: Synchronize README, all three design documents and progress from Step 5 artifacts**
 
 Update README to state:
 
 - grid rows are viewport-derived from 5 down to 1, with 7/9/10 columns and 64...96pt icons;
 - pages are visual slices of one stable global order; monitor changes do not write storage;
 - drag supports same/cross page, empty append, existing folder, 0.8s preview then drop-to-create, folder reorder and drag-out; nested folders remain forbidden;
-- the only release command is `./scripts/test-release.sh` and it runs three complete serial test passes plus a release build;
-- remove `0 warnings`, `520+ tests`, per-suite workaround and "full tests hang" claims; report only the newly observed gate result from Step 4;
-- tests do not touch real Dock plist, login items, global monitors, status items or the user database.
+- the only release command is `./scripts/test-release.sh`; it self-tests and
+  consumes the shared `scripts/run-with-timeout.sh`, then runs three complete
+  Swift Testing-only serial passes plus a release build;
+- remove `Swift Testing + XCTest`, “少量历史测试使用 XCTest，两者共存”, `0 warnings`, `520+ tests`, fixed test-file counts, per-suite workaround and “full tests hang” claims;
+- tests do not touch real Dock plist, accessibility settings, login items, event taps, status items or the user database; the only real FSEvents proof watches a UUID temporary directory created by the test;
+- the current test count, each of the three exact summaries and release-build exit status are copied from Step 5 artifacts and are never prefilled in this plan.
 
-Update the design document's verification appendix with final task/test names, the exact gate command, and the fresh Step 4 result. Do not edit the historical review report or claim that unresolved P1/P2 release findings are closed.
+README's test entry is exactly:
 
-- [ ] **Step 6: Review final diff and commit documentation/integration evidence**
+```bash
+./scripts/test-release.sh
+```
+
+Update all three design documents' verification appendices with final task/test
+names, the exact gate command and fresh Step 5 result. Update ignored
+`.superpowers/sdd/progress.md` with actual branch, commit IDs, commands, three
+test counts/summaries, release-build exit code and Step 5 artifact path. Do not
+edit the historical review report or claim that unresolved P1/P2 release
+findings are closed.
+
+- [ ] **Step 7: Review and commit documentation evidence separately**
 
 ```bash
 git diff --check
 git status --short
-git diff -- Tests/LaunchPadTests/Integration/IntegrationTests.swift \
-  README.md docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md
-git add Tests/LaunchPadTests/Integration/IntegrationTests.swift \
-  README.md docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md
+git diff -- README.md \
+  docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md \
+  docs/superpowers/specs/2026-07-21-swift-testing-unification-design.md \
+  docs/superpowers/specs/2026-07-22-app-grid-interaction-coordinator-design.md
+git add README.md \
+  docs/superpowers/specs/2026-07-21-p0-release-blockers-design.md \
+  docs/superpowers/specs/2026-07-21-swift-testing-unification-design.md \
+  docs/superpowers/specs/2026-07-22-app-grid-interaction-coordinator-design.md
 git commit -m "docs: record verified p0 release behavior"
 ```
 
-Only the three listed files may enter this commit. The review report remains unmodified and untracked work outside this plan remains untouched.
+Only the four tracked documentation files may enter this commit.
+`.superpowers/sdd/progress.md` is updated as execution evidence but remains
+ignored unless repository policy changes explicitly. Review the integration
+commit, documentation commit and Task 23 base..head separately. The historical
+review report remains unmodified and untracked work outside this plan remains
+untouched.
 
 ---
 
@@ -11425,20 +14765,21 @@ Only the three listed files may enter this commit. The review report remains unm
 
 | P0 | Production surface | Required unit/integration suites | Negative proof |
 |---|---|---|---|
-| P0-1 grid | `GridLayoutCalculator`, projection, flow layout, scroll, cells, VC | `GridLayoutCalculatorTests`, `LayoutProjectionTests`, `ViewLayerTests`, `PageScrollViewTests`, `AppGridCollectionViewTests`, `AppIconCellTests`, `FolderCellTests`, `LaunchPadViewControllerTests` | invalid viewport returns no reproject; display switch causes zero storage writes |
+| P0-1 grid | `GridLayoutCalculator`, projection, flow layout, scroll, cells, `AppGridInteractionCoordinator`, VC | `GridLayoutCalculatorTests`, `LayoutProjectionTests`, migrated `ViewLayerTests` 56/56, migrated Cell/Grid suites 128/128, `AppGridInteractionCoordinatorTests`, `PageScrollViewTests`, `LaunchPadViewControllerTests` | invalid viewport returns no reproject; display switch causes zero storage writes; no self-delegate/proxy/old grid interaction API; real reload/display/selection cycle is `< 1s` and process-watchdog protected; four migrated files have no legacy symbols or lost tolerances |
 | P0-2 search input | `KeyboardNavigator`, first-character application, search debounce | `KeyboardNavigatorTests`, `SearchDebounceTests`, `LaunchPadViewControllerTests`, `AppDelegateTests` | first key atomically enters search and appears in query/results; stale callbacks cannot overwrite current query |
 | P0-3 key event chain | `HotkeyManager`, AppDelegate route, VC result | `HotkeyManagerTests`, `LaunchPadViewControllerTests`, `AppDelegateTests` | flags/unknown/hidden/unhandled events return the original object; only a handled visible keyDown returns nil |
-| P0-4 drag/drop and required atomic storage | contracts, domain state, transaction, drag session, grid, folder overlay/cell, VC, `StorageManager.apply` | `ProtocolTests`, `LayoutDomainStateTests`, `StorageManagerTests`, `StorageManagerLayoutMutationTests`, `DragControllerTests`, `CollectionViewDragTests`, `AppGridCollectionViewTests`, `AppIconCellTests`, `FolderOverlayViewTests`, `FolderOverlayViewPagingTests`, `FolderCellTests`, `TransientMessageViewTests`, `LaunchPadViewControllerTests`, `LaunchPadWindowControllerTests`, `IntegrationTests` | BEGIN/prepare/bind/step/COMMIT failures preserve snapshot; rollback failure invalidates first connection; search/self/stale/nested/group-on-item reject; no optimistic snapshot; hover performs zero writes and release attempts exactly one mutation |
+| P0-4 drag/drop and required atomic storage | contracts, domain state, transaction, drag session, coordinator, grid host, folder overlay/cell, VC, `StorageManager.apply` | `ProtocolTests`, `LayoutDomainStateTests`, `StorageManagerTests`, `StorageManagerLayoutMutationTests`, `DragControllerTests`, `CollectionViewDragTests`, `AppGridInteractionCoordinatorTests`, `AppGridCollectionViewTests`, `AppIconCellTests`, migrated FolderOverlay suites 47/47, `FolderCellTests`, `TransientMessageViewTests`, `LaunchPadViewControllerTests`, `LaunchPadWindowControllerTests`, `IntegrationTests` | BEGIN/prepare/bind/step/COMMIT failures preserve snapshot; rollback failure invalidates first connection; search/self/stale/nested/group-on-item reject; main-grid delegate calls use real wiring and coordinator-owned pasteboard reads; no optimistic snapshot; hover performs zero writes and release attempts exactly one mutation |
 | P0-5 initial scan | `AppScanner`, `StorageManager` scan batch, AppDelegate, target metrics | `StorageManagerScanBatchTests`, `AppScannerTests`, `GridLayoutCalculatorTests`, `LaunchPadViewControllerTests`, `AppDelegateTests`, `IntegrationTests` | real SQLite automatic rollback leaves no autocommit rows; failed read/write does not reload; unloaded VC is not forced; real viewport capacity and all-empty-page cleanup are asserted |
-| P0-6 release repeatability | system boundaries, performance, script | `FileWatcherTests`, `HotkeyManagerTests`, `AppDelegateTests`, `PerformanceTests`, full gate | no real user-system side effects, no sleeps, no performance skip, no residual process; timeout/signal/nonzero stops immediately and kills its exact process group |
+| P0-6 release repeatability | system boundaries, performance, shared watchdog, release orchestrator | migrated FileWatcher/Accessibility suites 30/30, `HotkeyManagerTests`, `AppDelegateTests`, six `PerformanceTests`, `scripts/run-with-timeout.sh` self-tests, full gate | zero legacy test symbols; no user-system side effects; real FSEvents only watches a UUID temp directory; no fixed waits/performance skip/residual process; timeout/HUP/INT/TERM/nonzero clean exact wrapper/supervisor/child/descendant PIDs and exec failure preserves 127; `test-release.sh` contains no second supervisor; three lists/logs/counts/summaries match |
 
 ## Execution Batches and Checkpoints
 
-1. **Batch A - viewport and input:** Tasks 1-9. Run the Task 9 regression, inspect the diff, and confirm no database write was added to viewport/input paths.
-2. **Batch B - atomic domain/storage:** Tasks 10-14. Run every storage/domain suite and inspect rollback/reopen evidence before any UI writer is connected.
-3. **Batch C - drag UI:** Tasks 15-19. Run the complete drag/folder suite and manually verify that hover callbacks cannot reach `LayoutMutating`.
-4. **Batch D - scan and resource lifecycle:** Tasks 20-21. Run relevant suites twice and confirm process exit plus zero real-system test calls.
-5. **Batch E - performance and final gate:** Tasks 22-23. Run focused performance first, then integration, then `scripts/test-release.sh` once as the only final authority.
+1. **Batch A0 - crash/resource baseline:** Tasks 3R-A, 3R-B and the full-gate-triggered Task 3R-C immediately after historical Task 3. Require a complete full-suite summary with no signal, no residual process and no failure/skip outside the monotonically decreasing registered baseline before any feature work continues.
+2. **Batch A1 - view migration and grid:** Task 3M, then Tasks 4-9. Review the fixture commit, each pure migration commit and behavior commits separately; confirm 56 + 128 mappings and no database write in viewport/input paths.
+3. **Batch B - atomic domain/storage:** Tasks 10-14. Run every storage/domain suite and inspect rollback/reopen evidence before any UI writer is connected.
+4. **Batch C - drag UI:** Tasks 15-19. Run the complete drag/folder suite, audit all 47 folder mappings and prove hover callbacks cannot reach `LayoutMutating`.
+5. **Batch D - scan and resource lifecycle:** Tasks 20-21. Audit all 30 lifecycle/accessibility mappings, run focused suites twice, execute the temp-directory host test and require full-suite zero residue.
+6. **Batch E - performance and final gate:** Tasks 22-23. Run focused performance, commit durability evidence, then run `scripts/test-release.sh` once as the only final authority before documentation evidence.
 
 At each checkpoint, review `git status --short` and stage only files listed by the completed task. Do not restore or stage pre-existing user changes.
 
@@ -11447,6 +14788,10 @@ At each checkpoint, review `git status --short` and stage only files listed by t
 - [ ] 900/768/600pt and every row breakpoint produce 5...1 rows with no overlap or clipping; 1440x620 is 7x5 and 1440x496 is 7x4.
 - [ ] Folder overlay derives both axes from its actual clip viewport, never exceeds 35 items per page, and preserves/clamps its visual page across reload and resize.
 - [ ] Visual resize/reprojection preserves flattened stable IDs, selection and current-page clamp and performs zero storage writes.
+- [ ] Main grid delegate is the VC-retained `AppGridInteractionCoordinator`,
+  never the grid or an internal proxy; all old grid interaction callbacks and
+  dependencies are absent, real delegate selection/drag wiring is tested, and
+  programmatic selection emits no business callback.
 - [ ] Keyboard mode/query remain identical; first character is present; only actually handled visible keyDown events are swallowed.
 - [ ] Same-page, cross-page, empty append, existing-folder, drop-to-create, folder reorder and drag-out all persist after reload/reopen.
 - [ ] App-on-app hover at 0.8s changes preview only; release is the sole commit point; nested folders are rejected.
@@ -11454,15 +14799,27 @@ At each checkpoint, review `git status --short` and stage only files listed by t
 - [ ] Every SQLite connection operation uses one serial queue; every transaction boundary is checked; rollback failure preserves both errors, invalidates and closes the connection.
 - [ ] Empty persisted layouts keep exactly one page; overflow creates pages; every other empty page is deleted; all ordering is dense and row-major.
 - [ ] Successful initial/incremental scan reloads an already-loaded VC once, never forces an unloaded view, and uses the target display's real capacity.
-- [ ] Unit tests never change real Dock plist, login items, accessibility settings, event monitors, FSEvents, status items or user databases.
-- [ ] All five wall-clock thresholds assert median and p95 with `ContinuousClock`, fixed input and no conditional enablement or skip.
-- [ ] `scripts/test-release.sh` runs three full serial suites plus release build and exits 0 without timeout, signal, warnings hidden or residual test processes.
-- [ ] README/design match observed production behavior and keep unresolved P1/P2 findings explicitly open.
+- [ ] Tests never change real Dock plist, login items, accessibility settings, event taps, local monitors, status items or user databases; the one real FSEvents test watches and cleans only its UUID temporary directory.
+- [ ] `Tests/**/*.swift` contains zero legacy framework symbols, skip APIs and fixed waits; 9 files / 15 old cases / 261 methods are represented by one-to-one migration reports and Swift Testing discovery.
+- [ ] All five wall-clock measurements assert median and p95 with `ContinuousClock`, deterministic input and no conditional enablement, retry, threshold widening or skip; the sixth performance test proves no repeated disk write.
+- [ ] `scripts/test-release.sh` invokes the shared `scripts/run-with-timeout.sh`
+  self-tests, then protects all three discovery commands, three full serial
+  suites and the release build with that same implementation; it verifies six
+  performance pass lines per log and exits 0 without timeout, signal, hidden
+  warnings or residual test processes.
+- [ ] README and all three design documents match observed production behavior; progress evidence records actual commits/counts/summaries/build/artifact path and unresolved P1/P2 findings remain explicitly open.
 
 ## Stop Conditions
 
 - Stop the current task when its new test does not fail for the expected reason; fix the test before production code.
 - Stop on any unexpected pre-existing suite failure, compiler diagnostic outside the task's files, or overlapping user edit; do not broaden the diff or revert user work.
+- Stop any migration when discovery count, explicit mapping rows, assertion semantics, actor isolation or tolerance count differs from its recorded baseline; do not delete/skip/rename away the discrepancy.
+- Stop after Task 3R if the run lacks a complete Swift Testing summary, reports
+  a signal, leaves a test process alive, adds an unregistered failure/skip ID,
+  or increases the registered baseline count. The registered Task 3R failures
+  and skips are temporary execution evidence, not accepted release outcomes.
+- Stop after Task 21 or any release-gate run that reports any failure, skip,
+  signal, incomplete summary or residual test process.
 - Stop on any SQLite fault test that cannot prove the complete persisted snapshot; a thrown error alone is insufficient.
 - Stop on rollback failure if code reads or reuses the invalidated connection; close it and prove state only through a new file-backed instance.
 - Stop on a performance failure and collect `/usr/bin/sample` evidence for the test process; optimize the measured path. Never skip, retry, condition or relax the threshold.
