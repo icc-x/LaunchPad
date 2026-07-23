@@ -134,6 +134,26 @@ public class LaunchPadViewController: NSViewController {
         )
     }
 
+    nonisolated static let searchTop: CGFloat = 20
+    nonisolated static let searchHeight: CGFloat = 32
+    nonisolated static let searchToGrid: CGFloat = 12
+    nonisolated static let gridToPager: CGFloat = 8
+    nonisolated static let pagerHeight: CGFloat = 10
+    nonisolated static let pagerBottom: CGFloat = 20
+
+    nonisolated static var gridChromeHeight: CGFloat {
+        searchTop + searchHeight + searchToGrid
+            + gridToPager + pagerHeight + pagerBottom
+    }
+
+    nonisolated static func gridViewportSize(
+        forWindowContentSize size: CGSize
+    ) -> CGSize {
+        let width = size.width.isFinite ? max(0, size.width) : 0
+        let height = size.height.isFinite ? max(0, size.height - gridChromeHeight) : 0
+        return CGSize(width: width, height: height)
+    }
+
     // MARK: - State
 
     private var allPages: [PageItem] = []
@@ -273,21 +293,21 @@ public class LaunchPadViewController: NSViewController {
         // Layout
         NSLayoutConstraint.activate([
             // Search bar at top
-            searchBar.topAnchor.constraint(equalTo: view.topAnchor, constant: 20),
+            searchBar.topAnchor.constraint(equalTo: view.topAnchor, constant: Self.searchTop),
             searchBar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             searchBar.widthAnchor.constraint(equalToConstant: 400),
-            searchBar.heightAnchor.constraint(equalToConstant: 32),
+            searchBar.heightAnchor.constraint(equalToConstant: Self.searchHeight),
 
             // Scroll view fills most of the space
-            scrollView.topAnchor.constraint(equalTo: searchBar.bottomAnchor, constant: 12),
+            scrollView.topAnchor.constraint(equalTo: searchBar.bottomAnchor, constant: Self.searchToGrid),
             scrollView.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             scrollView.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            scrollView.bottomAnchor.constraint(equalTo: pageControl.topAnchor, constant: -8),
+            scrollView.bottomAnchor.constraint(equalTo: pageControl.topAnchor, constant: -Self.gridToPager),
 
             // Page control at bottom center
             pageControl.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            pageControl.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -20),
-            pageControl.heightAnchor.constraint(equalToConstant: 10),
+            pageControl.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -Self.pagerBottom),
+            pageControl.heightAnchor.constraint(equalToConstant: Self.pagerHeight),
 
             transientMessageView.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             transientMessageView.bottomAnchor.constraint(

@@ -13,6 +13,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     var storage: (any DataStoring)!
     var layoutMutator: (any LayoutMutating)!
+    var scanBatchWriter: (any ScanBatchWriting)!
     var iconCache: IconCache!
     var appScanner: AppScanner!
     var searchEngine: SearchEngine!
@@ -104,6 +105,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         "/System/Applications",
     ]
 
+    var targetWindowContentSizeProvider: () -> CGSize = {
+        let mouse = NSEvent.mouseLocation
+        let screen = NSScreen.screens.first(where: { $0.frame.contains(mouse) })
+            ?? NSScreen.main
+        return screen?.frame.size ?? CGSize(width: 1440, height: 900)
+    }
+
+    var viewControllerReloader: (LaunchPadViewController) -> Void = { $0.loadData() }
+    var scanFailureLogger: (String) -> Void = { NSLog("[AppDelegate] %@", $0) }
+
     // MARK: - Application Lifecycle
 
     public func applicationDidFinishLaunching(_ notification: Notification) {
@@ -118,7 +129,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         activationPolicySetter(.accessory)
 
         setupServices()
-        guard storage != nil, layoutMutator != nil else {
+        guard storage != nil, layoutMutator != nil, scanBatchWriter != nil else {
             NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
             return
         }
@@ -134,12 +145,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private func installStorage(_ manager: StorageManager) {
         storage = manager
         layoutMutator = manager
+        scanBatchWriter = manager
     }
 
     func setupServices() {
         // Database
         storage = nil
         layoutMutator = nil
+        scanBatchWriter = nil
         let dbPath = databasePathProvider()
         do {
             installStorage(try storageFactory(dbPath))
@@ -330,79 +343,49 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     func setupFileWatcher() {
         let watcher = fileWatcherFactory()
-        watcher.start(paths: watchedPaths) { [weak self] in
+        guard watcher.start(paths: watchedPaths, onChange: { [weak self] in
             self?.performIncrementalScan()
+        }) else {
+            fileWatcher = nil
+            scanFailureLogger("file-watcher-start-failed")
+            return
         }
         self.fileWatcher = watcher
     }
 
-    /// 增量扫描（由 FileWatcher 触发）
-    func performIncrementalScan() {
-        let directories = [
-            URL(fileURLWithPath: "/Applications"),
-            URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
-            URL(fileURLWithPath: "/System/Applications"),
-        ]
-        do {
-            let existingItems = try storage.fetchAllItems(parentId: nil)
-            let scanned = appScanner.scanDirectories(directories)
-            let pages = existingItems.filter { $0.type == .page }
-                .sorted { $0.ordering < $1.ordering }
-            let lastPageId = pages.last?.id
+    private func reloadLoadedViewControllerAfterScan() {
+        mainAsyncRunner { [weak self] in
+            guard let self,
+                  let viewController = self.viewController,
+                  viewController.isViewLoaded else { return }
+            self.viewControllerReloader(viewController)
+        }
+    }
 
-            appScanner.incrementalSync(
-                scannedApps: scanned,
-                existingItems: existingItems,
-                lastPageId: lastPageId,
-                writer: storage
+    private func performScan() {
+        let directories = watchedPaths.map { URL(fileURLWithPath: $0) }
+        let scanned = appScanner.scanDirectories(directories)
+        let viewport = LaunchPadViewController.gridViewportSize(
+            forWindowContentSize: targetWindowContentSizeProvider()
+        )
+        let capacity = GridLayoutCalculator.calculate(viewportSize: viewport).itemsPerPage
+        do {
+            let result = try scanBatchWriter.synchronizeInstalledApps(
+                scanned,
+                initialPageCapacity: capacity
             )
-            // 刷新 UI
-            mainAsyncRunner { [weak self] in
-                self?.viewController?.loadData()
+            guard result.isSuccessful else {
+                scanFailureLogger("scan-batch-failed")
+                return
             }
+            reloadLoadedViewControllerAfterScan()
         } catch {
-            NSLog("[AppDelegate] Incremental scan failed: \(error)")
+            scanFailureLogger("scan-batch-failed")
         }
     }
 
-    // MARK: - Initial Scan
-
-    func performInitialScan() {
-        let directories = [
-            URL(fileURLWithPath: "/Applications"),
-            URL(fileURLWithPath: NSHomeDirectory() + "/Applications"),
-            URL(fileURLWithPath: "/System/Applications"),
-        ]
-
-        do {
-            let existingItems = try storage.fetchAllItems(parentId: nil)
-
-            if existingItems.isEmpty {
-                // First launch
-                let scanned = appScanner.scanDirectories(directories)
-                appScanner.firstLaunchPaginate(
-                    scannedApps: scanned,
-                    maxPerPage: GridLayoutCalculator.calculate(screenWidth: NSScreen.main?.frame.width ?? 1440).itemsPerPage,
-                    writer: storage
-                )
-            } else {
-                // Incremental sync
-                let scanned = appScanner.scanDirectories(directories)
-                let pages = existingItems.filter { $0.type == .page }
-                    .sorted { $0.ordering < $1.ordering }
-                let lastPageId = pages.last?.id
-
-                appScanner.incrementalSync(
-                    scannedApps: scanned,
-                    existingItems: existingItems,
-                    lastPageId: lastPageId,
-                    writer: storage
-                )
-            }
-        } catch {
-            NSLog("[AppDelegate] Scan failed: \(error)")
-        }
-    }
+    func performIncrementalScan() { performScan() }
+    func performInitialScan() { performScan() }
 
     // MARK: - Database Path
 

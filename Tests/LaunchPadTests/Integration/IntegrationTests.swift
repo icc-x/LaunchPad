@@ -13,14 +13,13 @@ struct IntegrationTests {
     func firstLaunch_emptyScan_pagination_correctItemCount() throws {
         let mockFS = MockFileSystemService()
         mockFS.directoryContents = []
-        let scanner = AppScanner(fileSystemService: mockFS, excludedBundleIds: [])
         let storage = try StorageManager(dbPath: ":memory:")
 
         let scanned: [ScannedApp] = []
-        scanner.firstLaunchPaginate(scannedApps: scanned, maxPerPage: 20, writer: storage)
+        _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 20)
 
         let allItems = try storage.fetchAllItems(parentId: nil)
-        #expect(allItems.count == 0, "空扫描后存储应为空")
+        #expect(allItems.count == 1, "空扫描后保留唯一空页")
     }
 
     // MARK: - 搜索过滤流程
@@ -91,7 +90,7 @@ struct IntegrationTests {
         let scanned = scanner.scanDirectories([appDir])
         #expect(scanned.count == 2)
 
-        scanner.firstLaunchPaginate(scannedApps: scanned, maxPerPage: 35, writer: storage)
+        _ = try storage.synchronizeInstalledApps(scanned, initialPageCapacity: 35)
 
         let allItems = try storage.fetchAllItems(parentId: nil)
         // 应有 1 个 page + 2 个 app = 3 个 items（但 app 在 page 下，所以顶层只有 page）
@@ -136,7 +135,7 @@ struct IntegrationTests {
                        path: "/Applications/App\(i).app")
         }
 
-        scanner.firstLaunchPaginate(scannedApps: apps, maxPerPage: 35, writer: storage)
+        _ = try storage.synchronizeInstalledApps(apps, initialPageCapacity: 35)
 
         let pages = try storage.fetchAllItems(parentId: nil).filter { $0.type == .page }.sorted { $0.ordering < $1.ordering }
         #expect(pages.count == 3, "100/35 应创建 3 页")
@@ -166,7 +165,7 @@ struct IntegrationTests {
             ScannedApp(name: name, bundleId: "com.test.\(name.lowercased())", path: "/Applications/\(name).app")
         }
 
-        scanner.firstLaunchPaginate(scannedApps: apps, maxPerPage: 35, writer: storage)
+        _ = try storage.synchronizeInstalledApps(apps, initialPageCapacity: 35)
 
         let pages = try storage.fetchAllItems(parentId: nil).filter { $0.type == .page }.sorted { $0.ordering < $1.ordering }
         let page1Apps = try storage.fetchAllItems(parentId: pages[0].id).sorted { $0.ordering < $1.ordering }
@@ -175,6 +174,24 @@ struct IntegrationTests {
         let titles = page1Apps.compactMap { $0.app?.title }
         let sortedTitles = titles.sorted { $0.localizedCaseInsensitiveCompare($1) == .orderedAscending }
         #expect(titles == sortedTitles, "应用应按字母顺序排列")
+    }
+
+    @Test("真实增量扫描从完整快照更新删除插入")
+    func incrementalScanRoundTripUsesAllPersistedItems() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        _ = try storage.synchronizeInstalledApps([
+            ScannedApp(name: "A", bundleId: "com.test.a", path: "/A.app"),
+            ScannedApp(name: "B", bundleId: "com.test.b", path: "/B.app"),
+        ], initialPageCapacity: 28)
+
+        _ = try storage.synchronizeInstalledApps([
+            ScannedApp(name: "A changed", bundleId: "com.test.a", path: "/A2.app"),
+            ScannedApp(name: "C", bundleId: "com.test.c", path: "/C.app"),
+        ], initialPageCapacity: 28)
+
+        let apps = try storage.persistedLayoutSnapshot().allItems.compactMap(\.app)
+        #expect(Set(apps.map(\.bundleId)) == ["com.test.a", "com.test.c"])
+        #expect(apps.first(where: { $0.bundleId == "com.test.a" })?.title == "A changed")
     }
 
     // MARK: - 被过滤应用不出现在网格中

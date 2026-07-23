@@ -2868,5 +2868,38 @@ struct LaunchPadViewControllerTests {
         #expect(scheduler.scheduledActions.isEmpty)
         #expect(scheduler.cancelCallCount == cancelCount + 1)
     }
+
+    @Test("窗口内容尺寸扣除 chrome 后命中全部行阈值")
+    func windowContentSizeMapsToExactGridViewportThresholds() {
+        let cases: [(CGFloat, CGFloat, Int)] = [
+            (722, 620, 5), (598, 496, 4), (474, 372, 3),
+            (350, 248, 2), (226, 124, 1),
+        ]
+        #expect(LaunchPadViewController.gridChromeHeight == 102)
+        for (windowHeight, clipHeight, rows) in cases {
+            let viewport = LaunchPadViewController.gridViewportSize(
+                forWindowContentSize: CGSize(width: 1440, height: windowHeight)
+            )
+            #expect(viewport.height == clipHeight)
+            #expect(GridLayoutCalculator.calculate(viewportSize: viewport).rows == rows)
+        }
+        for (windowHeight, _, rows) in cases.dropLast() {
+            let viewport = LaunchPadViewController.gridViewportSize(
+                forWindowContentSize: CGSize(width: 1440, height: windowHeight.nextDown)
+            )
+            #expect(GridLayoutCalculator.calculate(viewportSize: viewport).rows == rows - 1)
+        }
+    }
+
+    @Test("窗口尺寸异常值被规范为有限非负 grid viewport")
+    func invalidWindowContentSizeSanitizesGridViewport() {
+        let viewport = LaunchPadViewController.gridViewportSize(
+            forWindowContentSize: CGSize(width: .nan, height: -.infinity)
+        )
+        #expect(viewport.width == 0)
+        #expect(viewport.height == 0)
+        #expect(viewport.width.isFinite)
+        #expect(viewport.height.isFinite)
+    }
 }
 #endif

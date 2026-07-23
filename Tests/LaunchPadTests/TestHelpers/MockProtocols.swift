@@ -134,6 +134,27 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     }
 }
 
+final class MockFileEventStream: FileEventStreaming, @unchecked Sendable {
+    var startResult = true
+    private(set) var startedPaths: [[String]] = []
+    private(set) var stopCallCount = 0
+    private var onEvents: (@Sendable () -> Void)?
+
+    func start(paths: [String], onEvents: @escaping @Sendable () -> Void) -> Bool {
+        startedPaths.append(paths)
+        guard startResult else { return false }
+        self.onEvents = onEvents
+        return true
+    }
+
+    func stop() {
+        stopCallCount += 1
+        onEvents = nil
+    }
+
+    func emit() { onEvents?() }
+}
+
 // MARK: - MockIconProviding
 
 #if canImport(AppKit)

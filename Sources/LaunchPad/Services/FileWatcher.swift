@@ -1,129 +1,142 @@
 import Foundation
+import LaunchPadProtocols
 #if canImport(AppKit)
 import AppKit
 
-/// 文件系统监控器 — 使用 FSEvents API 监控目录变化
-/// 提供防抖机制，避免批量安装/卸载时频繁触发
-public final class FileWatcher: @unchecked Sendable {
+protocol FileEventStreaming: AnyObject, Sendable {
+    @discardableResult
+    func start(paths: [String], onEvents: @escaping @Sendable () -> Void) -> Bool
+    func stop()
+}
+
+struct FSEventStreamFunctions: @unchecked Sendable {
+    let create: (FSEventStreamCallback, UnsafeMutablePointer<FSEventStreamContext>, CFArray, FSEventStreamEventId, CFTimeInterval, FSEventStreamCreateFlags) -> FSEventStreamRef?
+    let setDispatchQueue: (FSEventStreamRef, DispatchQueue) -> Void
+    let start: (FSEventStreamRef) -> Bool
+    let stop: (FSEventStreamRef) -> Void
+    let invalidate: (FSEventStreamRef) -> Void
+    let release: (FSEventStreamRef) -> Void
+
+    static let system = FSEventStreamFunctions(
+        create: { callback, context, paths, since, latency, flags in
+            FSEventStreamCreate(nil, callback, context, paths, since, latency, flags)
+        },
+        setDispatchQueue: { FSEventStreamSetDispatchQueue($0, $1) },
+        start: { FSEventStreamStart($0) },
+        stop: { FSEventStreamStop($0) },
+        invalidate: { FSEventStreamInvalidate($0) },
+        release: { FSEventStreamRelease($0) }
+    )
+}
+
+final class SystemFileEventStream: FileEventStreaming, @unchecked Sendable {
+    private final class CallbackBox {
+        let onEvents: @Sendable () -> Void
+        init(onEvents: @escaping @Sendable () -> Void) { self.onEvents = onEvents }
+    }
+
+    private static let callback: FSEventStreamCallback = { _, context, _, _, _, _ in
+        guard let context else { return }
+        Unmanaged<CallbackBox>.fromOpaque(context).takeUnretainedValue().onEvents()
+    }
 
     private var stream: FSEventStreamRef?
-    private var retainedSelfPtr: UnsafeMutableRawPointer?
-    private let debounceInterval: TimeInterval
-    /// 测试注入：非 nil 时用它替代 FSEventStreamCreate，返回 nil 模拟创建失败（正常流程不可达的防御分支）
-    private let streamCreationOverride: (() -> FSEventStreamRef?)?
-    private var debounceWorkItem: DispatchWorkItem?
-    private let queue = DispatchQueue(label: "com.launchpad.filewatcher", qos: .utility)
-    private let lock = NSLock()
+    private var callbackContext: UnsafeMutableRawPointer?
+    private var isStarted = false
+    private let functions: FSEventStreamFunctions
 
-    /// - Parameters:
-    ///   - debounceInterval: 防抖间隔，默认 2.0s（避免批量操作频繁触发）
-    ///   - streamCreationOverride: 测试注入，返回 nil 模拟 FSEventStreamCreate 失败
-    public init(debounceInterval: TimeInterval = 2.0,
-                streamCreationOverride: (() -> FSEventStreamRef?)? = nil) {
-        self.debounceInterval = debounceInterval
-        self.streamCreationOverride = streamCreationOverride
+    init(functions: FSEventStreamFunctions = .system) { self.functions = functions }
+
+    @discardableResult
+    func start(paths: [String], onEvents: @escaping @Sendable () -> Void) -> Bool {
+        stop()
+        guard !paths.isEmpty else { return false }
+        let contextPointer = Unmanaged.passRetained(CallbackBox(onEvents: onEvents)).toOpaque()
+        var context = FSEventStreamContext(version: 0, info: contextPointer, retain: nil, release: nil, copyDescription: nil)
+        guard let created = functions.create(
+            Self.callback, &context, paths as CFArray,
+            FSEventStreamEventId(kFSEventStreamEventIdSinceNow), 1.0,
+            FSEventStreamCreateFlags(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
+        ) else {
+            Unmanaged<CallbackBox>.fromOpaque(contextPointer).release()
+            return false
+        }
+        stream = created
+        callbackContext = contextPointer
+        functions.setDispatchQueue(created, DispatchQueue.main)
+        guard functions.start(created) else {
+            stop()
+            return false
+        }
+        isStarted = true
+        return true
     }
 
-    /// 开始监控指定目录
-    /// - Parameters:
-    ///   - paths: 要监控的目录路径列表
-    ///   - onChange: 变化回调（防抖后触发，保证在主线程调用）
-    public func start(paths: [String], onChange: @escaping @Sendable @MainActor () -> Void) {
-        lock.lock()
-        defer { lock.unlock() }
-
-        guard paths.isEmpty == false else { return }
-
-        let callback: FSEventStreamCallback = { _, clientCallBackInfo, numEvents, eventPaths, _, _ in
-            guard let info = clientCallBackInfo else { return }
-            let watcher = Unmanaged<FileWatcher>.fromOpaque(info).takeUnretainedValue()
-            watcher.handleEvents(numEvents: numEvents)
-        }
-
-        let selfPtr = Unmanaged.passRetained(self).toOpaque()
-
-        var context = FSEventStreamContext(
-            version: 0,
-            info: selfPtr,
-            retain: nil,
-            release: nil,
-            copyDescription: nil
-        )
-
-        let flags: FSEventStreamCreateFlags = UInt32(kFSEventStreamCreateFlagUseCFTypes | kFSEventStreamCreateFlagFileEvents)
-
-        if let override = streamCreationOverride {
-            stream = override()
-        } else {
-            stream = FSEventStreamCreate(
-                nil,
-                callback,
-                &context,
-                paths as CFArray,
-                FSEventStreamEventId(kFSEventStreamEventIdSinceNow),
-                1.0, // latency: 1s 内的事件合并
-                flags
-            )
-        }
-
-        guard let stream = stream else {
-            _ = Unmanaged<FileWatcher>.fromOpaque(selfPtr).takeRetainedValue()
-            return
-        }
-
-        // 保存 onChange 回调和 retained 引用
-        self.onChange = onChange
-        self.retainedSelfPtr = selfPtr
-
-        FSEventStreamSetDispatchQueue(stream, DispatchQueue.main)
-        FSEventStreamStart(stream)
-    }
-
-    /// 停止监控
-    public func stop() {
-        lock.lock()
-        defer { lock.unlock() }
-
-        if let stream = stream {
-            FSEventStreamStop(stream)
-            FSEventStreamInvalidate(stream)
-            FSEventStreamRelease(stream)
+    func stop() {
+        if let stream {
+            if isStarted { functions.stop(stream) }
+            functions.invalidate(stream)
+            functions.release(stream)
             self.stream = nil
         }
-
-        // 释放 start() 中 passRetained 的引用，平衡引用计数
-        if let ptr = retainedSelfPtr {
-            Unmanaged<FileWatcher>.fromOpaque(ptr).release()
-            retainedSelfPtr = nil
+        isStarted = false
+        if let callbackContext {
+            Unmanaged<CallbackBox>.fromOpaque(callbackContext).release()
+            self.callbackContext = nil
         }
-
-        debounceWorkItem?.cancel()
-        debounceWorkItem = nil
-        onChange = nil
     }
 
-    // MARK: - Private
+    deinit { stop() }
+}
 
-    private var onChange: (@Sendable @MainActor () -> Void)?
+@MainActor
+public final class FileWatcher {
+    private let backend: FileEventStreaming
+    private let scheduler: Scheduler
+    private let debounceInterval: TimeInterval
+    private var onChange: (@MainActor @Sendable () -> Void)?
+    private var isStarted = false
 
-    private func handleEvents(numEvents: Int) {
-        lock.lock()
-        debounceWorkItem?.cancel()
+    public convenience init(debounceInterval: TimeInterval = 2.0) {
+        self.init(debounceInterval: debounceInterval, backend: SystemFileEventStream(), scheduler: DispatchQueueScheduler())
+    }
 
-        let workItem = DispatchWorkItem { [weak self] in
-            guard let self, let onChange = self.onChange else { return }
-            Task { @MainActor in
-                onChange()
-            }
+    init(debounceInterval: TimeInterval = 2.0, backend: FileEventStreaming, scheduler: Scheduler) {
+        self.debounceInterval = debounceInterval
+        self.backend = backend
+        self.scheduler = scheduler
+    }
+
+    @discardableResult
+    public func start(paths: [String], onChange: @escaping @MainActor @Sendable () -> Void) -> Bool {
+        stop()
+        guard !paths.isEmpty else { return false }
+        self.onChange = onChange
+        guard backend.start(paths: paths, onEvents: { [weak self] in
+            Task { @MainActor in self?.receiveEvents() }
+        }) else {
+            self.onChange = nil
+            return false
         }
-        debounceWorkItem = workItem
-        lock.unlock()
+        isStarted = true
+        return true
+    }
 
-        queue.asyncAfter(deadline: .now() + debounceInterval, execute: workItem)
+    private func receiveEvents() {
+        scheduler.cancelPending()
+        scheduler.schedule(after: debounceInterval) { [weak self] in self?.onChange?() }
+    }
+
+    public func stop() {
+        scheduler.cancelPending()
+        let shouldStopBackend = isStarted
+        isStarted = false
+        onChange = nil
+        if shouldStopBackend { backend.stop() }
     }
 
     deinit {
-        stop()
+        if isStarted { backend.stop() }
     }
 }
 #endif

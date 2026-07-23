@@ -45,7 +45,7 @@ struct PersistedLayoutSnapshot: Equatable {
 
 /// SQLite 数据存储管理器。
 /// 生产环境使用文件路径，测试使用 ":memory:" 内存数据库。
-public final class StorageManager: DataStoring, LayoutMutating, @unchecked Sendable {
+public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting, @unchecked Sendable {
     private struct ResolvedPage {
         let id: Int64
         let ordering: Int
@@ -235,6 +235,250 @@ public final class StorageManager: DataStoring, LayoutMutating, @unchecked Senda
         try withDatabase { database in
             try readPersistedLayoutSnapshot(database: database)
         }
+    }
+
+    func synchronizeInstalledApps(
+        _ scanned: [ScannedApp],
+        initialPageCapacity: Int
+    ) throws -> ScanSyncResult {
+        var observed = ScanSyncResult()
+        do {
+            return try withDatabase { database in
+                try runTransaction(database: database, mode: .immediate) {
+                    let snapshot = try readPersistedLayoutSnapshot(database: database)
+                    var firstError: (any Error)?
+                    let apps = deduplicateScannedApps(scanned)
+
+                    if snapshot.allItems.isEmpty {
+                        guard initialPageCapacity > 0 else {
+                            throw ScanBatchError.invalidPageCapacity
+                        }
+                        try executeInitialScan(
+                            apps,
+                            pageCapacity: initialPageCapacity,
+                            database: database,
+                            result: &observed,
+                            firstError: &firstError
+                        )
+                    } else {
+                        try executeIncrementalScan(
+                            apps,
+                            snapshot: snapshot,
+                            database: database,
+                            result: &observed,
+                            firstError: &firstError
+                        )
+                        try normalizeScanLayout(
+                            database: database,
+                            result: &observed,
+                            firstError: &firstError
+                        )
+                    }
+
+                    if let firstError {
+                        throw ScanBatchWriteFailure(
+                            result: observed,
+                            primaryError: firstError
+                        )
+                    }
+                    return observed
+                }
+            }
+        } catch let failure as ScanBatchWriteFailure {
+            throw failure
+        } catch let rollbackFailure as SQLiteRollbackFailure {
+            throw rollbackFailure
+        } catch {
+            observed.recordFailure()
+            throw ScanBatchWriteFailure(
+                result: observed,
+                primaryError: error
+            )
+        }
+    }
+
+    private func executeInitialScan(
+        _ apps: [ScannedApp],
+        pageCapacity: Int,
+        database: OpaquePointer,
+        result: inout ScanSyncResult,
+        firstError: inout (any Error)?
+    ) throws {
+        let sorted = apps.sorted {
+            $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending
+        }
+        let chunks: [[ScannedApp]] = sorted.isEmpty
+            ? [[]]
+            : stride(from: 0, to: sorted.count, by: pageCapacity).map { start in
+                Array(sorted[start..<min(start + pageCapacity, sorted.count)])
+            }
+        for (pageOrdering, chunk) in chunks.enumerated() {
+            guard let pageID = try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try insertItemStatement(makeScanPage(ordering: pageOrdering), database: database) }
+            ) else { continue }
+            for (ordering, app) in chunk.enumerated() {
+                _ = try attemptScanWrite(
+                    database: database,
+                    result: &result,
+                    firstError: &firstError,
+                    { try insertItemStatement(makeScanApp(app, parentID: pageID, ordering: ordering), database: database) }
+                )
+            }
+        }
+    }
+
+    private func executeIncrementalScan(
+        _ scanned: [ScannedApp],
+        snapshot: PersistedLayoutSnapshot,
+        database: OpaquePointer,
+        result: inout ScanSyncResult,
+        firstError: inout (any Error)?
+    ) throws {
+        guard let lastPage = snapshot.pages.last else { throw ScanBatchError.missingPage }
+        let existingApps = snapshot.allItems.filter { $0.type == .app }
+        let existingByBundle = Dictionary(
+            existingApps.compactMap { item in item.app.map { ($0.bundleId, item) } },
+            uniquingKeysWith: { first, _ in first }
+        )
+        let scannedByBundle = Dictionary(
+            scanned.map { ($0.bundleId, $0) },
+            uniquingKeysWith: { first, _ in first }
+        )
+        var ordering = snapshot.pageChildren[lastPage.id]?.count ?? 0
+        for app in scanned where existingByBundle[app.bundleId] == nil {
+            if try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try insertItemStatement(makeScanApp(app, parentID: lastPage.id, ordering: ordering), database: database) }
+            ) != nil {
+                ordering += 1
+            }
+        }
+        for item in existingApps {
+            guard let old = item.app,
+                  let fresh = scannedByBundle[old.bundleId],
+                  old.title != fresh.name || old.path != fresh.path else { continue }
+            let updated = PageItem(
+                id: item.id,
+                uuid: item.uuid,
+                type: item.type,
+                ordering: item.ordering,
+                parentId: item.parentId,
+                app: AppInfo(
+                    id: old.id,
+                    title: fresh.name,
+                    bundleId: old.bundleId,
+                    path: fresh.path,
+                    storeId: old.storeId,
+                    category: old.category
+                ),
+                group: item.group
+            )
+            _ = try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try updateItemStatement(updated, database: database) }
+            )
+        }
+        for item in existingApps {
+            guard let bundleID = item.app?.bundleId,
+                  scannedByBundle[bundleID] == nil else { continue }
+            _ = try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try deleteItemStatement(id: item.id, database: database) }
+            )
+        }
+    }
+
+    private func normalizeScanLayout(
+        database: OpaquePointer,
+        result: inout ScanSyncResult,
+        firstError: inout (any Error)?
+    ) throws {
+        let snapshot = try readPersistedLayoutSnapshot(database: database)
+        var pages = snapshot.pages
+        for page in pages {
+            let children = snapshot.pageChildren[page.id] ?? []
+            for (ordering, item) in children.enumerated()
+            where item.parentId != page.id || item.ordering != ordering {
+                _ = try attemptScanWrite(
+                    database: database,
+                    result: &result,
+                    firstError: &firstError,
+                    { try updateParentAndOrdering(itemID: item.id, parentID: page.id, ordering: ordering, database: database) }
+                )
+            }
+        }
+        let hasNonemptyPage = pages.contains { !(snapshot.pageChildren[$0.id] ?? []).isEmpty }
+        let preservedEmptyPageID = hasNonemptyPage ? nil : pages.first?.id
+        var deletedPageIDs = Set<Int64>()
+        for page in pages where (snapshot.pageChildren[page.id] ?? []).isEmpty && page.id != preservedEmptyPageID {
+            if try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try deleteLayoutItem(itemID: page.id, database: database) }
+            ) != nil {
+                deletedPageIDs.insert(page.id)
+            }
+        }
+        pages.removeAll { deletedPageIDs.contains($0.id) }
+        for (ordering, page) in pages.enumerated() where page.ordering != ordering {
+            _ = try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try updatePageOrdering(pageID: page.id, ordering: ordering, database: database) }
+            )
+        }
+    }
+
+    private func attemptScanWrite<T>(
+        database: OpaquePointer,
+        result: inout ScanSyncResult,
+        firstError: inout (any Error)?,
+        _ body: () throws -> T
+    ) throws -> T? {
+        do {
+            let value = try body()
+            result.recordSuccess()
+            return value
+        } catch {
+            result.recordFailure()
+            if firstError == nil { firstError = error }
+            guard sqlite3_get_autocommit(database) == 0 else {
+                throw ScanBatchWriteFailure(result: result, primaryError: firstError ?? error)
+            }
+            return nil
+        }
+    }
+
+    private func makeScanPage(ordering: Int) -> PageItem {
+        PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: ordering, parentId: nil, app: nil, group: nil)
+    }
+
+    private func makeScanApp(_ scanned: ScannedApp, parentID: Int64, ordering: Int) -> PageItem {
+        PageItem(
+            id: 0,
+            uuid: UUID().uuidString,
+            type: .app,
+            ordering: ordering,
+            parentId: parentID,
+            app: AppInfo(id: 0, title: scanned.name, bundleId: scanned.bundleId, path: scanned.path, storeId: nil, category: nil),
+            group: nil
+        )
+    }
+
+    private func deduplicateScannedApps(_ scanned: [ScannedApp]) -> [ScannedApp] {
+        var seen = Set<String>()
+        return scanned.filter { seen.insert($0.bundleId).inserted }
     }
 
     private func requireDatabase() throws -> OpaquePointer {

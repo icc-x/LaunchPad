@@ -76,123 +76,7 @@ final class AppScanner: AppScanning {
             }
         }
 
-        return apps
-    }
-
-    /// 首次启动分页 — 按字母序排列，分页写入数据库
-    func firstLaunchPaginate(
-        scannedApps: [ScannedApp],
-        maxPerPage: Int,
-        writer: ItemWriting
-    ) {
-        let sorted = scannedApps.sorted { $0.name.localizedCaseInsensitiveCompare($1.name) == .orderedAscending }
-
-        let pageCount = Int(ceil(Double(sorted.count) / Double(maxPerPage)))
-
-        for pageIndex in 0..<pageCount {
-            let pageItem = PageItem(
-                id: Int64(pageIndex + 1),
-                uuid: UUID().uuidString,
-                type: .page,
-                ordering: pageIndex,
-                parentId: nil,
-                app: nil,
-                group: nil
-            )
-            guard let pageId = try? writer.insertItem(pageItem) else { continue }
-
-            let start = pageIndex * maxPerPage
-            let end = min(start + maxPerPage, sorted.count)
-
-            for (index, scanned) in sorted[start..<end].enumerated() {
-                let appInfo = AppInfo(
-                    id: 0,
-                    title: scanned.name,
-                    bundleId: scanned.bundleId,
-                    path: scanned.path,
-                    storeId: nil,
-                    category: nil
-                )
-                let appItem = PageItem(
-                    id: 0,
-                    uuid: UUID().uuidString,
-                    type: .app,
-                    ordering: index,
-                    parentId: pageId,
-                    app: appInfo,
-                    group: nil
-                )
-                _ = try? writer.insertItem(appItem)
-            }
-        }
-    }
-
-    /// 增量同步 — 对比扫描结果与现有数据库
-    func incrementalSync(
-        scannedApps: [ScannedApp],
-        existingItems: [PageItem],
-        lastPageId: Int64?,
-        writer: ItemWriting
-    ) {
-        let existingApps = existingItems.filter { $0.type == .app }
-        let existingByBundleId = Dictionary(
-            existingApps.compactMap { item -> (String, PageItem)? in
-                guard let bundleId = item.app?.bundleId else { return nil }
-                return (bundleId, item)
-            },
-            uniquingKeysWith: { first, _ in first }
-        )
-        let scannedByBundleId = Dictionary(uniqueKeysWithValues: scannedApps.map { ($0.bundleId, $0) })
-
-        // INSERT new apps (with incrementing ordering)
-        var newAppOrdering = existingApps.filter { $0.parentId == lastPageId }.count
-        for scanned in scannedApps where existingByBundleId[scanned.bundleId] == nil {
-            let appInfo = AppInfo(
-                id: 0, title: scanned.name, bundleId: scanned.bundleId,
-                path: scanned.path, storeId: nil, category: nil
-            )
-            let item = PageItem(
-                id: 0, uuid: UUID().uuidString, type: .app,
-                ordering: newAppOrdering, parentId: lastPageId, app: appInfo, group: nil
-            )
-            do {
-                _ = try writer.insertItem(item)
-                newAppOrdering += 1
-            } catch {
-                NSLog("[AppScanner] Failed to insert app \(scanned.bundleId): \(error)")
-            }
-        }
-
-        // UPDATE changed apps
-        for existing in existingApps {
-            guard let bundleId = existing.app?.bundleId,
-                  let scanned = scannedByBundleId[bundleId] else { continue }
-            if existing.app?.title != scanned.name || existing.app?.path != scanned.path {
-                let updated = AppInfo(
-                    id: existing.app!.id, title: scanned.name, bundleId: bundleId,
-                    path: scanned.path, storeId: existing.app?.storeId, category: existing.app?.category
-                )
-                var updatedItem = existing
-                updatedItem.app = updated
-                do {
-                    try writer.updateItem(updatedItem)
-                } catch {
-                    NSLog("[AppScanner] Failed to update app \(bundleId): \(error)")
-                }
-            }
-        }
-
-        // DELETE removed apps
-        for existing in existingApps {
-            guard let bundleId = existing.app?.bundleId else { continue }
-            if scannedByBundleId[bundleId] == nil {
-                do {
-                    try writer.deleteItem(id: existing.id)
-                } catch {
-                    NSLog("[AppScanner] Failed to delete app \(bundleId): \(error)")
-                }
-            }
-        }
+        return deduplicated(apps)
     }
 
     private func scanApp(at url: URL) -> ScannedApp? {
@@ -207,5 +91,10 @@ final class AppScanner: AppScanning {
         if excludedBundleIds.contains(bundleId) { return nil }
 
         return ScannedApp(name: name, bundleId: bundleId, path: url.path)
+    }
+
+    private func deduplicated(_ apps: [ScannedApp]) -> [ScannedApp] {
+        var seen = Set<String>()
+        return apps.filter { seen.insert($0.bundleId).inserted }
     }
 }

@@ -34,11 +34,23 @@ struct AppDelegateTests {
         func fetchImage(itemId: Int64) throws -> (Data, Data)? { nil }
     }
 
-    /// 内存文件系统：返回空目录，避免真实 I/O
-    private struct MockFileSystemService: FileSystemService {
-        func contentsOfDirectory(at url: URL) throws -> [URL] { [] }
-        func fileExists(at url: URL) -> Bool { false }
-        func bundleInfo(at bundleURL: URL) -> [String: any Sendable]? { nil }
+    private final class RecordingScanBatchWriter: ScanBatchWriting, @unchecked Sendable {
+        var result = ScanSyncResult()
+        var error: Error?
+        var onSynchronize: (@Sendable () -> Void)?
+        private(set) var receivedApps: [[ScannedApp]] = []
+        private(set) var receivedCapacities: [Int] = []
+
+        func synchronizeInstalledApps(
+            _ apps: [ScannedApp],
+            initialPageCapacity: Int
+        ) throws -> ScanSyncResult {
+            receivedApps.append(apps)
+            receivedCapacities.append(initialPageCapacity)
+            if let error { throw error }
+            onSynchronize?()
+            return result
+        }
     }
 
     /// 测试用图标提供者：避免触碰真实 NSWorkspace
@@ -81,14 +93,35 @@ struct AppDelegateTests {
         sut.loginItemUnregister = {}
         sut.loginItemRegister = {}
         sut.statusItemFactory = { NSStatusItem() }
-        sut.fileWatcherFactory = { FileWatcher(debounceInterval: 2.0, streamCreationOverride: { nil }) }
+        sut.fileWatcherFactory = {
+            FileWatcher(
+                debounceInterval: 2.0,
+                backend: MockFileEventStream(),
+                scheduler: MockScheduler()
+            )
+        }
         sut.hotkeyManagerFactory = { hotkeyManager }
         sut.workspaceURLOpener = { _ in }
         sut.hotkeyToggleRunner = { action in
             MainActor.assumeIsolated { action() }
         }
         sut.storageFactory = { _ in try StorageManager(dbPath: ":memory:") }
+        sut.scanBatchWriter = RecordingScanBatchWriter()
         return sut
+    }
+
+    private func makeFileSystemWithApps(count: Int) -> MockFileSystemService {
+        let fileSystem = MockFileSystemService()
+        let root = URL(fileURLWithPath: "/Applications")
+        let urls = (0..<count).map { root.appendingPathComponent("App\($0).app") }
+        fileSystem.directoryContentsMap[root] = urls
+        for (index, url) in urls.enumerated() {
+            fileSystem.bundleInfos[url] = [
+                "CFBundleName": "App \(index)",
+                "CFBundleIdentifier": "com.test.app\(index)",
+            ]
+        }
+        return fileSystem
     }
 
     /// 构造一个真实但无视图依赖的 LaunchPadViewController
@@ -730,56 +763,32 @@ struct AppDelegateTests {
 
     // MARK: - performInitialScan
 
-    @Test("performInitialScan：空库走首次启动分页")
-    func performInitialScan_empty() throws {
+    @Test("performInitialScan 传递空扫描和目标容量到 batch writer")
+    func performInitialScanForwardsEmptyScanToBatchWriter() {
         let sut = makeDelegate()
-        sut.storage = MockStoring(itemsToReturn: [])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
+        let writer = RecordingScanBatchWriter()
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
+        sut.targetWindowContentSizeProvider = { CGSize(width: 1440, height: 598) }
 
         sut.performInitialScan()
-        #expect(true)
+
+        #expect(writer.receivedApps == [[]])
+        #expect(writer.receivedCapacities == [28])
     }
 
-    @Test("performInitialScan：已有数据走增量同步")
-    func performInitialScan_nonEmpty() throws {
+    @Test("performInitialScan 与 performIncrementalScan 共用 batch writer")
+    func scanEntryPointsUseTheSameBatchWriter() {
         let sut = makeDelegate()
-        sut.storage = MockStoring(itemsToReturn: [pageItem()])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
+        let writer = RecordingScanBatchWriter()
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 1), excludedBundleIds: [])
 
         sut.performInitialScan()
-        #expect(true)
-    }
-
-    @Test("performInitialScan：读取失败进入 catch")
-    func performInitialScan_catch() throws {
-        let sut = makeDelegate()
-        sut.storage = MockStoring(shouldThrow: true)
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-
-        sut.performInitialScan()
-        #expect(true)
-    }
-
-    // MARK: - performIncrementalScan
-
-    @Test("performIncrementalScan：成功并刷新 UI")
-    func performIncrementalScan_success() throws {
-        let sut = makeDelegate()
-        sut.storage = MockStoring(itemsToReturn: [pageItem()])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-
         sut.performIncrementalScan()
-        #expect(true)
-    }
 
-    @Test("performIncrementalScan：读取失败进入 catch")
-    func performIncrementalScan_catch() throws {
-        let sut = makeDelegate()
-        sut.storage = MockStoring(shouldThrow: true)
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-
-        sut.performIncrementalScan()
-        #expect(true)
+        #expect(writer.receivedApps.count == 2)
+        #expect(writer.receivedApps.allSatisfy { $0.map(\.bundleId) == ["com.test.app0"] })
     }
 
     // MARK: - 其余方法
@@ -832,37 +841,40 @@ struct AppDelegateTests {
         sut.existingInstanceActivator()
     }
 
-    // MARK: - performIncrementalScan 多页排序
-
-    @Test("performIncrementalScan 多页排序覆盖")
-    func performIncrementalScan_multiplePages_sorted() throws {
+    @Test("setupFileWatcher：文件变更触发一次批量增量扫描")
+    func setupFileWatcherTriggersIncrementalScan() async throws {
         let sut = makeDelegate()
-        let page1 = PageItem(id: 1, uuid: UUID().uuidString, type: .page, ordering: 1, parentId: nil, app: nil, group: nil)
-        let page2 = PageItem(id: 2, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
-        sut.storage = MockStoring(itemsToReturn: [page1, page2])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-        sut.performIncrementalScan()
-        #expect(true)
-    }
-
-    // MARK: - performInitialScan 多页排序（增量同步路径）
-
-    @Test("performInitialScan 已有多页数据走增量同步排序")
-    func performInitialScan_multiplePages_incrementalSorted() throws {
-        let sut = makeDelegate()
-        let page1 = PageItem(id: 1, uuid: UUID().uuidString, type: .page, ordering: 1, parentId: nil, app: nil, group: nil)
-        let page2 = PageItem(id: 2, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
-        sut.storage = MockStoring(itemsToReturn: [page1, page2])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-        sut.performInitialScan()
-        #expect(true)
-    }
-
-    @Test("setupFileWatcher 创建并启动监控器")
-    func setupFileWatcher_createsWatcher() {
-        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
+        let backend = MockFileEventStream()
+        let scheduler = MockScheduler()
+        sut.watchedPaths = ["/Applications"]
+        sut.fileWatcherFactory = { FileWatcher(debounceInterval: 0.1, backend: backend, scheduler: scheduler) }
         sut.setupFileWatcher()
-        #expect(sut.fileWatcher != nil)
+        backend.emit()
+        await Task.yield()
+        scheduler.advance(by: 0.1)
+        #expect(writer.receivedApps.count == 1)
+    }
+
+    @Test("setupFileWatcher：后端启动失败时不保留监控器并记录固定分类")
+    func setupFileWatcherStartFailureClearsWatcherAndLogs() {
+        let sut = makeDelegate()
+        let backend = MockFileEventStream()
+        backend.startResult = false
+        var categories: [String] = []
+        sut.watchedPaths = ["/Applications"]
+        sut.scanFailureLogger = { categories.append($0) }
+        sut.fileWatcherFactory = {
+            FileWatcher(backend: backend, scheduler: MockScheduler())
+        }
+
+        sut.setupFileWatcher()
+
+        #expect(sut.fileWatcher == nil)
+        #expect(backend.stopCallCount == 0)
+        #expect(categories == ["file-watcher-start-failed"])
     }
 
     // MARK: - 私有实现结构体
@@ -891,20 +903,6 @@ struct AppDelegateTests {
         // 默认 storageFactory 调用 :memory: 真实 SQLite
         let storage = try sut.storageFactory(":memory:")
         #expect(storage != nil)
-    }
-
-    // MARK: - performInitialScan NSScreen.main 为 nil 时走 ?? 1440 fallback
-
-    @Test("performInitialScan: 在无 NSScreen.main 环境下使用默认 1440 宽度（覆盖 L348 ?? fallback）")
-    func performInitialScan_noNSScreenMain_usesDefaultWidth() throws {
-        let sut = makeDelegate()
-        sut.storage = MockStoring(itemsToReturn: [])
-        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService())
-
-        // 测试环境 NSScreen.main 通常为 nil → 走 ?? 1440 fallback 分支
-        // 仅验证不崩溃即可
-        sut.performInitialScan()
-        #expect(true)
     }
 
     // MARK: - weak self 防御分支（guard let self else）
@@ -949,6 +947,63 @@ struct AppDelegateTests {
         let event = keyEvent(keyCode: 0)
 
         #expect(hm.localMonitorHandler?(event) === event)
+    }
+
+    @Test("首次扫描使用目标显示器真实容量")
+    func initialScanUsesTargetViewportCapacity() {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 29), excludedBundleIds: [])
+        sut.targetWindowContentSizeProvider = { CGSize(width: 1440, height: 598) }
+
+        sut.performInitialScan()
+
+        #expect(writer.receivedApps.count == 1)
+        #expect(writer.receivedApps.first?.count == 29)
+        #expect(writer.receivedCapacities == [28])
+    }
+
+    @Test("成功扫描只刷新已加载 VC 一次")
+    func successfulScanReloadsOnlyLoadedViewController() throws {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 1), excludedBundleIds: [])
+        let viewController = try makeViewController()
+        sut.viewController = viewController
+        var reloads = 0
+        sut.viewControllerReloader = { _ in reloads += 1 }
+
+        sut.performInitialScan()
+        #expect(!viewController.isViewLoaded)
+        #expect(reloads == 0)
+
+        _ = viewController.view
+        sut.performIncrementalScan()
+        #expect(reloads == 1)
+    }
+
+    @Test("批事务失败不刷新并只记录固定分类")
+    func scanBatchFailureKeepsLoadedUIAndLogs() throws {
+        let sut = makeDelegate()
+        let writer = RecordingScanBatchWriter()
+        writer.error = TestError.generic
+        sut.scanBatchWriter = writer
+        sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 1), excludedBundleIds: [])
+        let viewController = try makeViewController()
+        _ = viewController.view
+        sut.viewController = viewController
+        var reloads = 0
+        var categories: [String] = []
+        sut.viewControllerReloader = { _ in reloads += 1 }
+        sut.scanFailureLogger = { categories.append($0) }
+
+        sut.performInitialScan()
+        sut.performIncrementalScan()
+
+        #expect(reloads == 0)
+        #expect(categories == ["scan-batch-failed", "scan-batch-failed"])
     }
 }
 #endif
