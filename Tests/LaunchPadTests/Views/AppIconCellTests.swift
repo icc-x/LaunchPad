@@ -12,6 +12,13 @@ struct AppIconCellTests {
         cell.workspaceNotificationCenter = NotificationCenter()
         cell.runningApplicationProvider = { [] }
         cell.notificationBundleIDReader = { _ in nil }
+        cell.accessibilitySettingsProvider = {
+            AccessibilitySettings(
+                reduceMotion: false,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
         _ = cell.view
         return cell
     }
@@ -249,25 +256,7 @@ struct AppIconCellTests {
         cell.configure(item: app, icon: nil)
     }
 
-    @Test func startJiggling_reduceMotion_usesPulseAnimation() {
-        let cell = makeSUT()
-        defer { cell.prepareForReuse() }
-        UserDefaults.standard.set(true, forKey: "com.apple.universalaccess.reduceMotion")
-        defer {
-            UserDefaults.standard.set(
-                false, forKey: "com.apple.universalaccess.reduceMotion"
-            )
-        }
-        let app = TestDataFactory.makePageItem(
-            id: 1, type: .app, ordering: 0,
-            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
-        )
-        cell.configure(item: app, icon: nil)
-        cell.startJiggling()
-        cell.stopJiggling()
-    }
-
-    @Test func startJiggling_reduceMotion_provider_usesPulse() {
+    @Test func startJiggling_reduceMotion_usesPulseAnimation() throws {
         let cell = makeSUT()
         defer { cell.prepareForReuse() }
         cell.accessibilitySettingsProvider = {
@@ -283,7 +272,39 @@ struct AppIconCellTests {
         )
         cell.configure(item: app, icon: nil)
         cell.startJiggling()
-        cell.stopJiggling()
+
+        let container = try #require(cell.view.subviews.first)
+        let jiggle = try #require(
+            container.layer?.animation(forKey: "jiggle") as? CAKeyframeAnimation
+        )
+        #expect(jiggle.keyPath == "transform.scale")
+    }
+
+    @Test func startJiggling_reduceMotion_provider_usesPulse() throws {
+        let cell = makeSUT()
+        defer { cell.prepareForReuse() }
+        var providerReadCount = 0
+        cell.accessibilitySettingsProvider = {
+            providerReadCount += 1
+            return AccessibilitySettings(
+                reduceMotion: true,
+                reduceTransparency: false,
+                increaseContrast: false
+            )
+        }
+        let app = TestDataFactory.makePageItem(
+            id: 1, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 1, title: "TestApp")
+        )
+        cell.configure(item: app, icon: nil)
+        cell.startJiggling()
+
+        #expect(providerReadCount == 2)
+        let container = try #require(cell.view.subviews.first)
+        let pulse = try #require(
+            container.layer?.animation(forKey: "jiggle") as? CAKeyframeAnimation
+        )
+        #expect((pulse.values as? [NSNumber])?.map(\.doubleValue) == [1.0, 1.05, 1.0])
     }
 
     @Test func accessibilityRole_isButton() {
