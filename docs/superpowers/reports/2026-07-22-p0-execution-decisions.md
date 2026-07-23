@@ -1569,3 +1569,46 @@ the approved plan or task-specific test reports.
   storage code is unchanged by this finding.
 - Verification: the complete storage/domain/integration suite passes and review
   maps every reopen construction to a preceding weak-release assertion.
+
+## Decision 076: Synchronize the obsolete app-delete failure test with the atomic writer
+
+- Status: adopted during the aggregate fix-wave self-review.
+- Evidence: after ordinary app deletion moved from raw `ItemWriting.deleteItem`
+  to `.deleteApp` through `LayoutMutating`, the old failure test still set
+  `storage.shouldThrowOnDelete`. It also had no valid grid metrics, so production
+  returned at the nil-metrics guard with zero mutation attempt, zero reload and
+  zero observable assertion. The new RED produced one failed test with six
+  issues proving those empty outcomes.
+- Decision: keep the behavior test, but seed a valid one-page layout, inject
+  `MockLayoutMutator.applyError`, and assert one exact attempted `.deleteApp`,
+  zero applied intents, zero raw storage deletes, one committed-state reload and
+  fixed-category failure event, announcement and transient message.
+- Impact: only the affected test and existing mock observation surface change;
+  production behavior is unchanged by this follow-up.
+- Verification: the focused test passes `1/1`, the complete controller suite
+  passes `135/135`, the 16-suite focused gate passes `431/431`, and a targeted
+  independent review reports Critical/Important/Minor `0/0/0`.
+
+## Decision 077: Test provenance and ownership without consuming the final gate
+
+- Status: adopted during release-script GREEN verification.
+- Evidence: the first watchdog normal probe returned 127 because the probe used
+  nonexistent `/bin/true`; a minimal Perl reproducer proved `exec` returned
+  `ENOENT`, disproving the initial SIGCHLD/waitpid hypothesis. The provenance
+  probe then exposed that `local path` in zsh shadows its special `path` array
+  and clears `PATH`, so the original function could not find `git`.
+- Decision: use the host's real `/usr/bin/true`, revert the unsupported SIGCHLD
+  experiment, rename the local iterator to `controlled_path`, and expose two
+  dedicated non-authoritative probe modes. One mutates a controlled file in an
+  isolated temporary git repository and must be rejected by end provenance; the
+  other covers normal/nonzero/timeout token cleanup plus an unrelated helper
+  classified as environment conflict. Neither mode enters discovery, the full
+  suite or release build.
+- Impact: the sole final-authority run remains unconsumed while both new script
+  contracts receive executable evidence. The shared watchdog remains the only
+  process-group supervisor.
+- Verification: watchdog normal/nonzero+exec127/timeout/HUP+INT+TERM self-tests,
+  provenance mutation probe and host-permitted ownership probe all exit 0; the
+  mutation artifact shows start/end status and hashes differ, and ownership
+  manifest fields report residue 0 while the unrelated helper is
+  `environment_conflict_status=1` with command/residue not run.
