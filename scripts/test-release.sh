@@ -451,7 +451,7 @@ assert_invocation_gone() {
     return "$enumeration_status"
   fi
 
-  comm -13 "$baseline_file" "$after_file" > "$delta_file" \
+  LC_ALL=C comm -13 "$baseline_file" "$after_file" > "$delta_file" \
     && delta_status=0 || delta_status=$?
   print -r -- "command.${label}.delta_status=${delta_status}" >> "$MANIFEST"
   (( delta_status == 0 )) || return "$delta_status"
