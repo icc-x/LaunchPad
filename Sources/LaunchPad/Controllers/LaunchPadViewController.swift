@@ -84,6 +84,8 @@ public class LaunchPadViewController: NSViewController {
     let dragController: DragController
     private let folderController: FolderController
     private let applicationOpener: (URL) -> Void
+    /// 窗口生命周期状态机（nil 时回退到 applicationOpener）
+    public var lifecycle: WindowLifecycle?
     private let searchScheduler: Scheduler
     private(set) var gridInteractionCoordinator: AppGridInteractionCoordinator?
 
@@ -771,6 +773,7 @@ public class LaunchPadViewController: NSViewController {
         case .app:
             if let bundleId = item.app?.bundleId {
                 animateAppLaunch(item: item, bundleId: bundleId)
+                lifecycle?.handleAppClick(bundleId: bundleId)
             }
         case .group:
             openFolder(item)
@@ -810,16 +813,16 @@ public class LaunchPadViewController: NSViewController {
     func animateAppLaunch(item: PageItem, bundleId: String) {
         let settings = accessibilitySettingsProvider()
 
-        // Reduce Motion: 直接启动（先于 cell 查找，便于无布局测试）
+        // Reduce Motion: lifecycle handles actual launch when available
         if settings.reduceMotion {
-            launchApp(bundleId: bundleId)
+            if lifecycle == nil { launchApp(bundleId: bundleId) }
             return
         }
 
         // 找到对应的 cell 视图（注入优先，默认从 collectionView 解析；同行写法保证注入即覆盖）
         guard let cellView = resolveLaunchCellView(for: item) else {
-            // 找不到 cell，直接启动
-            launchApp(bundleId: bundleId)
+            // 找不到 cell，lifecycle 负责实际启动
+            if lifecycle == nil { launchApp(bundleId: bundleId) }
             return
         }
 

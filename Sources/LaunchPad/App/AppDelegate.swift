@@ -273,6 +273,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Lifecycle
         lifecycle = WindowLifecycle()
+        vc.lifecycle = lifecycle
 
         // Window controller
         windowController = LaunchPadWindowController(
