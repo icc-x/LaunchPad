@@ -123,7 +123,7 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var directoryErrors: [URL: any Error] = [:]
 
     // P1-8: recursive enumeration
-    var enumerateAppBundlesResult: [URL] = []
+    var enumerateAppBundlesResult: [URL]?
     var enumerateAppBundlesError: (any Error)?
 
     func contentsOfDirectory(at url: URL) throws -> [URL] {
@@ -147,7 +147,8 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
         options: FileManager.DirectoryEnumerationOptions
     ) throws -> [URL] {
         if let error = enumerateAppBundlesError { throw error }
-        return enumerateAppBundlesResult
+        if let result = enumerateAppBundlesResult { return result }
+        return try contentsOfDirectory(at: url).filter { $0.pathExtension == "app" }
     }
 }
 

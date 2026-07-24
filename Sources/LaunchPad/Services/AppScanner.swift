@@ -68,9 +68,13 @@ final class AppScanner: AppScanning {
         var failedBundlePaths: [String] = []
 
         for root in roots {
-            let contents: [URL]
+            let urls: [URL]
             do {
-                contents = try fileSystemService.contentsOfDirectory(at: root.url)
+                urls = try fileSystemService.enumerateAppBundles(
+                    at: root.url,
+                    maxDepth: 2,
+                    options: [.skipsHiddenFiles, .skipsPackageDescendants]
+                )
             } catch let error as CocoaError
                 where root.missingPolicy == .optional && Self.isMissingRoot(error) {
                 continue
@@ -79,8 +83,7 @@ final class AppScanner: AppScanning {
                 continue
             }
 
-            for url in contents {
-                guard url.pathExtension == "app" else { continue }
+            for url in urls {
                 do {
                     if let app = try scanApp(at: url) {
                         apps.append(app)

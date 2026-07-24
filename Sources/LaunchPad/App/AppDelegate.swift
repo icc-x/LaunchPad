@@ -498,8 +498,25 @@ struct SystemFileSystemService: FileSystemService {
         at url: URL, maxDepth: Int,
         options: FileManager.DirectoryEnumerationOptions
     ) throws -> [URL] {
-        // TODO: GREEN - use FileManager.enumerator
-        return []
+        guard let enumerator = FileManager.default.enumerator(
+            at: url,
+            includingPropertiesForKeys: [.isDirectoryKey],
+            options: options,
+            errorHandler: nil
+        ) else { return [] }
+
+        var results: [URL] = []
+        for case let fileURL as URL in enumerator {
+            let relativePath = fileURL.path.replacingOccurrences(of: url.path + "/", with: "")
+            let depth = relativePath.split(separator: "/").count
+            if depth > maxDepth {
+                enumerator.skipDescendants()
+                continue
+            }
+            guard fileURL.pathExtension == "app" else { continue }
+            results.append(fileURL)
+        }
+        return results
     }
 }
 
