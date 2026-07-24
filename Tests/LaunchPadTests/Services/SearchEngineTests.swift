@@ -454,3 +454,64 @@ struct SearchEngineCacheTests {
         #expect(results2.contains(group))
     }
 }
+
+// MARK: - P2-1: 搜索缓存版本过期
+
+@Suite("SearchEngine 缓存版本控制")
+struct SearchEngineCacheVersionTests {
+
+    @Test("数据变更后 invalidateCache 使缓存失效，返回新结果而非过期值")
+    func cachedSearch_versionChange_returnsNewResults() {
+        let sut = SearchEngine()
+
+        // 第一批数据：只有 Safari
+        let safari = TestDataFactory.makePageItem(
+            id: 1, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 1, title: "Safari", path: "/Applications/Safari.app")
+        )
+
+        // 第一次搜索，缓存 "saf" -> [Safari]
+        let first = sut.cachedSearch(items: [safari], query: "saf")
+        #expect(first.count == 1)
+
+        // 使缓存失效
+        sut.invalidateCache()
+
+        // 第二批数据：换成 Notes，但 query 相同
+        let notes = TestDataFactory.makePageItem(
+            id: 2, type: .app, ordering: 0,
+            app: TestDataFactory.makeAppInfo(id: 2, title: "Notes", path: "/Applications/Notes.app")
+        )
+
+        // 第二次搜索同 query，应返回新数据而非缓存的 [Safari]
+        let second = sut.cachedSearch(items: [notes], query: "saf")
+        // RED: 无 invalidateCache 时，second 会是缓存的 [Safari]
+        #expect(second.count == 0, "saf 不应匹配 Notes")
+    }
+}
+
+// MARK: - P2-2: LRU 并发安全
+
+@Suite("LRUCache 并发安全")
+struct LRUCacheConcurrencyTests {
+
+    @Test("并发 set/get 无崩溃且最终状态一致")
+    func lruCache_concurrentAccess_noCrash() throws {
+        let cache = LRUCache<Int, Int>(capacity: 100)
+        let iterations = 1000
+        let concurrency = 4
+
+        DispatchQueue.concurrentPerform(iterations: concurrency) { _ in
+            for i in 0..<iterations {
+                cache.set(i, value: i * 2)
+                _ = cache.get(i)
+            }
+        }
+
+        // RED: 无锁 LRUCache 在此处可能 crash 或数据不一致
+        for i in 0..<iterations {
+            let value = cache.get(i)
+            #expect(value == i * 2)
+        }
+    }
+}
