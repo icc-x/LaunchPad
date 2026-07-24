@@ -344,5 +344,41 @@ struct IconCacheTests {
         let result = sut.icon(forItemId: 1, path: path)
         #expect(result.size.width > 0)
     }
+
+    // MARK: - P2-5: PNG vs TIFF 比较
+
+    @Test("diskHit_modCacheMiss_sameIcon_noReextract — disk PNG 和 live TIFF 正确比较")
+    func diskHit_modCacheMiss_comparesTIFF() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
+
+        // 使用真实渲染的 NSImage 确保 representation 属性可比较
+        let rep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: 128, pixelsHigh: 128,
+            bitsPerSample: 8, samplesPerPixel: 4,
+            hasAlpha: true, isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: 0, bitsPerPixel: 0
+        )!
+        let renderedImage = NSImage(size: NSSize(width: 128, height: 128))
+        renderedImage.addRepresentation(rep)
+
+        let pngData = makePNGData(renderedImage)
+        let path = "/app"
+        provider.icons[path] = renderedImage
+        provider.modificationDates[path] = Date()
+
+        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+
+        let callsBefore = provider.fetchCallCount
+        _ = sut.icon(forItemId: 1, path: path)
+        let callsAfter = provider.fetchCallCount
+
+        // GREEN: 仅用于比较的一次调用（无 re-extraction），而非之前的 PNG/TIFF 误判导致的两次
+        #expect(callsAfter == callsBefore + 1,
+            "仅用于比较，不应重复提取")
+    }
 }
 #endif

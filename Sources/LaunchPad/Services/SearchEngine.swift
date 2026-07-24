@@ -1,12 +1,13 @@
 import Foundation
 import LaunchPadProtocols
 
-/// LRU 缓存 — 基于双向链表 + 字典实现
-final class LRUCache<Key: Hashable, Value> {
+/// LRU 缓存 — 基于双向链表 + 字典实现，线程安全
+final class LRUCache<Key: Hashable, Value>: @unchecked Sendable {
     private let capacity: Int
     private var cache: [Key: Node] = [:]
     private var head: Node?
     private var tail: Node?
+    private let lock = NSLock()
 
     private class Node {
         let key: Key
@@ -25,34 +26,38 @@ final class LRUCache<Key: Hashable, Value> {
     }
 
     func get(_ key: Key) -> Value? {
+        lock.lock()
+        defer { lock.unlock() }
         guard let node = cache[key] else { return nil }
-        moveToHead(node)
+        moveToHeadLocked(node)
         return node.value
     }
 
     func set(_ key: Key, value: Value) {
+        lock.lock()
+        defer { lock.unlock() }
         if let node = cache[key] {
             node.value = value
-            moveToHead(node)
+            moveToHeadLocked(node)
             return
         }
 
         let node = Node(key: key, value: value)
         cache[key] = node
-        addToHead(node)
+        addToHeadLocked(node)
 
         if cache.count > capacity {
-            evictOldest()
+            evictOldestLocked()
         }
     }
 
-    private func moveToHead(_ node: Node) {
+    private func moveToHeadLocked(_ node: Node) {
         guard node !== head else { return }
-        removeNode(node)
-        addToHead(node)
+        removeNodeLocked(node)
+        addToHeadLocked(node)
     }
 
-    private func addToHead(_ node: Node) {
+    private func addToHeadLocked(_ node: Node) {
         node.next = head
         node.prev = nil
         head?.prev = node
@@ -60,7 +65,7 @@ final class LRUCache<Key: Hashable, Value> {
         if tail == nil { tail = node }
     }
 
-    private func removeNode(_ node: Node) {
+    private func removeNodeLocked(_ node: Node) {
         node.prev?.next = node.next
         node.next?.prev = node.prev
         if node === head { head = node.next }
@@ -69,10 +74,10 @@ final class LRUCache<Key: Hashable, Value> {
         node.next = nil
     }
 
-    private func evictOldest() {
+    private func evictOldestLocked() {
         guard let oldTail = tail else { return }
         cache.removeValue(forKey: oldTail.key)
-        removeNode(oldTail)
+        removeNodeLocked(oldTail)
     }
 }
 
@@ -99,6 +104,7 @@ public struct SearchEngine: @unchecked Sendable {
 
     private let cache: LRUCache<String, [PageItem]>
     private let matchCounter: MatchCounter?
+    private var generation: UInt64 = 0
 
     public init(cacheSize: Int = 50) {
         self.cache = LRUCache(capacity: cacheSize)
@@ -164,9 +170,14 @@ public struct SearchEngine: @unchecked Sendable {
             .map(\.item)
     }
 
-    /// 带 LRU 缓存的搜索 — 相同查询直接返回缓存结果
+    /// 使所有缓存结果失效，下次搜索将重新计算
+    public mutating func invalidateCache() {
+        generation &+= 1
+    }
+
+    /// 带 LRU 缓存的搜索 — 相同 (query, data version) 组合直接返回缓存结果
     public func cachedSearch(items: [PageItem], query: String) -> [PageItem] {
-        let cacheKey = query.lowercased()
+        let cacheKey = "\(generation):\(query.lowercased())"
 
         if let cached = cache.get(cacheKey) {
             return cached

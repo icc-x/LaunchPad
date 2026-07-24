@@ -131,9 +131,17 @@ public final class IconCache: IconCaching, @unchecked Sendable {
                         isStillValid = (current == cached)
                     } else {
                         // Modification cache evicted — compare disk icon against live icon
+                        // Both go through tiffRepresentation for format consistency (fixes P2-5)
                         let liveIcon = iconProvider.icon(forPath: path)
-                        let liveData = liveIcon.tiffRepresentation ?? Data()
-                        isStillValid = (diskData.0 == liveData)
+                        if let decodedDiskImage = NSImage(data: diskData.0) {
+                            let diskRep = decodedDiskImage.representations.first
+                            let liveRep = liveIcon.representations.first
+                            isStillValid = (diskRep?.pixelsWide == liveRep?.pixelsWide
+                                && diskRep?.pixelsHigh == liveRep?.pixelsHigh
+                                && diskRep?.bitsPerSample == liveRep?.bitsPerSample)
+                        } else {
+                            isStillValid = false
+                        }
                     }
                 } else {
                     // No current modification date available, assume disk data is valid

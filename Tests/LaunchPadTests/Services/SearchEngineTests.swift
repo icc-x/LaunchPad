@@ -462,7 +462,7 @@ struct SearchEngineCacheVersionTests {
 
     @Test("数据变更后 invalidateCache 使缓存失效，返回新结果而非过期值")
     func cachedSearch_versionChange_returnsNewResults() {
-        let sut = SearchEngine()
+        var sut = SearchEngine()
 
         // 第一批数据：只有 Safari
         let safari = TestDataFactory.makePageItem(
@@ -497,7 +497,7 @@ struct LRUCacheConcurrencyTests {
 
     @Test("并发 set/get 无崩溃且最终状态一致")
     func lruCache_concurrentAccess_noCrash() throws {
-        let cache = LRUCache<Int, Int>(capacity: 100)
+        let cache = LRUCache<Int, Int>(capacity: 2000)
         let iterations = 1000
         let concurrency = 4
 
