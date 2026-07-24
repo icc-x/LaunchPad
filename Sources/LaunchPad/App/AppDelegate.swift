@@ -167,6 +167,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     var viewControllerReloader: (LaunchPadViewController) -> Void = { $0.loadData() }
     var scanFailureLogger: (String) -> Void = { NSLog("[AppDelegate] %@", $0) }
+    private let scanLock = NSLock()
 
     // MARK: - Application Lifecycle
 
@@ -432,6 +433,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performScan() {
+        scanLock.lock()
+        defer { scanLock.unlock() }
         let discovery = appScanner.scanDirectories(discoveryRoots)
         guard discovery.isComplete else {
             scanFailureLogger("app-discovery-incomplete")

@@ -878,7 +878,7 @@ public class LaunchPadViewController: NSViewController {
 
     /// 启动应用并恢复 cell 状态（抽出便于同步测试）
     func completeLaunchAnimation(cellView: NSView, bundleId: String) {
-        launchApp(bundleId: bundleId)
+        if lifecycle == nil { launchApp(bundleId: bundleId) }
         cellView.layer?.removeAnimation(forKey: "zoomOut")
         cellView.alphaValue = 1
     }
