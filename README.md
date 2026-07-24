@@ -12,7 +12,7 @@
 
 ### 逆向工程：从 Dock 二进制还原真实行为
 
-系统启动台的实现并不开源。本项目通过对 `/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock` 二进制执行 `strings` 提取、偏好设置读取和资源文件分析，系统性还原了 12 个技术维度的真实行为：
+系统启动台的实现并不开源。本项目通过对 `/System/Library/CoreServices/Dock.app/Contents/MacOS/Dock` 二进制执行 `strings` 提取、偏好设置读取和资源文件分析，系统性还原了以下核心技术维度的真实行为（完整 12 维度见参考文档）：
 
 - 网格布局（`springboard-columns` / `springboard-rows` 偏好驱动，按屏幕宽度自适应）
 - 背景模糊（`CABackdropLayer` + 高斯/可变模糊，非 `NSVisualEffectView`）
@@ -27,7 +27,7 @@
 
 ### 工程实践：TDD + Swift 6 严格并发
 
-LaunchPad 足够复杂——34 个源文件、520+ 测试、SQLite 持久化、AppKit 视图层、全局快捷键、FSEvents 监控——是验证现代 Swift 工程方法论的理想载体。本项目将 **TDD（测试驱动开发）** 和 **Swift 6 严格并发模式** 设为硬性约束，而非可选项。
+LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、AppKit 视图层、全局快捷键、FSEvents 监控——是验证现代 Swift 工程方法论的理想载体。本项目将 **TDD（测试驱动开发）** 和 **Swift 6 严格并发模式** 设为硬性约束，而非可选项。
 
 ---
 
@@ -37,13 +37,15 @@ LaunchPad 足够复杂——34 个源文件、520+ 测试、SQLite 持久化、A
 |------|------|
 | 编译（debug） | ✅ 0 errors, 0 warnings |
 | 编译（release） | ✅ 0 errors, 0 warnings |
-| 测试 | ✅ 520+ tests，0 失败 |
-| 行覆盖率 | 99.81%（目标 100%，收敛中） |
-| 区域覆盖率 | 98.29%（目标 100%，收敛中） |
+| 测试 | ✅ 1086 tests，0 失败 |
+| 行覆盖率 | 97.91%（2026-07-24 重新测量，42 个源文件，8144 行 / 170 行未覆盖） |
+| 区域覆盖率 | 94.11%（2026-07-24 重新测量，2664 区域 / 157 区域未覆盖） |
+| 函数覆盖率 | 93.62%（2026-07-24 重新测量，1098 函数 / 70 函数未覆盖） |
+| 100% 行覆盖文件 | 23 / 42 个源文件 |
 | 代码签名 | ⏳ adhoc 签名，未公证 |
 | 手动功能验证 | ⏳ 0/13 执行 |
 
-> 覆盖率曾于 2026-07-10 达成全部 34 个源文件真实 100%（经 `llvm-cov show` 逐文件验证 0 个 0 计数执行行），后续因重构略有波动，正在重新收敛。
+> 覆盖率于 2026-07-24 通过 `llvm-cov report` 重新测量。此前于 2026-07-10 在 34 个源文件时曾达成全部文件真实 100%（`llvm-cov show` 逐文件验证）。当前因新增 8 个源文件（交互协调器、布局域状态、SQLite 事务、拖放会话等），覆盖率有待重新收敛。
 
 ---
 
@@ -56,7 +58,7 @@ LaunchPad 足够复杂——34 个源文件、520+ 测试、SQLite 持久化、A
 | 构建工具 | Swift Package Manager | 零外部依赖，纯 SPM 管理 |
 | UI 框架 | AppKit | `NSCollectionView` / `NSPanel` / `NSVisualEffectView` |
 | 持久化 | SQLite3 | 直接使用 C API（`import SQLite3`） |
-| 测试框架 | Swift Testing + XCTest | 主力为 Swift Testing（`@Suite` / `@Test` / `#expect`） |
+| 测试框架 | Swift Testing | `@Suite` / `@Test` / `#expect`，已完全迁移，零 XCTest 残留 |
 | 并发模型 | Swift 6 严格并发 | `@MainActor` / `@Sendable` / `Sendable` 协议约束 |
 | 系统集成 | CGEventTap / FSEvents / NSWorkspace / SMAppService | 全局快捷键 / 文件监控 / 应用扫描 / 登录项 |
 
@@ -64,7 +66,7 @@ LaunchPad 足够复杂——34 个源文件、520+ 测试、SQLite 持久化、A
 
 **AppKit 而非 SwiftUI**：主要原因是性能。启动台需要同时渲染数十个图标、实时拖拽预览、多层动画叠加，AppKit 提供更精细的控制（`NSCollectionView` 的 diffable data source、`NSPanel` 的 `.nonactivatingPanel` 行为、`CALayer` 级动画），且能直接与系统底层交互，避免 SwiftUI 的抽象层开销。
 
-**裸 SQLite 而非 ORM**：本项目的 SQL 交互简单（4 张表、基础 CRUD + 级联删除 + 重排序），裸 SQLite 足以胜任且零依赖。未来若数据层复杂度增长，有考虑引入 ORM 框架（如 GRDB）。
+**裸 SQLite 而非 ORM**：本项目的 SQL 交互简单（5 张表、基础 CRUD + 级联删除 + 重排序），裸 SQLite 足以胜任且零依赖。未来若数据层复杂度增长，有考虑引入 ORM 框架（如 GRDB）。
 
 ---
 
@@ -77,21 +79,23 @@ LaunchPadProtocols          ← 协议层：纯协议 + 数据模型，零实现
 └── LaunchPad               ← 核心库
     ├── App/                ← 应用层：AppDelegate / WindowController / 生命周期
     ├── Controllers/        ← 控制层：ViewController / DragController / KeyboardNavigator
-    ├── Services/           ← 服务层：AppScanner / SearchEngine / IconCache / FileWatcher
-    ├── Views/              ← 视图层：CollectionView / Cells / FolderOverlay / SearchBar
-    ├── Storage/            ← 存储层：Schema / StorageManager（SQLite）
+    ├── Models/             ← 模型层：DragSession
+    ├── Services/           ← 服务层：AppScanner / SearchEngine / IconCache / FileWatcher / LayoutProjection / ScanBatch
+    ├── Views/              ← 视图层：CollectionView / Cells / FolderOverlay / SearchBar / Coordinator
+    ├── Storage/            ← 存储层：Schema / StorageManager / SQLiteTransaction / LayoutDomainState
     └── Utilities/          ← 工具层：AnimationRunner / GridLayoutCalculator / ErrorRecovery
 └── LaunchPadApp            ← 可执行入口（main.swift）
 ```
 
 ### 协议驱动依赖注入
 
-项目定义了 10 个核心协议（`Protocols.swift`），将所有外部依赖抽象为接口：
+项目定义了 11 个核心协议（`Protocols.swift`），将所有外部依赖抽象为接口：
 
 | 协议 | 职责 | 对应实现 |
 |------|------|---------|
 | `ItemReading` | 只读数据查询 | `StorageManager` |
 | `ItemWriting` | 数据写入/重排 | `StorageManager` |
+| `LayoutMutating` | 原子布局变更 | `StorageManager` |
 | `ImageStoring` | 图标磁盘读写 | `StorageManager` |
 | `DataStoring` | 以上三者组合 | `StorageManager` |
 | `AppScanning` | 应用目录扫描 | `AppScanner` |
@@ -121,7 +125,7 @@ TDD 是本项目的硬性约束，而非开发风格偏好。以下从原则、�
 
 #### 100% 行覆盖硬性指标
 
-项目将"每个源文件行覆盖率 100%"设为发布阻塞项，而非 aspiration target。这意味着：
+项目将"每个源文件行覆盖率 100%"设为发布阻塞项。当前状态：42 个源文件中 23 个已达 100%，整体行覆盖率 97.91%，历史曾于 2026-07-10 达成全部 34 个源文件 100%。这意味着：
 
 - 每条 `guard else` 的 early-return 分支必须有测试触发
 - 每个 `if let` 的 nil 路径和 non-nil 路径都要覆盖
@@ -155,7 +159,7 @@ struct SchemaTests {
 }
 ```
 
-少量历史测试使用 XCTest，两者共存但新测试统一采用 Swift Testing。
+所有测试统一使用 Swift Testing，已完成从 XCTest 的完整迁移，零残留。
 
 #### 依赖注入模式
 
@@ -190,7 +194,6 @@ sut.runAnimated = { _, action in action() }  // 测试中动画完成回调被�
 | `hideCompletionRunner` | 真实动画完成回调 | 触发隐藏完成分支 |
 | `accessibilitySettingsProvider` | `AccessibilitySettings.current()` | 注入 Reduce Motion / Reduce Transparency 状态 |
 | `schemaSetup` | `Schema.setupSchema(db:)` | 注入错误 SQL 触发 prepare 失败分支 |
-| `streamCreationOverride` | `FSEventStreamCreate` | 注入 nil 触发创建失败分支 |
 | `storageFactory` | 真实 `StorageManager` 初始化 | 注入抛错工厂测试损坏恢复 |
 | `runningInstanceChecker` | `NSRunningApplication` 查询 | 测试多实例防护逻辑 |
 
@@ -203,8 +206,8 @@ sut.runAnimated = { _, action in action() }  // 测试中动画完成回调被�
 覆盖率测量使用 LLVM 工具链：
 
 ```bash
-# 编译运行 + 收集覆盖率（按套件过滤，规避 AppKit 监视器卡死）
-swift test --enable-code-coverage --disable-sandbox --filter "<Suite名子串>"
+# 全量编译运行 + 收集覆盖率（Task 21 后全量测试可完整退出）
+swift test --enable-code-coverage --disable-sandbox --no-parallel
 
 # 合并所有 profraw
 xcrun llvm-profdata merge -sparse <profraw目录>/*.profraw -o default.profdata
@@ -226,9 +229,9 @@ xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-reg
 
 **陷阱二：按套件过滤运行**
 
-全量 `swift test --enable-code-coverage` 会因残留的 AppKit 监视器（事件监视器 / FSEvent / NSStatusItem）阻止测试进程退出而卡死。
+全量 `swift test --disable-sandbox --no-parallel` 可完整退出并产生 Swift Testing summary，零残留进程。P0 release gate 由 `scripts/test-release.sh` 统一编排。
 
-**规避**：按套件过滤运行（`--filter "<Suite名子串>"`），每个源文件对应的套件单独执行后正常退出，生成各自的 `.profraw`，最后用 `llvm-profdata merge` 合并。
+**规避**：全量测试可完整退出，但覆盖率收集仍建议按套件过滤运行（`--filter "<Suite名子串>"`），确保每个 profraw 正确落盘后由 `llvm-profdata merge` 合并。
 
 **陷阱三：测试自身导致覆盖率数据丢失**
 
@@ -244,6 +247,7 @@ xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-reg
 - `NSScreen.main` 为 nil 的 fallback（测试环境总有 main screen）
 - `sqlite3_open` 失败但 db 仍为 nil（macOS 几乎不可能）
 - 通知 callback 已被 stop 但仍触发的竞态场景
+- `AppDelegate` / `LaunchPadWindowController` 中隔离到系统边界的真实 NSWorkspace/SMAppService/CGEventTap 调用路径（Task 21 显式隔离，仅在生产环境中可达）
 
 这些区域在覆盖率报告中会显示为未覆盖，但不计入真实缺口。
 
@@ -275,8 +279,11 @@ swift build -c release --product LaunchPadApp
 ### 测试
 
 ```bash
-# 全量测试
-swift test
+# 全量测试（串行，禁用 sandbox）
+swift test --disable-sandbox --no-parallel
+
+# P0 release gate（完整门禁：编排上述命令 + 性能基准 + release build）
+./scripts/test-release.sh
 
 # 带覆盖率（按套件过滤运行，规避 AppKit 监视器卡死）
 swift test --enable-code-coverage --disable-sandbox --filter "<Suite名子串>"
@@ -300,28 +307,31 @@ LaunchPad/
 ├── Package.swift                  # SPM 包定义
 ├── Sources/
 │   ├── LaunchPadProtocols/        # 协议层（纯协议 + 数据模型）
-│   │   ├── Models/                # ItemType / AppInfo / GroupInfo / PageItem
-│   │   └── Protocols.swift        # 10 个核心协议
+│   │   ├── Models/                # ItemType / AppInfo / GroupInfo / PageItem / LayoutDropIntent
+│   │   └── Protocols.swift        # 11 个核心协议
 │   ├── LaunchPad/                 # 核心库
 │   │   ├── App/                   # AppDelegate / WindowController / HotkeyManager
 │   │   ├── Controllers/           # ViewController / DragController / KeyboardNavigator
-│   │   ├── Services/              # AppScanner / SearchEngine / IconCache / FileWatcher
-│   │   ├── Views/                 # CollectionView / Cells / FolderOverlay / SearchBar
-│   │   ├── Storage/               # Schema / StorageManager（SQLite）
+│   │   ├── Models/                # DragSession
+│   │   ├── Services/              # AppScanner / SearchEngine / LayoutProjection / ScanBatch 等
+│   │   ├── Views/                 # CollectionView / Cells / FolderOverlay / SearchBar / Coordinator
+│   │   ├── Storage/               # Schema / StorageManager / SQLiteTransaction / LayoutDomainState
 │   │   └── Utilities/             # AnimationRunner / GridLayoutCalculator / ErrorRecovery
 │   └── LaunchPadApp/              # 可执行入口（main.swift）
 ├── Tests/
-│   └── LaunchPadTests/            # 37 个测试文件，520+ tests
+│   └── LaunchPadTests/            # 44 个测试文件，1086 tests
 │       ├── TestHelpers/           # MockProtocols / TestDataFactory
-│       ├── Storage/               # Schema / StorageManager 测试
-│       ├── Services/              # 各 Service 测试
+│       ├── App/                   # AppDelegate / WindowController 测试
 │       ├── Controllers/           # 各 Controller 测试
-│       ├── Views/                 # 各 View 测试
+│       ├── Models/                # 协议与模型测试
+│       ├── Services/              # 各 Service 测试
+│       ├── Storage/               # Schema / StorageManager / LayoutDomain 测试
 │       ├── Utilities/             # 各 Utility 测试
+│       ├── Views/                 # 各 View / Coordinator 测试
 │       ├── Integration/           # 集成测试
 │       └── Performance/           # 性能基准测试
 ├── Resources/                     # Info.plist / Entitlements
-├── scripts/                       # 构建脚本 / 覆盖率测量脚本
+├── scripts/                       # 构建脚本 / 覆盖率 / P0 release gate
 └── docs/                          # 详细文档
 ```
 
@@ -333,6 +343,8 @@ LaunchPad/
 |------|------|
 | [`docs/原始app技术实现参考.md`](docs/原始app技术实现参考.md) | 对系统 Dock 二进制的逆向分析，12 个技术维度的真实行为还原 |
 | [`docs/coverage-progress.md`](docs/coverage-progress.md) | 测试覆盖率提升全程记录，含方法论与陷阱复盘 |
+| [`docs/superpowers/findings/P1-P2-findings.md`](docs/superpowers/findings/P1-P2-findings.md) | P0 readiness gate review 遗留发现（P1/P2 级别） |
+| [`docs/superpowers/plans/2026-07-21-p0-release-blockers.md`](docs/superpowers/plans/2026-07-21-p0-release-blockers.md) | P0 release blockers 完整执行计划（24 个 task，已完成） |
 
 ---
 

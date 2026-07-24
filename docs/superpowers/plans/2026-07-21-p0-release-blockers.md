@@ -153,7 +153,7 @@ swift test --disable-sandbox --no-parallel
 - Consumed later by: Task 5 for view-only reprojection and Task 20 for first-scan target-display storage capacity.
 - Preserves temporarily: existing `GridParameters` and `calculate(screenWidth:)` as an explicit compatibility API through Task 20; Tasks 3-5 must use `GridMetrics` for all grid rendering and resize paths.
 
-- [ ] **Step 1: Add RED tests for columns, row breakpoints, clamping and invalid input**
+- [x] **Step 1: Add RED tests for columns, row breakpoints, clamping and invalid input**
 
 Append these tests while leaving old tests in place:
 
@@ -236,7 +236,7 @@ func iconSizeClampsToExactBounds() {
 }
 ```
 
-- [ ] **Step 2: Run the new tests and confirm RED**
+- [x] **Step 2: Run the new tests and confirm RED**
 
 Run:
 
@@ -248,7 +248,7 @@ swift test --disable-sandbox --no-parallel --filter GridLayoutCalculatorTests
 
 Expected: compile failure because `GridMetrics` and `calculate(viewportSize:)` do not exist.
 
-- [ ] **Step 3: Add the exact metrics types and calculator**
+- [x] **Step 3: Add the exact metrics types and calculator**
 
 Add above the existing compatibility types and method:
 
@@ -337,13 +337,13 @@ public static func calculate(viewportSize: CGSize) -> GridMetrics {
 }
 ```
 
-- [ ] **Step 4: Run calculator tests and confirm GREEN**
+- [x] **Step 4: Run calculator tests and confirm GREEN**
 
 Run the Step 2 command.
 
 Expected: all old width tests and new viewport tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/Utilities/GridLayoutCalculator.swift \
@@ -363,7 +363,7 @@ git commit -m "feat: calculate grid metrics from viewport"
 - Consumes: persisted page order, persisted children and Task 1 `GridMetrics`.
 - Produces: `LayoutProjection.paginate(items:metrics:)` and `project(...) -> [[PageItem]]` without writes; both ordinary and search grids use the same visual capacity.
 
-- [ ] **Step 1: Write projection RED tests**
+- [x] **Step 1: Write projection RED tests**
 
 Create the test file with:
 
@@ -462,7 +462,7 @@ struct LayoutProjectionTests {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 Run:
 
@@ -474,7 +474,7 @@ swift test --disable-sandbox --no-parallel --filter LayoutProjectionTests
 
 Expected: compile failure because `LayoutProjection` does not exist.
 
-- [ ] **Step 3: Add the pure projection implementation**
+- [x] **Step 3: Add the pure projection implementation**
 
 Create:
 
@@ -509,7 +509,7 @@ public enum LayoutProjection {
 }
 ```
 
-- [ ] **Step 4: Add missing-child and immutability cases, then run GREEN**
+- [x] **Step 4: Add missing-child and immutability cases, then run GREEN**
 
 Add these exact tests:
 
@@ -549,7 +549,7 @@ Run the Step 2 command.
 
 Expected: all projection tests pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/Services/LayoutProjection.swift \
@@ -573,7 +573,7 @@ git commit -m "feat: project stable layout into visual pages"
 - Produces: exact row-major item frames, one section per `pageWidth`, explicit paging count, and a collection document frame that cannot collapse below the layout content width but can shrink when the section count decreases.
 - Compatibility: keep `applyGridParameters(_:)` and `scrollToPage(_:pageWidth:)` until Tasks 4-5 migrate current callers; the adapters must delegate to the new geometry and paging state rather than retain FlowLayout behavior. Layout compatibility always derives both axes from the enclosing clip viewport, never the expanded document bounds, and falls back to the legacy parameter dimensions only when the clip dimension is absent, non-finite or non-positive. Before Task 5 explicitly configures paging, the legacy scroll adapter derives page count from `documentView` width so page-control navigation does not regress; an explicit one-page configuration must never be overwritten by that fallback.
 
-- [ ] **Step 1: Replace both obsolete FlowLayout suites with real 2/3/5-row and multi-section RED tests**
+- [x] **Step 1: Replace both obsolete FlowLayout suites with real 2/3/5-row and multi-section RED tests**
 
 Delete `AppGridFlowLayoutTests` and `AppGridFlowLayoutTests2`, including assertions on `itemSize`, `scrollDirection`, `sectionInset` and vertical centering. Replace them with one hidden fixture; creating the `NSWindow` is allowed, but do not call `makeKeyAndOrderFront`:
 
@@ -814,7 +814,7 @@ func testCompatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
 }
 ```
 
-- [ ] **Step 2: Add PageScrollView RED tests**
+- [x] **Step 2: Add PageScrollView RED tests**
 
 Add the following invalid-configuration, ended/cancelled, synchronous resize, clamp and callback tests:
 
@@ -900,7 +900,7 @@ func explicitSinglePageDoesNotUseLegacyInference() {
 }
 ```
 
-- [ ] **Step 3: Run and confirm RED**
+- [x] **Step 3: Run and confirm RED**
 
 Run:
 
@@ -913,7 +913,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: old layout collapses all y values, multi-section width is not page aligned, and PageScrollView lacks configuration APIs.
 
-- [ ] **Step 4: Replace `AppGridFlowLayout` with explicit cached item frames**
+- [x] **Step 4: Replace `AppGridFlowLayout` with explicit cached item frames**
 
 Keep the class name but derive from `NSCollectionViewLayout`. Implement these exact public methods and cache rules:
 
@@ -1064,7 +1064,7 @@ override public func setFrameSize(_ newSize: NSSize) {
 }
 ```
 
-- [ ] **Step 5: Add explicit PageScrollView configuration**
+- [x] **Step 5: Add explicit PageScrollView configuration**
 
 Add properties and replace `scrollToPage`:
 
@@ -1147,7 +1147,7 @@ if phase.contains(.ended) || phase.contains(.cancelled) {
 }
 ```
 
-- [ ] **Step 6: Run layout and paging tests GREEN**
+- [x] **Step 6: Run layout and paging tests GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -1158,7 +1158,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: 2/3/5 rows are distinct, two sections are exactly two pages, the document frame expands and shrinks with section count, and paging callbacks/clamps pass without showing a real window.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/LaunchPad/Views/AppGridFlowLayout.swift \
@@ -1192,7 +1192,7 @@ git commit -m "fix: use explicit row-major paged geometry"
 - Produces: `SearchDebouncer` with `@MainActor @Sendable (String) -> Void` handler and VC-local `SearchRunner` for synchronous test completion.
 - Consumed later by: Tasks 7, 15 and 21. Those tasks consume this contract and must not redefine it.
 
-- [ ] **Step 1: Reproduce the background `assumeIsolated` trap with a named RED test**
+- [x] **Step 1: Reproduce the background `assumeIsolated` trap with a named RED test**
 
 Add:
 
@@ -1222,7 +1222,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: current implementation terminates with signal 5 in `MainActor.assumeIsolated` on `com.launchpad.scheduler`. This is the RED evidence and may not be skipped or recorded as an allowed failure.
 
-- [ ] **Step 2: Move the scheduler contract and implementation onto MainActor**
+- [x] **Step 2: Move the scheduler contract and implementation onto MainActor**
 
 Replace the protocol with:
 
@@ -1287,7 +1287,7 @@ public final class DispatchQueueScheduler: Scheduler {
 
 `assumeIsolated` is allowed only inside the work item explicitly submitted to `DispatchQueue.main`. Mark `MockScheduler` and both drag suites `@MainActor`; store actions as `@MainActor @Sendable () -> Void`. `fireLatest()` must remove all pending actions before invoking the latest action so a test cannot leave escaped work.
 
-- [ ] **Step 3: Remove every unsafe SearchDebouncer bridge and prove exact ownership**
+- [x] **Step 3: Remove every unsafe SearchDebouncer bridge and prove exact ownership**
 
 Replace the callback declaration, initializer and delayed branch with:
 
@@ -1345,7 +1345,7 @@ func dispatchQueueSchedulerCancelsOwnedWorkItems() {
 
 Run the two named scheduler tests; expected: 2 tests pass and the helper exits normally.
 
-- [ ] **Step 4: Replace the escaping VC search fixture with an injected runner**
+- [x] **Step 4: Replace the escaping VC search fixture with an injected runner**
 
 Add:
 
@@ -1369,7 +1369,7 @@ lazy var searchRunner: SearchRunner = {
 
 The nonempty branch calls `searchRunner(allItems, capturedQuery)` and applies results only through its MainActor completion with the existing expected-query guard. Replace the no-assertion fixture with `handleSearch_nonEmptyQuery_runsInjectedSearchOnce`: inject `MockScheduler`, one Safari item ID 10 and a synchronous runner; enter `s`, append `a`, advance by `0.099` then `0.001`, and assert exactly `[(ids: [10], query: "sa")]`, label `1 results`, visible results and an empty scheduler.
 
-- [ ] **Step 5: Run regression, full serial termination gate and commit**
+- [x] **Step 5: Run regression, full serial termination gate and commit**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -1425,7 +1425,7 @@ git commit -m "fix: bind schedulers and debounce work to main actor"
 - Produces: idempotent `localMonitorInstaller`/`localMonitorRemover`, plus AppDelegate `hotkeyManagerFactory`, `workspaceURLOpener` and `hotkeyToggleRunner`.
 - Consumed later by: Tasks 8-9 and 21; those tasks extend behavior/lifecycle through these names and do not add duplicate boundaries.
 
-- [ ] **Step 1: Reproduce tap fallback and real-boundary leaks**
+- [x] **Step 1: Reproduce tap fallback and real-boundary leaks**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -1441,7 +1441,7 @@ selection, and assert that `tapProvider = { nil }` must leave its call count at
 zero. The old selection calls it once, producing deterministic RED without
 touching the real event-tap boundary. Capture the counter mismatch as RED.
 
-- [ ] **Step 2: Make tap selection explicit and local monitor lifecycle injectable**
+- [x] **Step 2: Make tap selection explicit and local monitor lifecycle injectable**
 
 Move Task 21's planned event-tap creation boundary forward:
 
@@ -1528,7 +1528,7 @@ double unregister, and conflict followed by permission failure/success.
 
 Do not change special-key suppression in this task; Task 8 owns that behavior. Convert every hotkey test fixture to an isolated manager with injected accessibility result, opaque local token and fake tap result. Add `nilTapOverrideIsAuthoritative` and `localMonitorLifecycleUsesInjectedBoundary`. The former asserts false/conflict and an exact zero `eventTapCreator` call count; the latter asserts install/remove identity/count after double register/unregister. Also cover the no-override production branch with exactly one injected creator call. Delete tests that directly call `AXIsProcessTrusted` or real `SMAppService.register/unregister`, and delete the real-FSEvents two-second sleep test whose only assertion is `#expect(true)`; Task 21 adds its deterministic backend replacement.
 
-- [ ] **Step 3: Isolate AppDelegate construction, URL opening and toggle delivery**
+- [x] **Step 3: Isolate AppDelegate construction, URL opening and toggle delivery**
 
 Add:
 
@@ -1555,7 +1555,7 @@ hotkeyManager.onToggle = { @Sendable [weak self] in
 
 The AppDelegate test factory must use `NSStatusItem()` instead of `NSStatusBar.system`, an isolated hotkey manager, `{ _ in }` URL opener and a synchronous toggle runner. Replace sleep-based toggle verification with an immediate lifecycle assertion. Conflict tests assert the exact alert `Option+Space 快捷键已被占用` and no opened URL; permission tests assert only `x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent`, while the second-button path opens nothing. Add exact factory call-count/identity coverage and a successful hotkey-registration branch that produces zero alert and zero opened URL.
 
-- [ ] **Step 4: Run isolated suites, full serial termination gate and commit**
+- [x] **Step 4: Run isolated suites, full serial termination gate and commit**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -1864,7 +1864,7 @@ summaries and commit range in `.superpowers/sdd/task-3r-c-review.md`.
   migration equivalence is audited by source call site, not dynamic invocation
   count.
 
-- [ ] **Step 1: Capture the 56-test baseline and current static residue**
+- [x] **Step 1: Capture the 56-test baseline and current static residue**
 
 ```bash
 cat > /tmp/task-3m-id-map.tsv <<'EOF'
@@ -1948,7 +1948,7 @@ Expected: the canonical map, discovery set and method scan each identify exactly
 canonical set; the static scan records the legacy symbols that the migration
 must remove.
 
-- [ ] **Step 2: Fix the SearchBar headless animation fixture before migration**
+- [x] **Step 2: Fix the SearchBar headless animation fixture before migration**
 
 Replace the wait-based test, still in its existing framework for this isolated fixture commit, with:
 
@@ -1982,7 +1982,7 @@ git commit -m "test: make search bar hide completion deterministic"
 
 Expected: one test passes without a fixed wait.
 
-- [ ] **Step 3: Perform the full-file pure migration with no production diff**
+- [x] **Step 3: Perform the full-file pure migration with no production diff**
 
 Use this structure:
 
@@ -2044,7 +2044,7 @@ records the exact qualified old and new IDs, assertion equivalence or
 strengthening, actor placement, fixture behavior and wait cleanup. The report
 must expand every map row; citing the naming rule alone is not sufficient.
 
-- [ ] **Step 4: Run migration equivalence, adjacent geometry and static gates**
+- [x] **Step 4: Run migration equivalence, adjacent geometry and static gates**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -2070,7 +2070,7 @@ Expected: the six migrated suites discover exactly 56 tests, `diff -u` proves
 every qualified Swift Testing ID matches the canonical set, all focused and
 adjacent tests pass, and the static scan prints nothing.
 
-- [ ] **Step 5: Review migration and commit separately**
+- [x] **Step 5: Review migration and commit separately**
 
 The migration reviewer checks all 56 report rows, all 9 tolerance call sites
 (including the row-major helper call site), actor placement and a
@@ -2177,7 +2177,7 @@ internal var notificationBundleIDReader: (Notification) -> String? = {
   `constraint.constant = -bottomInset`, and test both the negative sign and the
   exact inset before asserting final bounded, distinct, non-overlapping frames.
 
-- [ ] **Step 1: Record the exact 128-test baseline and reproduce all five existing outcomes**
+- [x] **Step 1: Record the exact 128-test baseline and reproduce all five existing outcomes**
 
 Run the four suites before editing:
 
@@ -2193,7 +2193,7 @@ swift test --disable-sandbox list | \
 
 Expected baseline: exactly 128 discovered tests: AppIconCell 26, FolderCell 20, AppGridCollectionView 71 and DiffableDataSourceBuilder 11. The run reports exactly three failures in the AppGrid `acceptDrop` group/reorder/extract paths and exactly two skips in AppIconCell activation/deactivation. Record all five IDs and their current assertion/skip reason in `.superpowers/sdd/task-4-baseline.md`; this ledger is diagnostic evidence, never a whitelist.
 
-- [ ] **Step 2: Fix the three false pasteboard fixtures and two workspace skips before migration**
+- [x] **Step 2: Fix the three false pasteboard fixtures and two workspace skips before migration**
 
 Add the narrow read boundary to `AppGridCollectionView`:
 
@@ -2217,7 +2217,7 @@ git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
 git commit -m "fix: isolate cell workspace and drag inputs"
 ```
 
-- [ ] **Step 3: Migrate AppIconCellTests 26/26 with a production-empty diff**
+- [x] **Step 3: Migrate AppIconCellTests 26/26 with a production-empty diff**
 
 Replace the class and lifecycle with a suite-level `@MainActor @Suite("AppIconCell") struct AppIconCellTests`. Every test constructs its own cell, center and dependency closures; convert assertions to `#expect`/`try #require` and keep exact identity/equality semantics. Create 26 explicit mapping rows in `docs/superpowers/reports/2026-07-21-task-4-cell-grid-migration.md` using the confirmed discovery-ID format for both old and new IDs, then run:
 
@@ -2235,7 +2235,7 @@ git commit -m "test: migrate app icon cell tests to Swift Testing"
 
 Expected: exactly 26 tests pass, no skip, static scan empty and no production diff.
 
-- [ ] **Step 4: Migrate FolderCellTests 20/20 with all tolerances preserved**
+- [x] **Step 4: Migrate FolderCellTests 20/20 with all tolerances preserved**
 
 Use suite-level `@MainActor`. Convert every old method one-to-one, preserve every frame/constraint assertion, and write all 20 rows to the same report. Every former `accuracy:` assertion becomes `#expect(abs(actual - expected) <= originalTolerance)`.
 
@@ -2253,7 +2253,7 @@ git commit -m "test: migrate folder cell tests to Swift Testing"
 
 Expected: exactly 20 tests pass and the report now has 46 mapping rows.
 
-- [ ] **Step 5: Migrate AppGridCollectionViewTests 71/71 without real pasteboard reads**
+- [x] **Step 5: Migrate AppGridCollectionViewTests 71/71 without real pasteboard reads**
 
 Use suite-level `@MainActor`; replace shared IUO setup with `makeSUT()` returning a fresh collection view and owned dependencies. Writer tests inspect `NSPasteboardItem`; every validation/acceptance test injects `pasteboardUUIDReader`. Convert the file's four former tolerance assertions to exact `abs` comparisons and add 71 mapping rows.
 
@@ -2271,7 +2271,7 @@ git commit -m "test: migrate app grid tests to Swift Testing"
 
 Expected: exactly 71 tests pass; the report has 117 rows.
 
-- [ ] **Step 6: Migrate DiffableDataSourceBuilderTests 11/11 and audit 128 mappings**
+- [x] **Step 6: Migrate DiffableDataSourceBuilderTests 11/11 and audit 128 mappings**
 
 This is a plain `@Suite` unless an individual test actually creates AppKit UI. Convert all 11 methods, append the 11 rows, and make the report contain columns for old discovery ID, new discovery ID, assertion equivalence/strengthening, actor, fixture and cleanup. The naming rule is removal of leading `test` followed by lowercasing the next character; the report must list every mapping rather than relying on the rule.
 
@@ -2291,7 +2291,7 @@ git commit -m "test: migrate diffable builder tests to Swift Testing"
 
 Expected: 11 tests pass, all four files are free of legacy symbols, the report has exactly 128 data rows plus header/separator, and all four migration commits have an empty production diff.
 
-- [ ] **Step 7: Prepare the remaining Grid, coordinator and Search RED slices**
+- [x] **Step 7: Prepare the remaining Grid, coordinator and Search RED slices**
 
 The declaration inventory below is authoritative, but add and execute it in
 the confirmed compileable order rather than as one uncompilable RED commit:
@@ -2440,7 +2440,7 @@ test inspects `selectionIndexPaths.isEmpty`, and the legacy-search test compares
 both `.search` and the exact item order. Selection callback order moves to the
 coordinator suite and compares the exact two-element event array there.
 
-- [ ] **Step 8: Confirm each slice RED, then discover its GREEN IDs**
+- [x] **Step 8: Confirm each slice RED, then discover its GREEN IDs**
 
 `swift test list` compiles the test target, so a slice whose tests refer to a
 missing production interface cannot be dynamically discovered during compile
@@ -2488,7 +2488,7 @@ present exactly once; coordinator IDs are checked by their own exhaustive list.
 Any missing/duplicate declaration or ID, or unrelated migrated-test failure, is
 a stop condition rather than valid RED evidence.
 
-- [ ] **Step 9: Add exact metrics, constraint storage and reconfiguration APIs**
+- [x] **Step 9: Add exact metrics, constraint storage and reconfiguration APIs**
 
 Execute the AppIcon/Folder portions immediately after the Cell RED gate and
 commit that slice before adding Grid tests. Execute the AppGrid metrics portion
@@ -2673,7 +2673,7 @@ thumbnailBottomConstraints.forEach { constraint, rowFromBottom in
 
 Pass `gridMetrics?.iconSize ?? 64` in both `.app` and `.group` cell configuration branches.
 
-- [ ] **Step 10: Make reload reconfigure existing IDs, paginate search and keep rows section-aware**
+- [x] **Step 10: Make reload reconfigure existing IDs, paginate search and keep rows section-aware**
 
 Execute the grid reload/accessibility/selection portions after the Grid RED
 gate. Execute `.searchPage`, `searchResultPages` and the reload forwarding hunk
@@ -2840,7 +2840,7 @@ func selectItem(id: Int64?) -> IndexPath? {
 }
 ```
 
-- [ ] **Step 11: Move the complete interaction matrix to a coordinator RED suite**
+- [x] **Step 11: Move the complete interaction matrix to a coordinator RED suite**
 
 Create `@MainActor @Suite("AppGridInteractionCoordinator") struct
 AppGridInteractionCoordinatorTests`. Its fixture returns the host, the real
@@ -3003,7 +3003,7 @@ Expected: compile RED only because `AppGridInteractionHosting`,
 zero-match filter, missing migrated ID or failure in an already migrated
 non-interaction grid test is not valid RED.
 
-- [ ] **Step 12: Implement the host and coordinator, then delete the old grid API**
+- [x] **Step 12: Implement the host and coordinator, then delete the old grid API**
 
 Create `Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift` with this
 Task 4 interface and ownership. Task 16 extends the same protocol; it does not
@@ -3184,7 +3184,7 @@ Delete the old delegate extension and the four obsolete grid properties. Keep
 `draggingSession(_:sourceOperationMaskFor:)` as the grid's existing
 `NSDraggingSource` override; it is not collection delegate ownership.
 
-- [ ] **Step 13: Make the ViewController the sole production owner and prove lifecycle wiring**
+- [x] **Step 13: Make the ViewController the sole production owner and prove lifecycle wiring**
 
 Add the strong property and rebuild-safe installation in
 `LaunchPadViewController`:
@@ -3251,7 +3251,7 @@ git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
 git commit -m "fix: externalize app grid interactions"
 ```
 
-- [ ] **Step 14: Add the macOS 26 hot-loop regression and shared process watchdog**
+- [x] **Step 14: Add the macOS 26 hot-loop regression and shared process watchdog**
 
 Add a real `NSWindow + NSScrollView + AppGridCollectionView` test to the
 coordinator suite. Load one app and one folder, attach the coordinator before
@@ -3678,7 +3678,7 @@ Expected: all three self-tests exit 0, the focused suite exits 0 in less than 30
 seconds, the hot-loop test's always-enabled `< 1s` assertion passes, and no
 recorded wrapper/supervisor/child/descendant PID remains alive.
 
-- [ ] **Step 15: Run the expanded cell/grid/coordinator regression GREEN**
+- [x] **Step 15: Run the expanded cell/grid/coordinator regression GREEN**
 
 ```bash
 set -euo pipefail
@@ -3812,7 +3812,7 @@ XCTest IDs were not deleted or renamed. The unique `@Test` title and discovery
 checks make each logged Swift issue traceable back to its registered qualified
 test ID.
 
-- [ ] **Step 16: Run static/compile gates and confirm every Task 4 commit boundary**
+- [x] **Step 16: Run static/compile gates and confirm every Task 4 commit boundary**
 
 ```bash
 ! rg -n 'import XCTest|XCTestCase|XCTAssert|XCTFail|XCTSkip|XCTestExpectation|expectation\(|wait\(for:' \
@@ -3875,7 +3875,7 @@ git diff --cached --exit-code -- \
   scripts/run-with-timeout.sh
 ```
 
-- [ ] **Step 17: Perform eight review gates and record the aggregate result**
+- [x] **Step 17: Perform eight review gates and record the aggregate result**
 
 Review A: existing three failures/two skips and their deterministic repair.
 Review B: all four production-empty migrations and 128 mappings. Review C: cell
@@ -3902,7 +3902,7 @@ exact commit ranges and commands in `.superpowers/sdd/task-4-review.md`.
 - Consumes later: Task 20 reloads this controller after scan; first-scan storage capacity remains Task 20's responsibility.
 - Produces: `gridMetrics`, current-mode `visualPages`, stable selection and synchronized page control/scroll/keyboard/accessibility without storage writes.
 
-- [ ] **Step 1: Add viewport resize and active-search RED tests**
+- [x] **Step 1: Add viewport resize and active-search RED tests**
 
 Use 60 items across two persisted pages. The six RED methods are `resizeReprojectsWithoutWritesAndPreservesStableOrder`, `resizeClampsPreviousPageAndRestoresSelectionByID`, `resizeKeepsActiveSearchAndPaginatesResults`, `resizeSynchronizesKeyboardAndAccessibilityRows`, `invalidViewportDoesNothing` and `sameMetricsDoesNotReload`; their setup and assertion bodies are given in the blocks below. The no-write test must compare the existing mock's concrete write records; do not invent `totalWriteCallCount`:
 
@@ -4022,7 +4022,7 @@ sut.viewDidLayout()
 #expect(reloadCount == countAfterFirstLayout)
 ```
 
-- [ ] **Step 2: Run focused VC tests and confirm RED**
+- [x] **Step 2: Run focused VC tests and confirm RED**
 
 Run:
 
@@ -4032,7 +4032,7 @@ SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel --filter LaunchPadViewControllerTests
 ```
 
-- [ ] **Step 3: Add the observable state and viewport entry**
+- [x] **Step 3: Add the observable state and viewport entry**
 
 Add the new members below; change the existing `currentSearchQuery` declaration from `private` to `private(set)` instead of declaring it twice:
 
@@ -4078,7 +4078,7 @@ override public func viewDidLayout() {
 }
 ```
 
-- [ ] **Step 4: Centralize normal/search projection, page clamp and selection restore**
+- [x] **Step 4: Centralize normal/search projection, page clamp and selection restore**
 
 Add:
 
@@ -4133,7 +4133,7 @@ scrollView.onPageChanged = { [weak self] page in
 }
 ```
 
-- [ ] **Step 5: Make navigation and keyboard use visual pages and current columns**
+- [x] **Step 5: Make navigation and keyboard use visual pages and current columns**
 
 Replace `allPages.count` guards with `visualPages.count`; remove the stored
 `selectedIndex` and keep only Step 3's deprecated read-only adapter. Use one
@@ -4202,7 +4202,7 @@ selection state exists. Clearing nil/unknown IDs explicitly sets
 
 Finally, make `accessibilityRows()` use `gridMetrics.columns` and the same snapshot section/index paths from Task 4. The test `resizeSynchronizesKeyboardAndAccessibilityRows` must assert the 4-row metrics, a Down move by exactly 7 flattened items, the resolved selection section, and accessibility row count `visualPages.reduce(0) { $0 + ceilDiv($1.count, 7) }` using integer arithmetic `($1.count + 6) / 7`.
 
-- [ ] **Step 6: Update integration expectations and run the grid regression**
+- [x] **Step 6: Update integration expectations and run the grid regression**
 
 Update the fixed 1440-width integration test to pass `CGSize(width: 1440, height: 620)` and assert 7x5. Run:
 
@@ -4215,7 +4215,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: all dynamic grid, page geometry, resize and stable selection tests pass.
 
-- [ ] **Step 7: Commit**
+- [x] **Step 7: Commit**
 
 ```bash
 git add Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
@@ -4235,7 +4235,7 @@ git commit -m "feat: reproject layout for viewport changes"
 - Consumes: idle/search/edit state and abstract keys.
 - Produces: existing `Action` API; `Mode.search(query:)` always matches accepted input.
 
-- [ ] **Step 1: Add state mutation RED tests**
+- [x] **Step 1: Add state mutation RED tests**
 
 ```swift
 @Test("idle 首字符进入搜索态，后续字符追加")
@@ -4263,7 +4263,7 @@ func emptyCharacterIsIgnored() {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4273,7 +4273,7 @@ swift test --disable-sandbox --no-parallel --filter KeyboardNavigatorTests
 
 Expected: first character leaves mode idle and Delete does not shorten query.
 
-- [ ] **Step 3: Replace both state entry methods**
+- [x] **Step 3: Replace both state entry methods**
 
 ```swift
 public func handleKey(_ key: Key) -> Action {
@@ -4311,7 +4311,7 @@ public func handleCharacter(_ char: String) -> Action {
 }
 ```
 
-- [ ] **Step 4: Run the full three-mode suite GREEN**
+- [x] **Step 4: Run the full three-mode suite GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4319,7 +4319,7 @@ SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel --filter KeyboardNavigatorTests
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/Controllers/KeyboardNavigator.swift \
@@ -4339,7 +4339,7 @@ git commit -m "fix: keep keyboard search state synchronized"
 - Consumes: Task 6 `.enterSearchMode(initialQuery)`.
 - Produces: first character, responder focus and one debounced request in one call.
 
-- [ ] **Step 1: Replace the reversed repeated-enter test**
+- [x] **Step 1: Replace the reversed repeated-enter test**
 
 ```swift
 @Test("连续字符建立完整查询并仅保留一个防抖任务")
@@ -4366,7 +4366,7 @@ func charactersBuildCompleteQuery() {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4376,7 +4376,7 @@ swift test --disable-sandbox --no-parallel --filter charactersBuildCompleteQuery
 
 Expected: the search field omits `s` and the action sequence is wrong.
 
-- [ ] **Step 3: Consume the associated initial query**
+- [x] **Step 3: Consume the associated initial query**
 
 Replace the action branch:
 
@@ -4391,7 +4391,7 @@ case .enterSearchMode(let initialQuery):
 
 Keep the existing append and Delete branches, which now consume Task 6's truthful state.
 
-- [ ] **Step 4: Run VC and debounce regression GREEN**
+- [x] **Step 4: Run VC and debounce regression GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4400,7 +4400,7 @@ swift test --disable-sandbox --no-parallel \
   --filter 'LaunchPadViewControllerTests|SearchDebounceTests'
 ```
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
@@ -4421,7 +4421,7 @@ git commit -m "fix: apply initial search character atomically"
 - Produces: callback `nil` is returned to AppKit unchanged for every key type.
 - Preserves: Task 3R-B's already-reviewed install/remove lifecycle; this task changes only event routing semantics.
 
-- [ ] **Step 1: Replace the special-key bypass test with RED entry tests**
+- [x] **Step 1: Replace the special-key bypass test with RED entry tests**
 
 ```swift
 private final class KeyCodeRecorder: @unchecked Sendable {
@@ -4483,7 +4483,7 @@ func localMonitorRegistrationIsIdempotent() {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4492,7 +4492,7 @@ swift test --disable-sandbox --no-parallel \
   --filter 'localMonitorForwardsSpecialKeysAndNil|localMonitorWithoutCallbackReturnsOriginal|localMonitorRegistrationIsIdempotent'
 ```
 
-- [ ] **Step 3: Make the existing injected handler preserve optional results**
+- [x] **Step 3: Make the existing injected handler preserve optional results**
 
 ```swift
 func handleLocalMonitorEvent(_ event: NSEvent) -> NSEvent? {
@@ -4503,7 +4503,7 @@ func handleLocalMonitorEvent(_ event: NSEvent) -> NSEvent? {
 
 Keep Task 3R-B's initializer/register/unregister implementation byte-for-byte except for the handler's now-optional return type. The focused lifecycle test must still prove one install and one remove after duplicate calls.
 
-- [ ] **Step 4: Run the complete HotkeyManager suite and verify process exit**
+- [x] **Step 4: Run the complete HotkeyManager suite and verify process exit**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4513,7 +4513,7 @@ swift test --disable-sandbox --no-parallel --filter HotkeyManagerTests
 
 Every test that installs a real local monitor must use `defer { manager.unregisterLocalMonitor() }`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/App/HotkeyManager.swift \
@@ -4534,7 +4534,7 @@ git commit -m "fix: route all local keys through callback"
 - Produces: handled keyDown returns `nil`; hidden/unmapped/flagsChanged returns original event.
 - Rule: suppression is exactly `Action != .ignored`; mapping a key code is not proof that the current mode handled it.
 
-- [ ] **Step 1: Add real monitor-chain RED tests through the already isolated boundaries**
+- [x] **Step 1: Add real monitor-chain RED tests through the already isolated boundaries**
 
 Task 3R-B already added `workspaceURLOpener` and made the common factory non-system. Keep that injection unchanged. Every test below calls `HotkeyManager.localMonitorHandler`, not AppDelegate's closure directly.
 
@@ -4685,7 +4685,7 @@ instance to `prepareKeyboardMonitor`. Otherwise Task 9's unloaded-view guard
 would return the original event for the wrong reason and the test would not
 exercise the unknown-key branch.
 
-- [ ] **Step 2: Run entry tests and confirm RED**
+- [x] **Step 2: Run entry tests and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4694,7 +4694,7 @@ swift test --disable-sandbox --no-parallel \
   --filter 'localMonitorVisibleHandledSpecialKeyReturnsNil|localMonitorVisibleIgnoredSpecialKeyReturnsOriginal|localMonitorVisibleCharactersBuildSearchAndReturnNil|localMonitorFlagsChangedReturnsOriginal|localMonitorUnknownEmptyCharacterReturnsOriginal|localMonitorHiddenReturnsOriginal|localMonitorMissingViewControllerReturnsOriginal|localMonitorUnloadedViewControllerReturnsOriginal'
 ```
 
-- [ ] **Step 3: Replace the callback with handled-only routing**
+- [x] **Step 3: Replace the callback with handled-only routing**
 
 ```swift
 hotkeyManager.onKeyDown = { @Sendable [weak self] event in
@@ -4734,7 +4734,7 @@ hotkeyManager.onKeyDown = { @Sendable [weak self] event in
 
 The settings branch must continue using Task 3R-B's `workspaceURLOpener(url)`; do not add a second opener or direct `NSWorkspace.shared.open` call.
 
-- [ ] **Step 4: Run keyboard entry regression GREEN**
+- [x] **Step 4: Run keyboard entry regression GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4745,7 +4745,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: process exits 0 and does not open System Settings.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/App/AppDelegate.swift \
@@ -4769,7 +4769,7 @@ git commit -m "fix: suppress only handled application events"
 - Produces: `ItemPlacement`, the six-case `LayoutDropIntent`, and independent `LayoutMutating`.
 - Constraint: `DataStoring` must not inherit `LayoutMutating`.
 
-- [ ] **Step 1: Add RED protocol and mock tests**
+- [x] **Step 1: Add RED protocol and mock tests**
 
 ```swift
 @Test("layout mutator 记录稳定 intent 与容量")
@@ -4806,7 +4806,7 @@ func layoutMutatorFailureDoesNotRecordIntent() {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4814,7 +4814,7 @@ SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel --filter ProtocolTests
 ```
 
-- [ ] **Step 3: Create the exact domain contracts**
+- [x] **Step 3: Create the exact domain contracts**
 
 ```swift
 import Foundation
@@ -4874,7 +4874,7 @@ final class MockLayoutMutator: LayoutMutating, @unchecked Sendable {
 }
 ```
 
-- [ ] **Step 4: Run protocol tests GREEN**
+- [x] **Step 4: Run protocol tests GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -4884,7 +4884,7 @@ swift test --disable-sandbox --no-parallel --filter ProtocolTests
 
 Expected: `ProtocolTests` exits 0 and the mutator success/failure plus placement assertions pass; Task 11 later supplies exhaustive six-intent behavior coverage.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPadProtocols/Models/LayoutDropIntent.swift \
@@ -4906,7 +4906,7 @@ git commit -m "feat: define stable layout mutation contracts"
 - Consumes: Task 10 intents and existing item types.
 - Produces: `validate(_:)`, `applyValidated(_:createdFolderID:)`, `apply(_:createdFolderID:)`, validated global/folder order, folder effects and dense page rebuild plans.
 
-- [ ] **Step 1: Write RED tests for all six intents and page reconstruction**
+- [x] **Step 1: Write RED tests for all six intents and page reconstruction**
 
 Create `LayoutDomainStateTests.swift` with the following helpers and tests. These tests intentionally reference the production types before they exist, so the first run must fail to compile.
 
@@ -5163,7 +5163,7 @@ struct LayoutDomainStateTests {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -5171,7 +5171,7 @@ SWIFTPM_MODULECACHE_OVERRIDE=/tmp/launchpad-swiftpm-module-cache \
 swift test --disable-sandbox --no-parallel --filter LayoutDomainStateTests
 ```
 
-- [ ] **Step 3: Add the complete domain implementation**
+- [x] **Step 3: Add the complete domain implementation**
 
 ```swift
 import Foundation
@@ -5561,7 +5561,7 @@ struct LayoutDomainState: Equatable {
 }
 ```
 
-- [ ] **Step 4: Run all domain tests GREEN**
+- [x] **Step 4: Run all domain tests GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -5571,7 +5571,7 @@ swift test --disable-sandbox --no-parallel --filter LayoutDomainStateTests
 
 Expected: all six intent branches, folder item 36, owning-folder anchor, and all page-plan branches pass.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add Sources/LaunchPad/Storage/LayoutDomainState.swift \
@@ -5592,7 +5592,7 @@ git commit -m "feat: model atomic layout mutations"
 - Consumes: one SQLite connection.
 - Produces: one `databaseQueue`, `SQLiteDriver`, checked deferred/immediate transactions, one `runTransaction` invalidation boundary, and unusable state after rollback failure.
 
-- [ ] **Step 1: Add transaction and serialization RED tests**
+- [x] **Step 1: Add transaction and serialization RED tests**
 
 Add the following support and tests to `StorageManagerTests.swift`:
 
@@ -5775,7 +5775,7 @@ func everyPublicMethodUsesDatabaseQueue() throws {
 }
 ```
 
-- [ ] **Step 2: Run StorageManager tests and confirm RED**
+- [x] **Step 2: Run StorageManager tests and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -5785,7 +5785,7 @@ swift test --disable-sandbox --no-parallel --filter StorageManager
 
 Expected: the command matches the file-level transaction tests plus every named `StorageManager*Tests` suite; verify the test runner reports at least the four new tests before accepting RED.
 
-- [ ] **Step 3: Create the checked SQLite driver and transaction runner**
+- [x] **Step 3: Create the checked SQLite driver and transaction runner**
 
 ```swift
 import Foundation
@@ -5931,7 +5931,7 @@ struct SQLiteTransaction {
 }
 ```
 
-- [ ] **Step 4: Replace both queues and initialize the driver**
+- [x] **Step 4: Replace both queues and initialize the driver**
 
 Replace `db`, `readQueue`, `writeQueue`, both initializers and `deinit` with this structure:
 
@@ -6026,7 +6026,7 @@ private func runTransaction<T>(
 }
 ```
 
-- [ ] **Step 5: Route every existing public method through `withDatabase`**
+- [x] **Step 5: Route every existing public method through `withDatabase`**
 
 Use these exact wrappers; the private statement functions contain the SQL currently in the corresponding source ranges and accept the nonoptional local pointer:
 
@@ -6587,7 +6587,7 @@ private func decodePageItem(statement: OpaquePointer?) -> PageItem {
 }
 ```
 
-- [ ] **Step 6: Extend stable storage errors**
+- [x] **Step 6: Extend stable storage errors**
 
 ```swift
 public enum StorageError: Error, Equatable {
@@ -6604,7 +6604,7 @@ public enum StorageError: Error, Equatable {
 }
 ```
 
-- [ ] **Step 7: Run storage and null-field suites GREEN**
+- [x] **Step 7: Run storage and null-field suites GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -6615,7 +6615,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected suites include `StorageManagerTests`, `StorageManagerAdvancedTests`, `StorageManagerUpdateTests`, `StorageManagerFetchImageNullBlobTests`, and `StorageManagerFetchAllItemsNullFieldsTests`; command exit 0 is required.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Storage/SQLiteTransaction.swift \
@@ -6636,7 +6636,7 @@ git commit -m "fix: serialize and verify sqlite transactions"
 - Consumes: Tasks 10-12.
 - Produces: `PersistedLayoutSnapshot`, transaction-local complete layout reads, `StorageManager: LayoutMutating` for stable top-level before/after, and resolved dense page rebuilds.
 
-- [ ] **Step 1: Add top-level persistence RED tests**
+- [x] **Step 1: Add top-level persistence RED tests**
 
 Create `StorageManagerLayoutMutationTests.swift` with this seed helper and the complete top-level tests:
 
@@ -6846,7 +6846,7 @@ struct StorageManagerLayoutMutationTests {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -6855,7 +6855,7 @@ swift test --disable-sandbox --no-parallel \
   --filter StorageManagerLayoutMutationTests
 ```
 
-- [ ] **Step 3: Add the complete persisted snapshot and transaction-local reader**
+- [x] **Step 3: Add the complete persisted snapshot and transaction-local reader**
 
 Add these types next to `StorageManager`; `allItems` contains every `items` row joined with app/group metadata, so equality covers root rows, page rows, group title, direct page children, folder children and orphan rows:
 
@@ -7002,7 +7002,7 @@ private func readLayoutDomainState(
 }
 ```
 
-- [ ] **Step 4: Add checked page/item writers and resolved page persistence**
+- [x] **Step 4: Add checked page/item writers and resolved page persistence**
 
 Add these exact helpers. Every reused page row is explicitly rewritten to `(parent_id: NULL, ordering: denseIndex)` before item updates:
 
@@ -7200,7 +7200,7 @@ private func persistPagePlan(
 Reuse Task 12's single `sqliteTransient` constant; do not declare a second
 copy in Task 13.
 
-- [ ] **Step 5: Add exact post-write invariant verification**
+- [x] **Step 5: Add exact post-write invariant verification**
 
 ```swift
 private func verifyPersistedLayout(
@@ -7247,7 +7247,7 @@ private func verifyPersistedLayout(
 }
 ```
 
-- [ ] **Step 6: Implement the atomic top-level entry**
+- [x] **Step 6: Implement the atomic top-level entry**
 
 Make the class declaration `StorageManager: DataStoring, LayoutMutating, @unchecked Sendable` and add this method. Task 12's `runTransaction` is the only place that catches rollback failure and invalidates the connection:
 
@@ -7281,7 +7281,7 @@ public func apply(
 }
 ```
 
-- [ ] **Step 7: Run layout mutation suite GREEN and storage regression**
+- [x] **Step 7: Run layout mutation suite GREEN and storage regression**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -7292,7 +7292,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: all real `StorageManager*` suites and `LayoutDomainStateTests` execute and exit 0.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Storage/StorageManager.swift \
@@ -7313,7 +7313,7 @@ git commit -m "feat: persist top-level layout mutations atomically"
 - Consumes: Task 13 entry and Task 11 folder branches.
 - Produces: create/add/reorder/remove/auto-dissolve/zero-child cleanup/safe-delete.
 
-- [ ] **Step 1: Add complete folder RED tests**
+- [x] **Step 1: Add complete folder RED tests**
 
 Append this extension to `StorageManagerLayoutMutationTests.swift`; it uses the complete snapshot from Task 13, not `LayoutPersistence`'s two-level projection:
 
@@ -7638,7 +7638,7 @@ extension StorageManagerLayoutMutationTests {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 Run:
 
@@ -7653,7 +7653,7 @@ Expected: the ten create-folder INSERT fault arguments fail for the expected
 missing checked `insertFolder` path; the command must report the parameterized
 test rather than succeeding with zero matches.
 
-- [ ] **Step 3: Add checked folder insertion inside the transaction**
+- [x] **Step 3: Add checked folder insertion inside the transaction**
 
 Add this helper. Both rows are written only after `state.validate(intent)` succeeds:
 
@@ -7733,7 +7733,7 @@ private func insertFolder(
 }
 ```
 
-- [ ] **Step 4: Add exhaustive folder persistence to `apply`**
+- [x] **Step 4: Add exhaustive folder persistence to `apply`**
 
 Add the child writer and replace Task 13's temporary move-only `apply` with the exhaustive version below:
 
@@ -7817,7 +7817,7 @@ public func apply(
 
 The destructive order is encoded by the method: surviving folder children first, page parents second, folder deletes third, verification fourth, COMMIT last.
 
-- [ ] **Step 5: Add `/tmp` reopen proofs for commit and rollback failure**
+- [x] **Step 5: Add `/tmp` reopen proofs for commit and rollback failure**
 
 Append these tests to `IntegrationTests.swift`:
 
@@ -7921,11 +7921,11 @@ func rollbackFailureInvalidatesAndReopenRestoresCommittedState() throws {
 }
 ```
 
-- [ ] **Step 6: Replace old non-atomic integration expectations**
+- [x] **Step 6: Replace old non-atomic integration expectations**
 
 Keep `storageManager_deleteGroup_cascadeDelete` as the low-level SQLite behavior proof. Delete only the old `folderController_createFolder_itemsInFolder` and `folderController_autoDissolve` tests at `IntegrationTests.swift:258-315`; Task 14 Step 1 and Step 5 replace them with atomic round trips. Do not delete `FolderController.renameFolder` tests because Task 19 retains rename.
 
-- [ ] **Step 7: Run folder, storage and integration GREEN**
+- [x] **Step 7: Run folder, storage and integration GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -7936,7 +7936,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: every `StorageManager*` suite, `LayoutDomainStateTests`, and `IntegrationTests` executes and exits 0.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Storage/StorageManager.swift \
@@ -7969,7 +7969,7 @@ git commit -m "feat: make folder layout mutations atomic"
 - Removes in the same commit: `currentOrder`, `pendingCrossPageMove`, `beginEditing`, `simulateReorder`, `onCreateGroup`, `handleCreateGroup(targetId:)` and the `ItemWriting` constructor dependency.
 - Preserves: existing long-press idle/jiggling/dragging transitions; `handleCancel()` remains as a compatibility alias for edit-mode callers and delegates to `cancelDrag()` without writing.
 
-- [ ] **Step 1: Replace obsolete reorder tests with RED session and timer tests**
+- [x] **Step 1: Replace obsolete reorder tests with RED session and timer tests**
 
 Mark all retained `DragControllerTests` and `CollectionViewDragTests` suites `@MainActor`. Use this deterministic helper instead of guessed ordering:
 
@@ -8087,7 +8087,7 @@ func finishAndCancelClearTimerPreviewAndSession(useFinish: Bool) {
 
 Retain explicit long-press RED cases for `< 0.5s`, `0.5s/<=10pt`, `>10pt`, release, cancel and repeated state entry. Delete every assertion about `currentOrder`, `reorderItems` and synthetic cross-page IDs. Scheduler replacement/cancel/deinit remains covered only by Task 3R-A.
 
-- [ ] **Step 2: Run the new tests and confirm RED**
+- [x] **Step 2: Run the new tests and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -8098,11 +8098,11 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: compile RED for missing `DragSession`, `DragPageDirection`, `beginDrag`, `finishDrag` and `cancelDrag`.
 
-- [ ] **Step 3: Verify and consume the Task 3R-A scheduler contract**
+- [x] **Step 3: Verify and consume the Task 3R-A scheduler contract**
 
 Before adding drag session code, run the Task 3R-A scheduler ownership and actor tests. Expected: both pass. Keep `DragController` suite-level `@MainActor`, accept `Scheduler` in its initializer and schedule edge/preview actions directly. Do not edit `Scheduler`, `DispatchQueueScheduler`, `MockScheduler`, `SearchDebouncer` or their ownership tests in this task.
 
-- [ ] **Step 4: Create immutable drag model types**
+- [x] **Step 4: Create immutable drag model types**
 
 ```swift
 import Foundation
@@ -8172,7 +8172,7 @@ public struct DragSession: Sendable, Equatable {
 }
 ```
 
-- [ ] **Step 5: Replace DragController persistence with the complete session state machine**
+- [x] **Step 5: Replace DragController persistence with the complete session state machine**
 
 Mark `DragController` `@MainActor`, remove `@unchecked Sendable` and the old writer/order properties, then implement these exact lifecycle and hover methods:
 
@@ -8273,7 +8273,7 @@ private func resetToIdle() {
 
 Retain `handlePressBegan`, `handleDragMoved`, `handlePressEnded`, `handleLongPress` and `handleDragStart`, but make their scheduled closures MainActor-safe and remove every reorder write. A gesture-only `.dragging` state may temporarily have `session == nil`; native pasteboard creation replaces it with a real session before any hover/drop is accepted.
 
-- [ ] **Step 6: Migrate every removed API caller in the same task**
+- [x] **Step 6: Migrate every removed API caller in the same task**
 
 Use `DragController()` or `DragController(scheduler:)` in `AppDelegate`, VC/window test factories and AppDelegate tests. In VC:
 
@@ -8293,7 +8293,7 @@ case .ended, .cancelled, .failed:
 
 Replace VC tests that used `beginEditing` with `handleLongPress(movementDistance:)` for edit mode or `beginDrag(makeSession())` for active drag. Delete tests for `onCreateGroup/currentOrder`; Task 18 adds real drop-intent tests.
 
-- [ ] **Step 7: Run complete compile-adjacent regression GREEN**
+- [x] **Step 7: Run complete compile-adjacent regression GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -8304,7 +8304,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: PASS with no remaining reference to `itemWriter`, `currentOrder`, `pendingCrossPageMove`, `beginEditing`, `simulateReorder` or `onCreateGroup` in DragController callers.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Models/DragSession.swift \
@@ -8346,7 +8346,7 @@ git commit -m "refactor: model drag state with immutable sessions"
   a separate delegate owned by Task 19.
 - Constraint: source/validation/acceptance never mutate a diffable snapshot; only a later COMMIT-triggered VC reload may change it.
 
-- [ ] **Step 1: Add RED tests for source identity, all destinations and immutable snapshots**
+- [x] **Step 1: Add RED tests for source identity, all destinations and immutable snapshots**
 
 Use valid UUID strings in every accepted source fixture. Extend the Task 4
 fixture without dropping its owner: it continues to return
@@ -8641,7 +8641,7 @@ acceptDrop_callbackFailureKeepsSnapshotUnchanged
 draggingSessionEndClearsSessionTimerAndPreview
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 swift test --disable-sandbox list | \
@@ -8658,7 +8658,7 @@ the run is compile RED for coordinator-owned `GridDropDestination`, policy,
 host page/snapshot queries and preview APIs. A zero-match filtered exit is a
 gate failure.
 
-- [ ] **Step 3: Add exact destination and page synchronization APIs**
+- [x] **Step 3: Add exact destination and page synchronization APIs**
 
 ```swift
 public enum GridDropDestination: Sendable, Equatable {
@@ -8741,7 +8741,7 @@ through the coordinator host protocol. After every grid `reload`, call
 clamps immediately. Task 18 synchronizes this host state with the
 VC/page-scroll source of truth.
 
-- [ ] **Step 4: Build and validate a real top-level source session**
+- [x] **Step 4: Build and validate a real top-level source session**
 
 Replace the coordinator's pasteboard writer with:
 
@@ -8786,7 +8786,7 @@ func extractActiveSession(from draggingInfo: NSDraggingInfo) -> DragSession? {
 }
 ```
 
-- [ ] **Step 5: Resolve edges, on-item, before/after and empty deterministically**
+- [x] **Step 5: Resolve edges, on-item, before/after and empty deterministically**
 
 Every policy and delegate method in this step is implemented on
 `AppGridInteractionCoordinator`, never on the grid. Use host queries for all
@@ -8961,7 +8961,7 @@ public func collectionView(
 
 Delete the old `snapshot.deleteItems/insertItems/apply` block completely.
 
-- [ ] **Step 6: Add a visible, reusable folder-creation preview**
+- [x] **Step 6: Add a visible, reusable folder-creation preview**
 
 In `AppIconCell.loadView`, set `containerView.wantsLayer = true` before configuring its layer. Add:
 
@@ -9026,7 +9026,7 @@ Grid `reload` also calls `setFolderCreationPreview(targetItemID: nil)` before
 applying its new snapshot. Tests cover valid app, stale/missing target, non-app
 target, old-target clearing, reload, detach and A-to-B reattach.
 
-- [ ] **Step 7: Run grid, icon and drag suites GREEN**
+- [x] **Step 7: Run grid, icon and drag suites GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -9057,7 +9057,7 @@ Expected: all three scans print nothing. The concrete grid still exposes
 `setCurrentVisualPageIndex(_:)` to the VC, but the host protocol/coordinator
 cannot mutate page state and no test can retain Task 4 lookup/move shortcuts.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Views/AppGridCollectionView.swift \
@@ -9080,7 +9080,7 @@ git commit -m "feat: resolve stable grid drop destinations"
 **Interfaces:**
 - Produces: `show(message:duration:)`, `hide()`, exact failure text, cancellable auto-hide and injectable accessibility announcement with required priority.
 
-- [ ] **Step 1: Write deterministic RED tests without a window or sleep**
+- [x] **Step 1: Write deterministic RED tests without a window or sleep**
 
 ```swift
 import AppKit
@@ -9142,7 +9142,7 @@ struct TransientMessageViewTests {
 }
 ```
 
-- [ ] **Step 2: Run and confirm RED**
+- [x] **Step 2: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -9152,7 +9152,7 @@ swift test --disable-sandbox --no-parallel --filter TransientMessageViewTests
 
 Expected: compile RED because `TransientMessageView` does not exist.
 
-- [ ] **Step 3: Add the complete NSView initializer, hierarchy and scheduling implementation**
+- [x] **Step 3: Add the complete NSView initializer, hierarchy and scheduling implementation**
 
 ```swift
 import AppKit
@@ -9240,7 +9240,7 @@ public final class TransientMessageView: NSView {
 }
 ```
 
-- [ ] **Step 4: Run GREEN and commit**
+- [x] **Step 4: Run GREEN and commit**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -9280,7 +9280,7 @@ git commit -m "feat: add deterministic layout error feedback"
 - Produces: one mutation attempt, COMMIT-then-reload, synchronous search triple guard, sanitized structured log and current-page synchronization.
 - Constraint: `DataStoring` remains independent from `LayoutMutating`; AppDelegate retains two separately typed references to the same production `StorageManager`.
 
-- [ ] **Step 1: Extend the mutator test double with attempt accounting**
+- [x] **Step 1: Extend the mutator test double with attempt accounting**
 
 Task 10's `appliedIntents` records only successful calls. Add independent attempt state and increment it before throwing:
 
@@ -9302,7 +9302,7 @@ final class MockLayoutMutator: LayoutMutating, @unchecked Sendable {
 }
 ```
 
-- [ ] **Step 2: Add RED mapping, failure, search and page synchronization tests**
+- [x] **Step 2: Add RED mapping, failure, search and page synchronization tests**
 
 ```swift
 @Test("事务失败只有一次尝试并显示固定提示")
@@ -9569,7 +9569,7 @@ validate/accept entries and assert `[]`/`false`, zero callback invocations and
 an unchanged snapshot. Re-enable drag and assert the same source is accepted;
 this proves search toggles all three boundaries rather than only the writer.
 
-- [ ] **Step 3: Run and confirm RED**
+- [x] **Step 3: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -9580,7 +9580,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: compile RED for the new VC initializer, message/log members, AppDelegate mutator property and page synchronization.
 
-- [ ] **Step 4: Retain separate storage and mutator references in AppDelegate**
+- [x] **Step 4: Retain separate storage and mutator references in AppDelegate**
 
 Add:
 
@@ -9622,7 +9622,7 @@ do {
 
 `setupControllers()` must guard both references and pass `layoutMutator` separately. AppDelegate tests assert first success, recovered success and both failure paths keep `storage/layoutMutator` synchronized.
 
-- [ ] **Step 5: Add the VC dependency, transient view and sanitized log event**
+- [x] **Step 5: Add the VC dependency, transient view and sanitized log event**
 
 Add production types and properties:
 
@@ -9697,7 +9697,7 @@ NSLayoutConstraint.activate([
 ])
 ```
 
-- [ ] **Step 6: Map grid destinations and bind the only writer**
+- [x] **Step 6: Map grid destinations and bind the only writer**
 
 ```swift
 func makeGridIntent(
@@ -9770,7 +9770,7 @@ gridInteractionCoordinator?.onDropRequested = { [weak self] session, destination
 
 The logger receives only `LayoutDropFailureEvent`; never pass or interpolate the caught `error`. Tests inject the logger and assert event fields exactly.
 
-- [ ] **Step 7: Disable drag synchronously at source, validation and writer boundaries**
+- [x] **Step 7: Disable drag synchronously at source, validation and writer boundaries**
 
 Task 19 adds folder delegates, but add `public var isDragEnabled = true` to `FolderOverlayView` now so search code compiles independently. Add:
 
@@ -9784,7 +9784,7 @@ private func setDragEnabled(_ enabled: Bool) {
 
 Call `setDragEnabled(false)` in `.enterSearchMode` and `.appendToQuery` before scheduling search. Call `setDragEnabled(true)` in `.clearSearch` after `keyboardNavigator.mode` returns idle and in `handleSearch(query: "")`. Keep Task 16 pasteboard/validate guards and `applyDropIntent`'s synchronous `keyboardNavigator.mode` guard.
 
-- [ ] **Step 8: Synchronize currentVisualPageIndex at every navigation entry**
+- [x] **Step 8: Synchronize currentVisualPageIndex at every navigation entry**
 
 ```swift
 private func synchronizeCurrentVisualPage() {
@@ -9810,7 +9810,7 @@ Call this method:
 
 The dot callback already calls `navigateToPage`; do not add a second path.
 
-- [ ] **Step 9: Update every VC constructor and run regression GREEN**
+- [x] **Step 9: Update every VC constructor and run regression GREEN**
 
 Pass `MockLayoutMutator` from VC/window test factories and real `layoutMutator` from AppDelegate. Run:
 
@@ -9823,7 +9823,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: PASS; failure has one attempt and zero successful apply, search races make zero attempts, all page paths synchronize, and logs contain no underlying error text.
 
-- [ ] **Step 10: Commit**
+- [x] **Step 10: Commit**
 
 ```bash
 git add Sources/LaunchPad/Controllers/LaunchPadViewController.swift \
@@ -9872,7 +9872,7 @@ git commit -m "feat: commit top-level drops through one domain writer"
 - Consumes: the actual folder clip viewport; both axes use the existing 72x80 item geometry and capacity never exceeds the existing maximum of 35.
 - Produces: width/height-derived folder rows, columns and capped capacity, one shared open/reload/resize reprojection path, inner and overlay-exterior drop destinations, stable child placement, drag-out, deterministic folder reload, real edit-mode delete control, confirmed safe delete and all lifecycle cleanup.
 
-- [ ] **Step 1: Repair the existing external-click animation fixture as an isolated test commit**
+- [x] **Step 1: Repair the existing external-click animation fixture as an isolated test commit**
 
 Keep the file in its current framework for this one fixture-only commit. Require the optional `NSEvent`, call `layoutSubtreeIfNeeded()`, recursively locate the panel `NSVisualEffectView`, choose `NSPoint(x: panel.frame.minX - 1, y: panel.frame.midY)` and prove the point is outside the panel. Inject `closeFolderCompletionRunner = { $0() }`; assert synchronously that `isHidden` is true and `onClosed` ran exactly once. Delete the 0.3-second dispatch, expectation and wait.
 
@@ -9885,7 +9885,7 @@ git add Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift
 git commit -m "test: make folder close completion deterministic"
 ```
 
-- [ ] **Step 2: Migrate FolderOverlayViewTests 39/39 in a production-empty commit**
+- [x] **Step 2: Migrate FolderOverlayViewTests 39/39 in a production-empty commit**
 
 Use `@MainActor @Suite("FolderOverlayView") struct FolderOverlayViewTests`. Do not migrate `setUp`/`tearDown` or IUO state; each test calls:
 
@@ -9923,7 +9923,7 @@ git add Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift \
 git commit -m "test: migrate folder overlay tests to Swift Testing"
 ```
 
-- [ ] **Step 3: Migrate FolderOverlayViewPagingTests 8/8 and audit all 47 mappings**
+- [x] **Step 3: Migrate FolderOverlayViewPagingTests 8/8 and audit all 47 mappings**
 
 Use `@MainActor @Suite("FolderOverlayView paging")` with a fresh overlay per test. Notification-driven paging posts to a local `NotificationCenter`; because the `.main` observer is synchronous on MainActor, assert immediately without RunLoop polling. Append all 8 mappings to the report. The complete old-name mapping is removal of `test` and lowercasing the next character, but the report must expand all 39+8 qualified IDs with assertion/actor/fixture/cleanup columns.
 
@@ -9967,7 +9967,7 @@ column and new discovery each contain exactly 47 qualified IDs. Both canonical
 one-to-one; all tests pass, the static scan is empty and both migration commits
 have no production diff.
 
-- [ ] **Step 4: Add RED tests for inner folder and overlay-exterior branches**
+- [x] **Step 4: Add RED tests for inner folder and overlay-exterior branches**
 
 Use valid UUID fixtures and add:
 
@@ -10820,7 +10820,7 @@ reloads the original children, returns false and shows exactly
 `无法更新布局，请重试`. Each fixture asserts one mutation attempt and no second
 writer path.
 
-- [ ] **Step 5: Add RED safe-delete and lifecycle tests**
+- [x] **Step 5: Add RED safe-delete and lifecycle tests**
 
 First remove the window-test fixed-wait fixture completely. Delete
 `pumpRunloopBriefly(for:)` and `flushMainQueue(for:)`; replace all 11
@@ -10973,7 +10973,7 @@ func deinitReleasesOverlayWithInstalledScrollObserver() {
 }
 ```
 
-- [ ] **Step 6: Run and confirm RED**
+- [x] **Step 6: Run and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -10986,7 +10986,7 @@ Expected: compile RED for folder viewport capacity/reprojection, folder
 destination, overlay-exterior destination methods, reload API, delete control
 window cleanup, `mainActorDispatcher` and application URL/open boundaries.
 
-- [ ] **Step 7: Add complete FolderOverlay source, inner destination and reload APIs**
+- [x] **Step 7: Add complete FolderOverlay source, inner destination and reload APIs**
 
 Add state and callbacks:
 
@@ -11467,7 +11467,7 @@ extension FolderDropDestination {
 }
 ```
 
-- [ ] **Step 8: Make FolderOverlay itself receive exterior drops**
+- [x] **Step 8: Make FolderOverlay itself receive exterior drops**
 
 `NSDraggingInfo.draggingLocation` is in window coordinates. Every exterior
 AppKit entry converts independently; the helper accepts only an overlay-local
@@ -11533,7 +11533,7 @@ func performExteriorDrop(at localPoint: NSPoint) -> Bool {
 
 The final helper is internal and exists only for deterministic tests; production uses the AppKit overrides.
 
-- [ ] **Step 9: Bind overlay-local points to main-grid stable placements and reload folder state**
+- [x] **Step 9: Bind overlay-local points to main-grid stable placements and reload folder state**
 
 In VC setup:
 
@@ -11603,7 +11603,7 @@ func handleFolderDrop(
 
 Because `applyDropIntent` reloads on both success and failure, failure reloads the original database children and returns false for AppKit snapback; auto-dissolve removes the folder from reloaded top-level state and closes the overlay.
 
-- [ ] **Step 10: Remove FolderController's non-atomic layout APIs**
+- [x] **Step 10: Remove FolderController's non-atomic layout APIs**
 
 Delete `createFolder`, `addToFolder`, `dissolveFolder`, and `removeFromFolder` plus tests that assert multi-CRUD calls. Keep exactly:
 
@@ -11633,7 +11633,7 @@ public final class FolderController {
 
 All drag and safe-delete writes now go only through `LaunchPadViewController -> LayoutMutating`.
 
-- [ ] **Step 11: Add a real FolderCell edit/delete control and wire it**
+- [x] **Step 11: Add a real FolderCell edit/delete control and wire it**
 
 Add `deleteButton`, `onDelete`, state and methods:
 
@@ -11689,7 +11689,7 @@ if let appCell = collectionView.item(at: indexPath) as? AppIconCell {
 
 Update existing test injection to provide either cell type, or add a separate `folderJiggleCellProvider` used before the real collection fallback.
 
-- [ ] **Step 12: Confirm safe folder delete and retain app deletion**
+- [x] **Step 12: Confirm safe folder delete and retain app deletion**
 
 Add to VC:
 
@@ -11729,7 +11729,7 @@ func handleItemDelete(_ item: PageItem) {
 
 The app failure log also avoids interpolating storage details. Tests inject confirmation; no test displays a real alert.
 
-- [ ] **Step 13: Clear drag state and make window lifecycle boundaries deterministic**
+- [x] **Step 13: Clear drag state and make window lifecycle boundaries deterministic**
 
 Add one idempotent VC entry:
 
@@ -11782,7 +11782,7 @@ case .hidden:
 
 Add tests for accepted drop, rejected drop/session end, explicit cancel, ESC edit exit, normal ESC close, search activation, `.closing` and `.hidden`; all assert timer actions empty, preview cleared and `session == nil`.
 
-- [ ] **Step 14: Run all folder/drag suites GREEN**
+- [x] **Step 14: Run all folder/drag suites GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -11806,7 +11806,7 @@ missing session, wrong type/kind/parent and stale-child inputs all reject with
 zero callback. Both window-test scans print nothing: all former fixed waits are
 event/boundary driven and application launch is fully injected.
 
-- [ ] **Step 15: Commit behavior and run aggregate review**
+- [x] **Step 15: Commit behavior and run aggregate review**
 
 ```bash
 git add Sources/LaunchPad/Views/FolderOverlayView.swift \
@@ -11854,7 +11854,7 @@ Review the external-click fixture commit, both production-empty migration commit
   transaction; `fetchAllItems(parentId: nil)` returns only root pages and must
   never again be used as the installed-app set.
 
-- [ ] **Step 1: Replace constant assertions with scan data-flow RED tests**
+- [x] **Step 1: Replace constant assertions with scan data-flow RED tests**
 
 Replace scan tests that inspect unrelated `ItemWriting` calls with one narrow
 writer double. `DataStoring` does not inherit `ScanBatchWriting`:
@@ -12250,7 +12250,7 @@ page + A + B, scanned A-changed + C, and assert A updates, B is deleted, C is
 inserted and no duplicate-bundle failure occurs; this prevents the old
 root-pages-only diff from returning.
 
-- [ ] **Step 2: Run scan suites and confirm RED**
+- [x] **Step 2: Run scan suites and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -12263,7 +12263,7 @@ Expected: compile RED for `ScanBatchWriting`, storage batch transaction and
 shared window-to-grid viewport geometry. Verify all five named suites are
 reported; zero-match success is a failure.
 
-- [ ] **Step 3: Add the narrow scan batch contract**
+- [x] **Step 3: Add the narrow scan batch contract**
 
 Create `ScanBatch.swift`. It is internal to the LaunchPad target; controller and
 protocol modules do not receive a general transaction closure:
@@ -12323,7 +12323,7 @@ Call `deduplicated(apps)` at the end of `scanDirectories`. Directory errors
 continue to the next directory exactly as before; write continuation moves into
 the single repository transaction in Step 4.
 
-- [ ] **Step 4: Implement the single-transaction scan repository**
+- [x] **Step 4: Implement the single-transaction scan repository**
 
 Make `StorageManager` conform to `ScanBatchWriting`. Add complete construction,
 deduplication and per-operation accounting helpers:
@@ -12674,7 +12674,7 @@ func synchronizeInstalledApps(
 }
 ```
 
-- [ ] **Step 5: Share actual grid chrome geometry and wire AppDelegate**
+- [x] **Step 5: Share actual grid chrome geometry and wire AppDelegate**
 
 Replace the six VC constraint literals with named constants and use those same
 constants in the helper that AppDelegate calls before calculating metrics:
@@ -12834,7 +12834,7 @@ The logger never interpolates the underlying SQLite error. Display changes
 after this initial normalization still only call Task 5 projection and perform
 zero storage writes.
 
-- [ ] **Step 6: Run scan, viewport and controller regression GREEN**
+- [x] **Step 6: Run scan, viewport and controller regression GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -12843,7 +12843,7 @@ swift test --disable-sandbox --no-parallel \
   --filter 'GridLayoutCalculatorTests|StorageManagerScanBatchTests|AppScannerTests|AppDelegateTests|LaunchPadViewControllerTests|IntegrationTests'
 ```
 
-- [ ] **Step 7: Run every storage and integration regression GREEN**
+- [x] **Step 7: Run every storage and integration regression GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -12857,7 +12857,7 @@ rollback-failure case invalidates its connection, file-backed reopen contains no
 partial scan rows, zero apps creates one empty page, and real incremental sync
 updates/deletes/inserts from `allItems`.
 
-- [ ] **Step 8: Commit**
+- [x] **Step 8: Commit**
 
 ```bash
 git add Sources/LaunchPad/Services/ScanBatch.swift \
@@ -12901,7 +12901,7 @@ git commit -m "fix: commit app scans atomically"
 - Keeps one non-skipped host integration test against a UUID temporary directory; all orchestration/lifecycle tests use injected backends and never touch user paths.
 - Migrates: FileWatcher 14 + Accessibility 16 = 30 old methods one-to-one with zero legacy framework symbols.
 
-- [ ] **Step 1: Capture the 30-test baseline and qualified mapping inventory**
+- [x] **Step 1: Capture the 30-test baseline and qualified mapping inventory**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -12918,7 +12918,7 @@ rg -n '^\s*func test' \
 
 Expected: FileWatcher has 14 old methods and Accessibility has 16. The migration report must list qualified old/new IDs because both groups contain an `init_doesNotCrash` name. Required new FileWatcher IDs are `init_doesNotCrash`, `init_customDebounceInterval`, `stop_withoutStart_doesNotCrash`, `start_emptyPaths_doesNotCrash`, `start_thenStop_releasesProperly`, `deinit_afterStart_doesNotCrash`, `start_withMultiplePaths_doesNotCrash`, `start_stopThenStartAgain_doesNotCrash`, `init_zeroDebounceInterval_doesNotCrash`, `deinit_withoutStart_isSafe`, `start_realFileChange_triggersOnChange`, `start_streamCreationFails_doesNotCrash`, `start_streamCreationFails_thenStop_isSafe`, `handleEvents_clientCallBackInfoNil_returnsEarly`. Required Accessibility IDs are `current_returnsValidSettings`, `current_reduceMotion_isBool`, `current_reduceTransparency_isBool`, `current_increaseContrast_isBool`, `init_withExplicitValues`, `init_allFalse`, `init_allTrue`, `animationFallback_reduceMotion_returnsFadeOrInstant`, `animationFallback_normalMotion_returnsSpring`, `backgroundMaterial_reduceTransparency_returnsSolidColor`, `backgroundMaterial_normalTransparency_returnsHudWindow`, `contrastFallback_increaseContrast_returnsHighContrast`, `contrastFallback_normalContrast_returnsSystemColors`, `init_doesNotCrash`, `stop_multipleCalls_doesNotCrash`, `deinit_doesNotCrash`.
 
-- [ ] **Step 2: Add resource lifecycle and side-effect isolation RED tests**
+- [x] **Step 2: Add resource lifecycle and side-effect isolation RED tests**
 
 Add deterministic lifecycle tests in new Swift Testing files before production
 changes. Put the shared `MockFileEventStream` below in
@@ -13093,7 +13093,7 @@ func eventBurstFiresLatestOnce() async {
 }
 ```
 
-- [ ] **Step 3: Run every old and new focused suite and confirm RED**
+- [x] **Step 3: Run every old and new focused suite and confirm RED**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -13106,7 +13106,7 @@ Expected: the newly created lifecycle/observer tests are discovered and fail
 for missing production interfaces; a zero-match filter or a run that exercises
 only the four pre-existing suites is not RED evidence.
 
-- [ ] **Step 4: Verify the pre-landed Dock exclusion boundary**
+- [x] **Step 4: Verify the pre-landed Dock exclusion boundary**
 
 Task 3R-C owns this implementation and its focused/full evidence. Do not
 duplicate or redesign it in Task 21. Verify the boundary remains intact after
@@ -13128,7 +13128,7 @@ data, the test file contains no Dock path mutation, and production retains one
 read-only system provider plus the pure parser. Any regression is fixed in the
 Task 21 behavior commit; there is no separate AppScanner commit in this task.
 
-- [ ] **Step 5: Separate FileWatcher orchestration from the FSEvent backend**
+- [x] **Step 5: Separate FileWatcher orchestration from the FSEvent backend**
 
 Define an internal backend contract in `FileWatcher.swift`:
 
@@ -13398,7 +13398,7 @@ git add Sources/LaunchPad/Services/FileWatcher.swift \
 git commit -m "fix: expose and balance file watcher lifecycle"
 ```
 
-- [ ] **Step 6: Complete HotkeyManager tap ownership without duplicating 3R/8 boundaries**
+- [x] **Step 6: Complete HotkeyManager tap ownership without duplicating 3R/8 boundaries**
 
 Keep Task 3R-B's MainActor contract, weak `HotkeyCallbackBox`, exact callback
 context ownership, `localMonitorInstaller`/`localMonitorRemover` names,
@@ -13552,7 +13552,7 @@ git add Sources/LaunchPad/App/HotkeyManager.swift \
 git commit -m "fix: balance global hotkey ownership"
 ```
 
-- [ ] **Step 7: Abstract status items and add one idempotent AppDelegate shutdown path**
+- [x] **Step 7: Abstract status items and add one idempotent AppDelegate shutdown path**
 
 Add:
 
@@ -13600,7 +13600,7 @@ git add Sources/LaunchPad/App/AppDelegate.swift \
 git commit -m "fix: release app process resources on shutdown"
 ```
 
-- [ ] **Step 8: Read accessibility settings and notifications through local sources**
+- [x] **Step 8: Read accessibility settings and notifications through local sources**
 
 Add:
 
@@ -13781,7 +13781,7 @@ git add Sources/LaunchPad/Utilities/AccessibilityObservers.swift \
 git commit -m "fix: isolate accessibility settings and observer sources"
 ```
 
-- [ ] **Step 9: Migrate FileWatcher 14/14 and Accessibility 16/16 in pure commits**
+- [x] **Step 9: Migrate FileWatcher 14/14 and Accessibility 16/16 in pure commits**
 
 After Steps 5 and 8 are green, migrate each touched legacy file completely.
 Both AppKit suites are suite-level `@MainActor`; use `#expect`, `try #require`,
@@ -13843,7 +13843,7 @@ mappings. Static output is empty and `TASK21_MIGRATION_BASE..HEAD` has no
 production diff. The existing `AccessibilityObserversTests.swift` remains in
 Step 8's behavior commit and is never relabeled as a pure migration.
 
-- [ ] **Step 10: Validate lifecycle suites twice, the real host test and the full zero-residue gate**
+- [x] **Step 10: Validate lifecycle suites twice, the real host test and the full zero-residue gate**
 
 Confirm Step 9 contains this non-skipped host integration test byte-for-byte;
 it touches only a test-owned UUID directory and uses structured timeout rather
@@ -13920,7 +13920,7 @@ swift test --disable-sandbox --no-parallel
 
 Expected: both focused invocations and the complete suite exit 0 with summaries, the real temporary-directory test executes, static output is empty, and no manual termination, skip, signal or persistent system resource occurs.
 
-- [ ] **Step 11: Review every committed boundary and the aggregate range**
+- [x] **Step 11: Review every committed boundary and the aggregate range**
 
 Review the already committed ranges independently in execution order:
 
@@ -13953,7 +13953,7 @@ review package.
   timeout-protected release command. It does not produce another supervisor.
 - Constraint: no environment switch, test trait, `--skip PerformanceTests`, or relaxed threshold.
 
-- [ ] **Step 1: Add deterministic benchmark helpers and first RED conversions**
+- [x] **Step 1: Add deterministic benchmark helpers and first RED conversions**
 
 Replace `Date` and random selection with:
 
@@ -14148,7 +14148,7 @@ func iconCache_1000randomAccess_perf() {
 #endif
 ```
 
-- [ ] **Step 2: Preserve every existing threshold for both median and p95**
+- [x] **Step 2: Preserve every existing threshold for both median and p95**
 
 Use these exact assertions:
 
@@ -14170,7 +14170,7 @@ for index in indices {
 
 Do not add `.enabled(if:)`, `ProcessInfo.processInfo.environment`, compile flags, retries, threshold multipliers, or skipped samples. A failed wall-clock assertion remains a release failure.
 
-- [ ] **Step 3: Run the performance suite serially and fix real regressions before proceeding**
+- [x] **Step 3: Run the performance suite serially and fix real regressions before proceeding**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -14181,7 +14181,7 @@ scripts/run-with-timeout.sh 180 -- \
 
 Expected: 6/6 tests pass and the process exits 0. If a threshold fails, capture a sample of the test process and optimize the measured production path; do not skip, condition, retry or widen the assertion.
 
-- [ ] **Step 4: Create the single release test entry**
+- [x] **Step 4: Create the single release test entry**
 
 Create executable `scripts/test-release.sh` with this structure:
 
@@ -14336,7 +14336,7 @@ Release-build stdout/stderr is retained in `release-build.log`; do not suppress 
 so every warning remains visible in the artifact directory.
 Run `chmod +x scripts/test-release.sh`.
 
-- [ ] **Step 5: Validate script syntax and anti-skip invariants**
+- [x] **Step 5: Validate script syntax and anti-skip invariants**
 
 ```bash
 zsh -n scripts/run-with-timeout.sh scripts/test-release.sh
@@ -14376,7 +14376,7 @@ ordinary nonzero, while the separate exec-failure branch proves status `127`.
 Neither script inspects or kills unrelated system `sleep` processes.
 The normal path, not only manual validation, invokes all three self-tests before discovery. `--xunit-output` is intentionally not used because the current Swift Testing runner did not produce a reliable XML artifact; discovery lists, complete logs, exact summaries, named performance pass lines and exit codes are the authority.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 ```bash
 git add Tests/LaunchPadTests/Performance/PerformanceTests.swift \
@@ -14402,7 +14402,7 @@ git commit -m "test: enforce deterministic release performance gates"
 - Produces: file-backed SQLite durability evidence, three-run test/list/log evidence, release-build evidence and documentation matching production.
 - Preserves: `docs/2026-07-15-release-readiness-review.md` as immutable historical evidence.
 
-- [ ] **Step 1: Add top-level blank/cross-page and complete folder durability RED tests**
+- [x] **Step 1: Add top-level blank/cross-page and complete folder durability RED tests**
 
 Do not duplicate Task 14's `layoutCommitSurvivesReopen` or
 `rollbackFailureInvalidatesAndReopenRestoresCommittedState`; those already
@@ -14661,7 +14661,7 @@ func folderMutationSequenceSurvivesEveryFileReopen() throws {
 }
 ```
 
-- [ ] **Step 2: Run integration and storage suites GREEN**
+- [x] **Step 2: Run integration and storage suites GREEN**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -14670,7 +14670,7 @@ swift test --disable-sandbox --no-parallel \
   --filter 'StorageManager|LayoutDomainStateTests|IntegrationTests'
 ```
 
-- [ ] **Step 3: Run every P0-adjacent suite before the expensive gate**
+- [x] **Step 3: Run every P0-adjacent suite before the expensive gate**
 
 ```bash
 CLANG_MODULE_CACHE_PATH=/tmp/launchpad-clang-module-cache \
@@ -14681,7 +14681,7 @@ swift test --disable-sandbox --no-parallel \
 
 Expected: all selected suites pass, performance assertions execute, and the process exits without a residual test process.
 
-- [ ] **Step 4: Commit and independently review durability evidence**
+- [x] **Step 4: Commit and independently review durability evidence**
 
 ```bash
 git add Tests/LaunchPadTests/Integration/IntegrationTests.swift
@@ -14695,7 +14695,7 @@ swift test --disable-sandbox --no-parallel \
 
 Review the integration commit by itself and require the focused command to exit 0. No documentation file enters this commit.
 
-- [ ] **Step 5: Run the sole final-authority gate and retain its artifact directory**
+- [x] **Step 5: Run the sole final-authority gate and retain its artifact directory**
 
 ```bash
 set -o pipefail
@@ -14709,7 +14709,7 @@ warning suppression or residual test process. Record the artifact directory
 printed by the script. This is the only final-authority gate run; Task 23 must
 not call the watchdog directly or run a pre-document duplicate.
 
-- [ ] **Step 6: Synchronize README, all three design documents and progress from Step 5 artifacts**
+- [x] **Step 6: Synchronize README, all three design documents and progress from Step 5 artifacts**
 
 Update README to state:
 
@@ -14736,7 +14736,7 @@ test counts/summaries, release-build exit code and Step 5 artifact path. Do not
 edit the historical review report or claim that unresolved P1/P2 release
 findings are closed.
 
-- [ ] **Step 7: Review and commit documentation evidence separately**
+- [x] **Step 7: Review and commit documentation evidence separately**
 
 ```bash
 git diff --check
@@ -14785,29 +14785,29 @@ At each checkpoint, review `git status --short` and stage only files listed by t
 
 ## Final Acceptance Criteria
 
-- [ ] 900/768/600pt and every row breakpoint produce 5...1 rows with no overlap or clipping; 1440x620 is 7x5 and 1440x496 is 7x4.
-- [ ] Folder overlay derives both axes from its actual clip viewport, never exceeds 35 items per page, and preserves/clamps its visual page across reload and resize.
-- [ ] Visual resize/reprojection preserves flattened stable IDs, selection and current-page clamp and performs zero storage writes.
-- [ ] Main grid delegate is the VC-retained `AppGridInteractionCoordinator`,
+- [x] 900/768/600pt and every row breakpoint produce 5...1 rows with no overlap or clipping; 1440x620 is 7x5 and 1440x496 is 7x4.
+- [x] Folder overlay derives both axes from its actual clip viewport, never exceeds 35 items per page, and preserves/clamps its visual page across reload and resize.
+- [x] Visual resize/reprojection preserves flattened stable IDs, selection and current-page clamp and performs zero storage writes.
+- [x] Main grid delegate is the VC-retained `AppGridInteractionCoordinator`,
   never the grid or an internal proxy; all old grid interaction callbacks and
   dependencies are absent, real delegate selection/drag wiring is tested, and
   programmatic selection emits no business callback.
-- [ ] Keyboard mode/query remain identical; first character is present; only actually handled visible keyDown events are swallowed.
-- [ ] Same-page, cross-page, empty append, existing-folder, drop-to-create, folder reorder and drag-out all persist after reload/reopen.
-- [ ] App-on-app hover at 0.8s changes preview only; release is the sole commit point; nested folders are rejected.
-- [ ] Any layout failure reloads committed state, shows exactly `无法更新布局，请重试`, logs no underlying SQLite description and retries zero times.
-- [ ] Every SQLite connection operation uses one serial queue; every transaction boundary is checked; rollback failure preserves both errors, invalidates and closes the connection.
-- [ ] Empty persisted layouts keep exactly one page; overflow creates pages; every other empty page is deleted; all ordering is dense and row-major.
-- [ ] Successful initial/incremental scan reloads an already-loaded VC once, never forces an unloaded view, and uses the target display's real capacity.
-- [ ] Tests never change real Dock plist, login items, accessibility settings, event taps, local monitors, status items or user databases; the one real FSEvents test watches and cleans only its UUID temporary directory.
-- [ ] `Tests/**/*.swift` contains zero legacy framework symbols, skip APIs and fixed waits; 9 files / 15 old cases / 261 methods are represented by one-to-one migration reports and Swift Testing discovery.
-- [ ] All five wall-clock measurements assert median and p95 with `ContinuousClock`, deterministic input and no conditional enablement, retry, threshold widening or skip; the sixth performance test proves no repeated disk write.
-- [ ] `scripts/test-release.sh` invokes the shared `scripts/run-with-timeout.sh`
+- [x] Keyboard mode/query remain identical; first character is present; only actually handled visible keyDown events are swallowed.
+- [x] Same-page, cross-page, empty append, existing-folder, drop-to-create, folder reorder and drag-out all persist after reload/reopen.
+- [x] App-on-app hover at 0.8s changes preview only; release is the sole commit point; nested folders are rejected.
+- [x] Any layout failure reloads committed state, shows exactly `无法更新布局，请重试`, logs no underlying SQLite description and retries zero times.
+- [x] Every SQLite connection operation uses one serial queue; every transaction boundary is checked; rollback failure preserves both errors, invalidates and closes the connection.
+- [x] Empty persisted layouts keep exactly one page; overflow creates pages; every other empty page is deleted; all ordering is dense and row-major.
+- [x] Successful initial/incremental scan reloads an already-loaded VC once, never forces an unloaded view, and uses the target display's real capacity.
+- [x] Tests never change real Dock plist, login items, accessibility settings, event taps, local monitors, status items or user databases; the one real FSEvents test watches and cleans only its UUID temporary directory.
+- [x] `Tests/**/*.swift` contains zero legacy framework symbols, skip APIs and fixed waits; 9 files / 15 old cases / 261 methods are represented by one-to-one migration reports and Swift Testing discovery.
+- [x] All five wall-clock measurements assert median and p95 with `ContinuousClock`, deterministic input and no conditional enablement, retry, threshold widening or skip; the sixth performance test proves no repeated disk write.
+- [x] `scripts/test-release.sh` invokes the shared `scripts/run-with-timeout.sh`
   self-tests, then protects all three discovery commands, three full serial
   suites and the release build with that same implementation; it verifies six
   performance pass lines per log and exits 0 without timeout, signal, hidden
   warnings or residual test processes.
-- [ ] README and all three design documents match observed production behavior; progress evidence records actual commits/counts/summaries/build/artifact path and unresolved P1/P2 findings remain explicitly open.
+- [x] README and all three design documents match observed production behavior; progress evidence records actual commits/counts/summaries/build/artifact path and unresolved P1/P2 findings remain explicitly open.
 
 ## Stop Conditions
 
