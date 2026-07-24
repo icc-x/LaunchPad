@@ -189,7 +189,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         setupControllers()
         setupMenuBar()
         setupHotkey()
-        performInitialScan()
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            self?.performInitialScan()
+        }
         setupFileWatcher()
     }
 
