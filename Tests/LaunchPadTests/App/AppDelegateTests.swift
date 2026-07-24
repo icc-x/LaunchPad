@@ -1509,5 +1509,24 @@ struct AppDelegateTests {
         #expect(reloads == 0)
         #expect(categories == ["scan-batch-failed"])
     }
+
+    // MARK: - P2-6: Async scan
+
+    @Test("performInitialScan 异步执行，不阻塞调用者")
+    func performInitialScan_isAsynchronous() {
+        let sut = makeDelegate()
+        sut.appScanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
+        sut.targetWindowContentSizeProvider = { CGSize(width: 1440, height: 598) }
+        // inject hook to detect whether mainAsyncRunner fires before performInitialScan returns
+        var callbackFiredDuringScan = false
+        sut.mainAsyncRunner = { block in
+            callbackFiredDuringScan = true
+            block()
+        }
+        sut.performInitialScan()
+        // RED: current impl calls mainAsyncRunner synchronously during performScan
+        #expect(!callbackFiredDuringScan,
+            "扫描应在后台异步执行")
+    }
 }
 #endif
