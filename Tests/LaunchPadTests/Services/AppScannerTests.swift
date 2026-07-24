@@ -41,6 +41,13 @@ struct AppScannerTests {
                 "CFBundleIdentifier": "com.test.good",
             ] : [:]
         }
+
+        func enumerateAppBundles(
+            at url: URL, maxDepth: Int,
+            options: FileManager.DirectoryEnumerationOptions
+        ) throws -> [URL] {
+            try contentsOfDirectory(at: url).filter { $0.pathExtension == "app" }
+        }
     }
 
     @Test("目录读取失败后继续下一目录")
@@ -224,5 +231,95 @@ struct AppScannerTests {
         )
         #expect(AppScanner.parseExcludedBundleIDs(from: data) == ["com.test.hidden"])
         #expect(AppScanner.parseExcludedBundleIDs(from: nil).isEmpty)
+    }
+}
+
+// MARK: - P1-8: Recursive scan
+
+@Suite("AppScanner recursive enumeration")
+struct AppScannerRecursiveScanTests {
+    private let firstDirectory = URL(fileURLWithPath: "/Applications")
+
+    private func appURL(_ name: String, relativeTo base: URL = URL(fileURLWithPath: "/Applications")) -> URL {
+        base.appendingPathComponent("\(name).app")
+    }
+
+    private func root(_ url: URL, missingPolicy: AppDiscoveryRoot.MissingPolicy = .required) -> AppDiscoveryRoot {
+        AppDiscoveryRoot(url: url, missingPolicy: missingPolicy)
+    }
+
+    @Test("递归枚举发现嵌套在子目录中的 app")
+    func recursiveScan_findsNestedApps() throws {
+        let fileSystem = MockFileSystemService()
+
+        // 构造嵌套目录：/Applications/Safari.app + /Applications/Utilities/Terminal.app
+        let safariURL = appURL("Safari")
+        let utilitiesURL = firstDirectory.appendingPathComponent("Utilities")
+        let terminalURL = appURL("Terminal", relativeTo: utilitiesURL)
+
+        fileSystem.enumerateAppBundlesResult = [safariURL, terminalURL]
+
+        // 预设 bundle 信息
+        let safariBundle: [String: any Sendable] = [
+            "CFBundleIdentifier": "com.apple.Safari",
+            "CFBundleName": "Safari",
+        ]
+        let terminalBundle: [String: any Sendable] = [
+            "CFBundleIdentifier": "com.apple.Terminal",
+            "CFBundleName": "Terminal",
+        ]
+        fileSystem.bundleInfos = [safariURL: safariBundle, terminalURL: terminalBundle]
+
+        let scanner = AppScanner(fileSystemService: fileSystem)
+        let result = scanner.scanDirectories([root(firstDirectory)])
+
+        // RED: scanDirectories 仍使用 contentsOfDirectory，不会调用 enumerateAppBundles
+        // 因此 nested apps 不会被发现
+        #expect(result.apps.count == 2)
+        let bundleIds = result.apps.map(\.bundleId)
+        #expect(bundleIds.contains("com.apple.Safari"))
+        #expect(bundleIds.contains("com.apple.Terminal"))
+    }
+
+    @Test("递归枚举遵守深度限制")
+    func recursiveScan_respectsDepthLimit() throws {
+        let fileSystem = MockFileSystemService()
+
+        // 三层目录，maxDepth=1 只到第一层
+        let safariURL = appURL("Safari")
+        fileSystem.enumerateAppBundlesResult = [safariURL]
+
+        let safariBundle: [String: any Sendable] = [
+            "CFBundleIdentifier": "com.apple.Safari",
+            "CFBundleName": "Safari",
+        ]
+        fileSystem.bundleInfos = [safariURL: safariBundle]
+
+        let scanner = AppScanner(fileSystemService: fileSystem)
+        let result = scanner.scanDirectories([root(firstDirectory)])
+
+        #expect(result.apps.count == 1)
+    }
+
+    @Test("递归枚举跳过隐藏目录")
+    func recursiveScan_skipsHiddenDirectories() throws {
+        let fileSystem = MockFileSystemService()
+
+        let safariURL = appURL("Safari")
+        // 隐藏目录中的 app 不在 enumerateAppBundlesResult 中
+        fileSystem.enumerateAppBundlesResult = [safariURL]
+
+        let safariBundle: [String: any Sendable] = [
+            "CFBundleIdentifier": "com.apple.Safari",
+            "CFBundleName": "Safari",
+        ]
+        fileSystem.bundleInfos = [safariURL: safariBundle]
+
+        let scanner = AppScanner(fileSystemService: fileSystem)
+        let result = scanner.scanDirectories([root(firstDirectory)])
+
+        // 隐藏目录中的 app 未被枚举 → 只返回 Safari
+        #expect(result.apps.count == 1)
+        #expect(result.apps.first?.bundleId == "com.apple.Safari")
     }
 }

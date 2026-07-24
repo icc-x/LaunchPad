@@ -493,6 +493,14 @@ struct SystemFileSystemService: FileSystemService {
         }
         return plist
     }
+
+    func enumerateAppBundles(
+        at url: URL, maxDepth: Int,
+        options: FileManager.DirectoryEnumerationOptions
+    ) throws -> [URL] {
+        // TODO: GREEN - use FileManager.enumerator
+        return []
+    }
 }
 
 /// 生产环境图标提供者

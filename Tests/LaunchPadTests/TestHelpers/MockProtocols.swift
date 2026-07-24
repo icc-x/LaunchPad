@@ -122,6 +122,10 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     var shouldThrowOnContentsOfDirectory = false
     var directoryErrors: [URL: any Error] = [:]
 
+    // P1-8: recursive enumeration
+    var enumerateAppBundlesResult: [URL] = []
+    var enumerateAppBundlesError: (any Error)?
+
     func contentsOfDirectory(at url: URL) throws -> [URL] {
         if shouldThrowOnContentsOfDirectory { throw TestError.generic }
         if let error = directoryErrors[url] { throw error }
@@ -135,6 +139,15 @@ final class MockFileSystemService: FileSystemService, @unchecked Sendable {
     func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable] {
         if unreadableBundleURLs.contains(bundleURL) { throw TestError.generic }
         return bundleInfos[bundleURL] ?? [:]
+    }
+
+    func enumerateAppBundles(
+        at url: URL,
+        maxDepth: Int,
+        options: FileManager.DirectoryEnumerationOptions
+    ) throws -> [URL] {
+        if let error = enumerateAppBundlesError { throw error }
+        return enumerateAppBundlesResult
     }
 }
 

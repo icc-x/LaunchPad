@@ -114,6 +114,10 @@ public protocol FileSystemService: Sendable {
     func contentsOfDirectory(at url: URL) throws -> [URL]
     func fileExists(at url: URL) -> Bool
     func bundleInfo(at bundleURL: URL) throws -> [String: any Sendable]
+    func enumerateAppBundles(
+        at url: URL, maxDepth: Int,
+        options: FileManager.DirectoryEnumerationOptions
+    ) throws -> [URL]
 }
 
 // MARK: - 图标缓存协议
