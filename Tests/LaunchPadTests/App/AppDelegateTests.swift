@@ -436,21 +436,14 @@ struct AppDelegateTests {
     }
 
     @Test("终止期间忽略迟到的 bootstrap 成功结果")
-    func terminationIgnoresLateBootstrapSuccess() async {
+    func terminationIgnoresLateBootstrapSuccess() throws {
         let sut = makeDelegate()
+        let lateStorage = try StorageManager(dbPath: ":memory:")
 
-        await withCheckedContinuation { factoryFinished in
-            sut.storageFactory = { _ in
-                let manager = try StorageManager(dbPath: ":memory:")
-                factoryFinished.resume()
-                return manager
-            }
-            sut.bootstrapServices()
-            sut.applicationWillTerminate(
-                Notification(name: Notification.Name("test-termination"))
-            )
-        }
-        await Task.yield()
+        sut.applicationWillTerminate(
+            Notification(name: Notification.Name("test-termination"))
+        )
+        sut.handleBootstrapResult(.success(lateStorage))
 
         #expect(sut.storage == nil)
         #expect(sut.lifecycle == nil)

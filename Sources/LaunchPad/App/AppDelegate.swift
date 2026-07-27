@@ -235,17 +235,22 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         )
         appBootstrapper = bootstrapper
         bootstrapper.bootstrap(databasePath: databasePathProvider()) { [weak self] result in
-            guard let self else { return }
-            self.appBootstrapper = nil
-            guard !self.isTerminating else { return }
-            switch result {
-            case .success(let manager):
-                self.installServices(manager)
-                self.finishLaunch()
-            case .failure:
-                NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
-                self.appTerminator()
-            }
+            self?.handleBootstrapResult(result)
+        }
+    }
+
+    func handleBootstrapResult(
+        _ result: Result<StorageManager, AppBootstrapError>
+    ) {
+        appBootstrapper = nil
+        guard !isTerminating else { return }
+        switch result {
+        case .success(let manager):
+            installServices(manager)
+            finishLaunch()
+        case .failure:
+            NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
+            appTerminator()
         }
     }
 
