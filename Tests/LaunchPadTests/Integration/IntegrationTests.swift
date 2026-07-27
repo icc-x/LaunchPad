@@ -418,7 +418,7 @@ struct IntegrationTests {
         let script = SQLiteFaultScript()
         let storage = try StorageManager(
             dbPath: path,
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: script.result(for:)
         )
         let pageID = try storage.insertItem(

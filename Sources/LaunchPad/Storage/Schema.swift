@@ -1,6 +1,15 @@
 import Foundation
 import SQLite3
 
+public enum SchemaError: Error, Equatable {
+    case executeFailed(index: Int, code: Int32)
+    case versionCheckPrepareFailed(Int32)
+    case versionCheckStepFailed(Int32)
+    case versionInsertPrepareFailed(Int32)
+    case versionBindFailed(Int32)
+    case versionInsertStepFailed(Int32)
+}
+
 /// 数据库 Schema 定义与迁移
 public enum Schema {
 
@@ -54,21 +63,20 @@ public enum Schema {
 
     // MARK: - Setup
 
-    public static func setupSchema(db: OpaquePointer) {
-        setupSchema(db: db, statements: Schema.defaultStatements)
+    public static func setupSchema(db: OpaquePointer) throws {
+        try setupSchema(db: db, statements: Schema.defaultStatements)
     }
 
-    /// 在数据库上创建指定语句（幂等）。`statements` 可注入，便于测试触发
-    /// `sqlite3_exec` 失败的错误日志分支（默认走 `defaultStatements` 真实建表语句）。
-    public static func setupSchema(db: OpaquePointer, statements: [String]) {
-        for sql in statements {
-            if sqlite3_exec(db, sql, nil, nil, nil) != SQLITE_OK {
-                let errmsg = sqlite3_errmsg(db).map { String(cString: $0) } ?? "unknown"
-                NSLog("[LaunchPad] Schema SQL failed: \(errmsg)\nSQL: \(sql)")
+    /// 在数据库上幂等执行 Schema 语句；任一步失败都会立即返回错误。
+    public static func setupSchema(db: OpaquePointer, statements: [String]) throws {
+        for (index, sql) in statements.enumerated() {
+            let code = sqlite3_exec(db, sql, nil, nil, nil)
+            guard code == SQLITE_OK else {
+                throw SchemaError.executeFailed(index: index, code: code)
             }
         }
 
-        ensureVersionRecord(db: db)
+        try ensureVersionRecord(db: db)
     }
 
     private static let defaultStatements: [String] = [
@@ -87,23 +95,41 @@ public enum Schema {
         db: OpaquePointer,
         checkSQL: String = "SELECT COUNT(*) FROM schema_version",
         insertSQL: String = "INSERT INTO schema_version (version) VALUES (?)"
-    ) {
+    ) throws {
         var checkStmt: OpaquePointer?
-        guard sqlite3_prepare_v2(db, checkSQL, -1, &checkStmt, nil) == SQLITE_OK else {
-            return
+        let checkPrepareCode = sqlite3_prepare_v2(db, checkSQL, -1, &checkStmt, nil)
+        guard checkPrepareCode == SQLITE_OK else {
+            throw SchemaError.versionCheckPrepareFailed(checkPrepareCode)
         }
         defer { sqlite3_finalize(checkStmt) }
-        if sqlite3_step(checkStmt) == SQLITE_ROW {
-            let count = sqlite3_column_int(checkStmt, 0)
-            if count == 0 {
-                var insertStmt: OpaquePointer?
-                guard sqlite3_prepare_v2(db, insertSQL, -1, &insertStmt, nil) == SQLITE_OK else {
-                    return
-                }
-                defer { sqlite3_finalize(insertStmt) }
-                sqlite3_bind_int(insertStmt, 1, Int32(currentVersion))
-                sqlite3_step(insertStmt)
-            }
+
+        let checkStepCode = sqlite3_step(checkStmt)
+        guard checkStepCode == SQLITE_ROW else {
+            throw SchemaError.versionCheckStepFailed(checkStepCode)
+        }
+        guard sqlite3_column_int(checkStmt, 0) == 0 else { return }
+
+        var insertStmt: OpaquePointer?
+        let insertPrepareCode = sqlite3_prepare_v2(
+            db,
+            insertSQL,
+            -1,
+            &insertStmt,
+            nil
+        )
+        guard insertPrepareCode == SQLITE_OK else {
+            throw SchemaError.versionInsertPrepareFailed(insertPrepareCode)
+        }
+        defer { sqlite3_finalize(insertStmt) }
+
+        let bindCode = sqlite3_bind_int(insertStmt, 1, Int32(currentVersion))
+        guard bindCode == SQLITE_OK else {
+            throw SchemaError.versionBindFailed(bindCode)
+        }
+
+        let insertStepCode = sqlite3_step(insertStmt)
+        guard insertStepCode == SQLITE_DONE else {
+            throw SchemaError.versionInsertStepFailed(insertStepCode)
         }
     }
 }

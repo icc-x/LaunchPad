@@ -371,10 +371,25 @@ struct AppDelegateTests {
     }
 
     @Test("正常启动：完整执行所有 setup 步骤")
-    func applicationDidFinishLaunching_normalLaunch() throws {
+    func applicationDidFinishLaunching_normalLaunch() async throws {
         let sut = makeDelegate()
 
-        sut.applicationDidFinishLaunching(Notification(name: Notification.Name("test")))
+        await withCheckedContinuation { continuation in
+            sut.fileWatcherFactory = {
+                continuation.resume()
+                return FileWatcher(
+                    debounceInterval: 2.0,
+                    backend: MockFileEventStream(),
+                    scheduler: MockScheduler()
+                )
+            }
+            sut.applicationDidFinishLaunching(
+                Notification(name: Notification.Name("test"))
+            )
+
+            #expect(sut.storage == nil)
+            #expect(sut.appBootstrapper != nil)
+        }
 
         #expect(sut.storage != nil)
         #expect(sut.iconCache != nil)
@@ -389,34 +404,81 @@ struct AppDelegateTests {
     }
 
     @Test("启动失败：数据库不可用则记录致命错误并退出")
-    func applicationDidFinishLaunching_fatalWhenStorageUnavailable() {
+    func applicationDidFinishLaunching_fatalWhenStorageUnavailable() async {
         let sut = makeDelegate()
+        let terminationRecorder = CallRecorder()
         sut.storageFactory = { _ in throw NSError(domain: "db", code: 9) }
         sut.corruptionHandler = { _ in .healthy } // 非重建策略 → storage 保持 nil
 
-        sut.applicationDidFinishLaunching(Notification(name: Notification.Name("test")))
+        await withCheckedContinuation { continuation in
+            sut.appTerminator = {
+                terminationRecorder.count += 1
+                continuation.resume()
+            }
+            sut.applicationDidFinishLaunching(
+                Notification(name: Notification.Name("test"))
+            )
+
+            #expect(terminationRecorder.count == 0)
+            #expect(sut.storage == nil)
+            #expect(sut.lifecycle == nil)
+            #expect(sut.statusItem == nil)
+            #expect(sut.hotkeyManager == nil)
+            #expect(sut.fileWatcher == nil)
+        }
 
         #expect(sut.storage == nil)
+        #expect(terminationRecorder.count == 1)
+        #expect(sut.lifecycle == nil)
+        #expect(sut.statusItem == nil)
+        #expect(sut.hotkeyManager == nil)
+        #expect(sut.fileWatcher == nil)
     }
 
-    // MARK: - setupServices
-
-    @Test("setupServices 成功创建存储与所有协作对象")
-    func setupServices_success() throws {
+    @Test("终止期间忽略迟到的 bootstrap 成功结果")
+    func terminationIgnoresLateBootstrapSuccess() async {
         let sut = makeDelegate()
-        sut.setupServices()
 
-        #expect(sut.storage != nil)
-        #expect(sut.layoutMutator != nil)
-        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
+        await withCheckedContinuation { factoryFinished in
+            sut.storageFactory = { _ in
+                let manager = try StorageManager(dbPath: ":memory:")
+                factoryFinished.resume()
+                return manager
+            }
+            sut.bootstrapServices()
+            sut.applicationWillTerminate(
+                Notification(name: Notification.Name("test-termination"))
+            )
+        }
+        await Task.yield()
+
+        #expect(sut.storage == nil)
+        #expect(sut.lifecycle == nil)
+        #expect(sut.statusItem == nil)
+        #expect(sut.hotkeyManager == nil)
+        #expect(sut.fileWatcher == nil)
+    }
+
+    // MARK: - installServices
+
+    @Test("installServices 安装存储与所有协作对象")
+    func installServices_success() throws {
+        let sut = makeDelegate()
+        let manager = try StorageManager(dbPath: ":memory:")
+
+        sut.installServices(manager)
+
+        #expect(referencesSameObject(sut.storage as Any, manager))
+        #expect(referencesSameObject(sut.layoutMutator as Any, manager))
+        #expect(referencesSameObject(sut.scanBatchWriter as Any, manager))
         #expect(sut.iconCache != nil)
         #expect(sut.appScanner != nil)
         #expect(sut.searchEngine != nil)
         #expect(sut.hotkeyManager != nil)
     }
 
-    @Test("setupServices 只调用一次热键工厂并使用其返回实例")
-    func setupServices_usesHotkeyFactoryExactlyOnce() {
+    @Test("installServices 只调用一次热键工厂并使用其返回实例")
+    func installServices_usesHotkeyFactoryExactlyOnce() throws {
         let sut = makeDelegate()
         let expectedManager = makeIsolatedHotkeyManager()
         var factoryCalls = 0
@@ -425,137 +487,24 @@ struct AppDelegateTests {
             return expectedManager
         }
 
-        sut.setupServices()
+        sut.installServices(try StorageManager(dbPath: ":memory:"))
 
         #expect(factoryCalls == 1)
         #expect(sut.hotkeyManager === expectedManager)
     }
 
-    @Test("setupServices：数据库损坏后删除并重建成功")
-    func setupServices_corruptionRecovery() throws {
+    @Test("重复 installServices 原子替换三个存储协议引用")
+    func repeatedInstallServicesReplacesStorageReferencesTogether() throws {
         let sut = makeDelegate()
-        let safePath = sut.databasePathProvider()
-        var attempts = 0
-        var factoryPaths: [String] = []
-        var handlerPaths: [String] = []
-        var removedPaths: [String] = []
-        sut.storageFactory = { path in
-            attempts += 1
-            factoryPaths.append(path)
-            if attempts == 1 { throw NSError(domain: "db", code: 1) }
-            return try StorageManager(dbPath: ":memory:")
-        }
-        sut.corruptionHandler = { path in
-            handlerPaths.append(path)
-            return .deleteAndRescan
-        }
-        sut.databaseRemover = { removedPaths.append($0) }
+        let first = try StorageManager(dbPath: ":memory:")
+        let second = try StorageManager(dbPath: ":memory:")
 
-        sut.setupServices()
+        sut.installServices(first)
+        sut.installServices(second)
 
-        #expect(attempts == 2)
-        #expect(factoryPaths == [safePath, safePath])
-        #expect(handlerPaths == [safePath])
-        #expect(removedPaths == [safePath])
-        #expect(sut.storage != nil)
-        #expect(sut.layoutMutator != nil)
-        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
-    }
-
-    @Test("setupServices：损坏且非重建策略时放弃启动")
-    func setupServices_nonDeleteStrategyDoesNotRemoveOrRetry() throws {
-        let sut = makeDelegate()
-        let safePath = sut.databasePathProvider()
-        var factoryPaths: [String] = []
-        var handlerPaths: [String] = []
-        var removedPaths: [String] = []
-        sut.storageFactory = { path in
-            factoryPaths.append(path)
-            throw NSError(domain: "db", code: 2)
-        }
-        sut.corruptionHandler = { path in
-            handlerPaths.append(path)
-            return .healthy
-        }
-        sut.databaseRemover = { removedPaths.append($0) }
-
-        sut.setupServices()
-
-        #expect(factoryPaths == [safePath])
-        #expect(handlerPaths == [safePath])
-        #expect(removedPaths.isEmpty)
-        #expect(sut.storage == nil)
-        #expect(sut.layoutMutator == nil)
-    }
-
-    @Test("setupServices：删除失败仍使用同一路径重试")
-    func setupServices_removerThrowsStillRetries() throws {
-        let sut = makeDelegate()
-        let safePath = sut.databasePathProvider()
-        var factoryPaths: [String] = []
-        var handlerPaths: [String] = []
-        var removedPaths: [String] = []
-        sut.storageFactory = { path in
-            factoryPaths.append(path)
-            if factoryPaths.count == 1 { throw NSError(domain: "db", code: 3) }
-            return try StorageManager(dbPath: ":memory:")
-        }
-        sut.corruptionHandler = { path in
-            handlerPaths.append(path)
-            return .deleteAndRescan
-        }
-        sut.databaseRemover = { path in
-            removedPaths.append(path)
-            throw NSError(domain: "db", code: 4)
-        }
-
-        sut.setupServices()
-
-        #expect(factoryPaths == [safePath, safePath])
-        #expect(handlerPaths == [safePath])
-        #expect(removedPaths == [safePath])
-        #expect(sut.storage != nil)
-        #expect(sut.layoutMutator != nil)
-        #expect(referencesSameObject(sut.storage as Any, sut.layoutMutator as Any))
-    }
-
-    @Test("setupServices：删除重建再次失败时两个协议引用均为空")
-    func setupServices_recoveryFailureClearsBothReferences() {
-        let sut = makeDelegate()
-        sut.storageFactory = { _ in throw NSError(domain: "db", code: 5) }
-        sut.corruptionHandler = { _ in .deleteAndRescan }
-
-        sut.setupServices()
-
-        #expect(sut.storage == nil)
-        #expect(sut.layoutMutator == nil)
-    }
-
-    @Test("setupServices：重复初始化不会混用新旧协议引用")
-    func setupServices_repeatedSetupReplacesBothReferencesTogether() throws {
-        let sut = makeDelegate()
-        var managers: [StorageManager] = []
-        sut.storageFactory = { _ in
-            let manager = try StorageManager(dbPath: ":memory:")
-            managers.append(manager)
-            return manager
-        }
-
-        sut.setupServices()
-        let firstStorage = try #require(sut.storage)
-        sut.setupServices()
-        let secondStorage = try #require(sut.storage)
-
-        #expect(managers.count == 2)
-        #expect(!referencesSameObject(firstStorage, secondStorage))
-        #expect(referencesSameObject(secondStorage, sut.layoutMutator as Any))
-
-        sut.storageFactory = { _ in throw NSError(domain: "db", code: 6) }
-        sut.corruptionHandler = { _ in .healthy }
-        sut.setupServices()
-
-        #expect(sut.storage == nil)
-        #expect(sut.layoutMutator == nil)
+        #expect(referencesSameObject(sut.storage as Any, second))
+        #expect(referencesSameObject(sut.layoutMutator as Any, second))
+        #expect(referencesSameObject(sut.scanBatchWriter as Any, second))
     }
 
     // MARK: - setupControllers
@@ -563,7 +512,7 @@ struct AppDelegateTests {
     @Test("setupControllers 构建视图控制器与窗口控制器")
     func setupControllers_buildsAll() throws {
         let sut = makeDelegate()
-        sut.setupServices()
+        sut.installServices(try StorageManager(dbPath: ":memory:"))
 
         sut.setupControllers()
 
@@ -573,7 +522,7 @@ struct AppDelegateTests {
     }
 
     @Test("setupControllers 只允许 storage 与 layoutMutator 同时存在")
-    func setupControllersRequiresBothTypedDependencies() {
+    func setupControllersRequiresBothTypedDependencies() throws {
         for (hasStorage, hasMutator) in [
             (false, false),
             (true, false),
@@ -581,7 +530,7 @@ struct AppDelegateTests {
             (true, true),
         ] {
             let sut = makeDelegate()
-            sut.setupServices()
+            sut.installServices(try StorageManager(dbPath: ":memory:"))
             if !hasStorage { sut.storage = nil }
             if !hasMutator { sut.layoutMutator = nil }
 
@@ -597,7 +546,7 @@ struct AppDelegateTests {
     @Test("onClose 回调触发窗口 escape")
     func onClose_triggersEscape() throws {
         let sut = makeDelegate()
-        sut.setupServices()
+        sut.installServices(try StorageManager(dbPath: ":memory:"))
         sut.setupControllers()
         guard let lifecycle = sut.lifecycle,
               let windowController = sut.windowController else {
@@ -1036,28 +985,34 @@ struct AppDelegateTests {
         #expect(lifecycle.state == .opening)
     }
 
-    @Test("setupServices 仅转发注入的安全数据库路径")
-    func setupServices_usesInjectedDatabasePath() throws {
+    @Test("bootstrapServices 仅转发注入的安全数据库路径")
+    func bootstrapServices_usesInjectedDatabasePath() async {
         let sut = makeDelegate()
         let safePath = "/tmp/launchpad-appdelegate-\(UUID().uuidString).sqlite3"
         var providerCalls = 0
-        var factoryPaths: [String] = []
-        var removedPaths: [String] = []
         sut.databasePathProvider = {
             providerCalls += 1
             return safePath
         }
-        sut.databaseRemover = { removedPaths.append($0) }
+        sut.databaseRemover = { _ in
+            Issue.record("remover must not run when storage creation succeeds")
+        }
         sut.storageFactory = { path in
-            factoryPaths.append(path)
+            #expect(path == safePath)
+            #expect(!Thread.isMainThread)
             return try StorageManager(dbPath: ":memory:")
         }
 
-        sut.setupServices()
+        await withCheckedContinuation { continuation in
+            sut.statusItemFactory = {
+                continuation.resume()
+                return MockStatusItem()
+            }
+            sut.bootstrapServices()
+            #expect(sut.storage == nil)
+        }
 
         #expect(providerCalls == 1)
-        #expect(factoryPaths == [safePath])
-        #expect(removedPaths.isEmpty)
         #expect(sut.storage != nil)
     }
 

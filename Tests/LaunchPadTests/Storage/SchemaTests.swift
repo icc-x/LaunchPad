@@ -46,11 +46,11 @@ struct SchemaTests {
     }
 
     @Test("setupSchema 在空数据库上成功创建所有表")
-    func setupSchema_createsAllTables() {
+    func setupSchema_createsAllTables() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
 
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         let tables = ["items", "apps", "groups", "image_cache", "schema_version"]
         for table in tables {
@@ -63,12 +63,12 @@ struct SchemaTests {
     }
 
     @Test("setupSchema 多次调用不报错（幂等）")
-    func setupSchema_idempotent() {
+    func setupSchema_idempotent() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
 
-        Schema.setupSchema(db: db!)
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM items", -1, &stmt, nil)
@@ -82,10 +82,10 @@ struct SchemaTests {
     }
 
     @Test("setupSchema 首次调用写入版本号")
-    func setupSchema_writesVersionOnFirstCall() {
+    func setupSchema_writesVersionOnFirstCall() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(db, "SELECT version FROM schema_version", -1, &stmt, nil)
@@ -95,11 +95,11 @@ struct SchemaTests {
     }
 
     @Test("setupSchema 多次调用不重复写入版本号")
-    func setupSchema_doesNotDuplicateVersion() {
+    func setupSchema_doesNotDuplicateVersion() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        Schema.setupSchema(db: db!)
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(db, "SELECT COUNT(*) FROM schema_version", -1, &stmt, nil)
@@ -117,20 +117,24 @@ struct SchemaTests {
         #expect(Schema.createSchemaVersionTable.contains("IF NOT EXISTS"))
     }
 
-    @Test("setupSchema 遇无效 SQL 语句 -> 记录错误且不崩溃（覆盖 71-73 行错误日志分支）")
-    func setupSchema_invalidStatement_logsError() {
+    @Test("setupSchema 遇无效 SQL 时抛出语句索引与 SQLite code")
+    func setupSchema_invalidStatementThrows() {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
 
-        // 传入语法错误的 SQL 触发 sqlite3_exec 失败分支（db 有效，不会崩溃）
-        Schema.setupSchema(db: db!, statements: ["THIS IS NOT A VALID SQL STATEMENT"])
+        #expect(throws: SchemaError.executeFailed(index: 0, code: SQLITE_ERROR)) {
+            try Schema.setupSchema(
+                db: db!,
+                statements: ["THIS IS NOT A VALID SQL STATEMENT"]
+            )
+        }
     }
 
     @Test("setupSchema 在正常数据库上 INSERT prepare 成功（覆盖 insert 路径）")
-    func setupSchema_insertPathSucceeds() {
+    func setupSchema_insertPathSucceeds() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         // 验证版本号已写入
         var stmt: OpaquePointer?
@@ -141,10 +145,10 @@ struct SchemaTests {
     }
 
     @Test("setupSchema_itemsTableHasExpectedColumns")
-    func setupSchema_itemsTableHasExpectedColumns() {
+    func setupSchema_itemsTableHasExpectedColumns() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        Schema.setupSchema(db: db!)
+        try Schema.setupSchema(db: db!)
 
         var stmt: OpaquePointer?
         sqlite3_prepare_v2(db, "PRAGMA table_info(items)", -1, &stmt, nil)
@@ -160,26 +164,79 @@ struct SchemaTests {
         #expect(columnNames.contains("parent_id"))
     }
 
-    // MARK: - ensureVersionRecord 错误路径（prepare 失败防御分支）
+    // MARK: - ensureVersionRecord 错误路径
 
-    @Test("ensureVersionRecord 在 checkSQL prepare 失败时安全返回")
-    func ensureVersionRecord_badCheckSQL_returns() {
+    @Test("ensureVersionRecord 在 checkSQL prepare 失败时抛错")
+    func ensureVersionRecord_badCheckSQLThrows() throws {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        Schema.setupSchema(db: db!) // 先建表，保证 db 有效
+        try Schema.setupSchema(db: db!)
 
-        // 传入列不存在的 SQL 触发 checkSQL prepare 失败分支（line 88 return）
-        Schema.ensureVersionRecord(db: db!, checkSQL: "SELECT no_such_column_xyz FROM schema_version")
+        #expect(throws: SchemaError.versionCheckPrepareFailed(SQLITE_ERROR)) {
+            try Schema.ensureVersionRecord(
+                db: db!,
+                checkSQL: "SELECT no_such_column_xyz FROM schema_version"
+            )
+        }
     }
 
-    @Test("ensureVersionRecord 在 insertSQL prepare 失败时安全返回")
-    func ensureVersionRecord_badInsertSQL_returns() {
+    @Test("ensureVersionRecord 在 count step 失败时抛错")
+    func ensureVersionRecord_countStepFailureThrows() {
         let db = openMemoryDB()
         defer { sqlite3_close(db) }
-        // 仅手动建 schema_version 表但不写入版本，使 count == 0 进入 insert 分支
+        sqlite3_exec(db, Schema.createSchemaVersionTable, nil, nil, nil)
+        sqlite3_exec(db, "INSERT INTO schema_version (version) VALUES (1)", nil, nil, nil)
+
+        #expect(throws: SchemaError.versionCheckStepFailed(SQLITE_ERROR)) {
+            try Schema.ensureVersionRecord(
+                db: db!,
+                checkSQL: "SELECT abs(-9223372036854775808) FROM schema_version"
+            )
+        }
+    }
+
+    @Test("ensureVersionRecord 在 insertSQL prepare 失败时抛错")
+    func ensureVersionRecord_badInsertSQLThrows() {
+        let db = openMemoryDB()
+        defer { sqlite3_close(db) }
         sqlite3_exec(db, Schema.createSchemaVersionTable, nil, nil, nil)
 
-        // 传入表不存在的 SQL 触发 insertSQL prepare 失败分支（line 96 return）
-        Schema.ensureVersionRecord(db: db!, insertSQL: "INSERT INTO no_such_table_xyz VALUES (1)")
+        #expect(throws: SchemaError.versionInsertPrepareFailed(SQLITE_ERROR)) {
+            try Schema.ensureVersionRecord(
+                db: db!,
+                insertSQL: "INSERT INTO no_such_table_xyz VALUES (1)"
+            )
+        }
+    }
+
+    @Test("ensureVersionRecord 在 version bind 失败时抛错")
+    func ensureVersionRecord_bindFailureThrows() {
+        let db = openMemoryDB()
+        defer { sqlite3_close(db) }
+        sqlite3_exec(db, Schema.createSchemaVersionTable, nil, nil, nil)
+
+        #expect(throws: SchemaError.versionBindFailed(SQLITE_RANGE)) {
+            try Schema.ensureVersionRecord(
+                db: db!,
+                insertSQL: "INSERT INTO schema_version (version) VALUES (1)"
+            )
+        }
+    }
+
+    @Test("ensureVersionRecord 在 version insert step 失败时抛错")
+    func ensureVersionRecord_insertStepFailureThrows() {
+        let db = openMemoryDB()
+        defer { sqlite3_close(db) }
+        sqlite3_exec(
+            db,
+            "CREATE TABLE schema_version (version INTEGER NOT NULL CHECK(version < 0))",
+            nil,
+            nil,
+            nil
+        )
+
+        #expect(throws: SchemaError.versionInsertStepFailed(SQLITE_CONSTRAINT)) {
+            try Schema.ensureVersionRecord(db: db!)
+        }
     }
 }

@@ -67,7 +67,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
     public convenience init(dbPath: String) throws {
         try self.init(
             dbPath: dbPath,
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: nil
         )
     }
@@ -75,7 +75,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
     /// 测试初始化入口：允许替换 schema setup 并注入 SQLite driver 故障。
     internal init(
         dbPath: String,
-        schemaSetup: (OpaquePointer) -> Void,
+        schemaSetup: (OpaquePointer) throws -> Void,
         faultInjector: SQLiteDriver.FaultInjector? = nil
     ) throws {
         sqliteDriver = SQLiteDriver(faultInjector: faultInjector)
@@ -91,9 +91,39 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
             }
             throw StorageError.openFailed
         }
-        _ = sqlite3_exec(database, "PRAGMA journal_mode=WAL", nil, nil, nil)
-        _ = sqlite3_exec(database, "PRAGMA foreign_keys=ON", nil, nil, nil)
-        schemaSetup(database)
+
+        var initializationSucceeded = false
+        defer {
+            if !initializationSucceeded, let db {
+                _ = sqlite3_close_v2(db)
+                self.db = nil
+            }
+        }
+
+        guard sqlite3_exec(
+            database,
+            "PRAGMA journal_mode=WAL",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw StorageError.queryFailed
+        }
+        guard sqlite3_exec(
+            database,
+            "PRAGMA foreign_keys=ON",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK else {
+            throw StorageError.queryFailed
+        }
+        do {
+            try schemaSetup(database)
+        } catch {
+            throw StorageError.schemaSetupFailed
+        }
+        initializationSucceeded = true
     }
 
     deinit {
@@ -1523,6 +1553,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
 
 public enum StorageError: Error, Equatable {
     case openFailed
+    case schemaSetupFailed
     case prepareFailed
     case insertFailed
     case updateFailed

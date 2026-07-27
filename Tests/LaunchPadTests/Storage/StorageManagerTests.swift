@@ -121,7 +121,7 @@ private func makeFaultableStorage(
 ) throws -> StorageManager {
     try StorageManager(
         dbPath: ":memory:",
-        schemaSetup: { Schema.setupSchema(db: $0) },
+        schemaSetup: { try Schema.setupSchema(db: $0) },
         faultInjector: script.result(for:)
     )
 }
@@ -197,6 +197,31 @@ struct StorageManagerTests {
         #expect(throws: StorageError.self) {
             _ = try StorageManager(dbPath: "/nonexistent_directory_xyz/db.sqlite")
         }
+    }
+
+    @Test("Schema 初始化失败会关闭连接并映射稳定错误")
+    func init_schemaFailureClosesConnection() throws {
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("schema-failure-\(UUID().uuidString).sqlite3")
+        defer { try? FileManager.default.removeItem(atPath: path) }
+
+        #expect(throws: StorageError.schemaSetupFailed) {
+            _ = try StorageManager(dbPath: path, schemaSetup: { database in
+                guard sqlite3_exec(
+                    database,
+                    "BEGIN EXCLUSIVE",
+                    nil,
+                    nil,
+                    nil
+                ) == SQLITE_OK else {
+                    throw StorageError.beginFailed
+                }
+                throw SchemaError.executeFailed(index: 0, code: SQLITE_ERROR)
+            })
+        }
+
+        let recovered = try StorageManager(dbPath: path)
+        _ = try recovered.fetchAllItems(parentId: nil)
     }
 
     @Test("重复 bundleId 插入抛出错误")
@@ -645,7 +670,7 @@ struct StorageManagerUpdateTests {
         var db: OpaquePointer?
         sqlite3_open(path, &db)
         if let db {
-            Schema.setupSchema(db: db)
+            try Schema.setupSchema(db: db)
             // 插入一个 app item 供 update/delete 使用
             sqlite3_exec(db, "INSERT INTO items (uuid, type, ordering) VALUES ('u1', 0, 0)", nil, nil, nil)
             sqlite3_exec(db, "INSERT INTO apps (item_id, title, bundle_id, path) VALUES (1, 'A', 'com.a', '/a')", nil, nil, nil)
@@ -718,7 +743,7 @@ struct StorageManagerFetchImageNullBlobTests {
     func fetchImage_icon1xNull_returnsNil() throws {
         var capturedDB: OpaquePointer?
         let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
-            Schema.setupSchema(db: db)
+            try Schema.setupSchema(db: db)
             capturedDB = db
         })
         let db = try #require(capturedDB)
@@ -735,7 +760,7 @@ struct StorageManagerFetchImageNullBlobTests {
     func fetchImage_icon2xNull_returnsNil() throws {
         var capturedDB: OpaquePointer?
         let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
-            Schema.setupSchema(db: db)
+            try Schema.setupSchema(db: db)
             capturedDB = db
         })
         let db = try #require(capturedDB)

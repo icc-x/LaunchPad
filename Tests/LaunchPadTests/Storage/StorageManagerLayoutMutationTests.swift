@@ -157,7 +157,7 @@ struct StorageManagerLayoutMutationTests {
     ) throws -> (StorageManager, IDs, SQLiteFaultScript) {
         let storage = try StorageManager(
             dbPath: ":memory:",
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: script.result(for:)
         )
         let firstPage = try storage.insertItem(
@@ -829,7 +829,7 @@ extension StorageManagerLayoutMutationTests {
     ) throws -> (StorageManager, FolderIDs, SQLiteFaultScript) {
         let storage = try StorageManager(
             dbPath: ":memory:",
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: script.result(for:)
         )
         let pageID = try storage.insertItem(
@@ -877,7 +877,7 @@ extension StorageManagerLayoutMutationTests {
     ) throws -> (StorageManager, MultiPageEmptyFolderIDs, SQLiteFaultScript) {
         let storage = try StorageManager(
             dbPath: ":memory:",
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: script.result(for:)
         )
         let firstPage = try storage.insertItem(

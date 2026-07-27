@@ -28,6 +28,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     var searchEngine: SearchEngine!
     var hotkeyManager: HotkeyManager!
     var fileWatcher: FileWatcher?
+    var appBootstrapper: AppBootstrapper?
 
     // MARK: - Controllers
 
@@ -42,13 +43,17 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Test Injection Points
 
     /// 数据库工厂（默认创建真实 StorageManager，测试可注入以触发 SQLite 损坏恢复分支）
-    var storageFactory: (String) throws -> StorageManager = { try StorageManager(dbPath: $0) }
+    var storageFactory: AppBootstrapper.StorageFactory = {
+        try StorageManager(dbPath: $0)
+    }
 
     /// 数据库路径提供器（默认沿用生产路径创建逻辑，测试注入临时路径以隔离用户数据）
     lazy var databasePathProvider: () -> String = { [unowned self] in self.databasePath() }
 
     /// 数据库删除器（默认删除生产数据库，测试注入以隔离文件系统副作用）
-    var databaseRemover: (String) throws -> Void = { try FileManager.default.removeItem(atPath: $0) }
+    var databaseRemover: AppBootstrapper.DatabaseRemover = {
+        try FileManager.default.removeItem(atPath: $0)
+    }
 
     /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
     var activationPolicySetter: (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) }
@@ -72,7 +77,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     var appTerminator: () -> Void = { NSApp.terminate(nil) }
 
     /// SQLite 损坏处理策略（默认走 ErrorRecovery，测试可强制 .deleteAndRescan）
-    var corruptionHandler: (String) -> ErrorRecovery.ErrorStrategy = { ErrorRecovery.handleSQLiteCorruption(dbPath: $0) }
+    var corruptionHandler: AppBootstrapper.CorruptionHandler = {
+        ErrorRecovery.handleSQLiteCorruption(dbPath: $0)
+    }
 
     /// 主线程异步派发（默认 DispatchQueue.main.async，测试注入为同步执行以覆盖告警分支）
     var mainAsyncRunner: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
@@ -168,6 +175,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     var viewControllerReloader: (LaunchPadViewController) -> Void = { $0.loadData() }
     var scanFailureLogger: (String) -> Void = { NSLog("[AppDelegate] %@", $0) }
     private let scanLock = NSLock()
+    private var isTerminating = false
 
     // MARK: - Application Lifecycle
 
@@ -182,11 +190,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         // Agent app: no Dock icon
         activationPolicySetter(.accessory)
 
-        setupServices()
-        guard storage != nil, layoutMutator != nil, scanBatchWriter != nil else {
-            NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
-            return
-        }
+        bootstrapServices()
+    }
+
+    private func finishLaunch() {
         setupControllers()
         setupMenuBar()
         setupHotkey()
@@ -197,6 +204,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     public func applicationWillTerminate(_ notification: Notification) {
+        isTerminating = true
+        appBootstrapper = nil
         fileWatcher?.stop()
         fileWatcher = nil
         hotkeyManager?.unregisterLocalMonitor()
@@ -215,26 +224,33 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         scanBatchWriter = manager
     }
 
-    func setupServices() {
-        // Database
+    func bootstrapServices() {
         storage = nil
         layoutMutator = nil
         scanBatchWriter = nil
-        let dbPath = databasePathProvider()
-        do {
-            installStorage(try storageFactory(dbPath))
-        } catch {
-            // If DB is corrupted, delete and retry
-            let strategy = corruptionHandler(dbPath)
-            if case .deleteAndRescan = strategy {
-                try? databaseRemover(dbPath)
-                if let recovered = try? storageFactory(dbPath) {
-                    installStorage(recovered)
-                }
+        let bootstrapper = AppBootstrapper(
+            storageFactory: storageFactory,
+            corruptionHandler: corruptionHandler,
+            databaseRemover: databaseRemover
+        )
+        appBootstrapper = bootstrapper
+        bootstrapper.bootstrap(databasePath: databasePathProvider()) { [weak self] result in
+            guard let self else { return }
+            self.appBootstrapper = nil
+            guard !self.isTerminating else { return }
+            switch result {
+            case .success(let manager):
+                self.installServices(manager)
+                self.finishLaunch()
+            case .failure:
+                NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
+                self.appTerminator()
             }
         }
-        // 数据库仍不可用则放弃启动，交由 applicationDidFinishLaunching 记录并退出
-        guard storage != nil else { return }
+    }
+
+    func installServices(_ manager: StorageManager) {
+        installStorage(manager)
 
         // Icon cache
         let iconProvider = SystemIconProvider()

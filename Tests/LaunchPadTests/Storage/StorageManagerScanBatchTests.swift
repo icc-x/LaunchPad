@@ -38,7 +38,7 @@ struct StorageManagerScanBatchTests {
     private func makeFaultableStorage(_ script: SQLiteFaultScript) throws -> StorageManager {
         try StorageManager(
             dbPath: ":memory:",
-            schemaSetup: { Schema.setupSchema(db: $0) },
+            schemaSetup: { try Schema.setupSchema(db: $0) },
             faultInjector: script.result(for:)
         )
     }
@@ -78,7 +78,7 @@ struct StorageManagerScanBatchTests {
     @Test("初始写入失败继续后续操作但完整回滚")
     func initialFailureRollsBackEverything() throws {
         let script = SQLiteFaultScript()
-        let storage = try StorageManager(dbPath: ":memory:", schemaSetup: { Schema.setupSchema(db: $0) }, faultInjector: script.result(for:))
+        let storage = try StorageManager(dbPath: ":memory:", schemaSetup: { try Schema.setupSchema(db: $0) }, faultInjector: script.result(for:))
         script.failNext(.step(.insertAppMetadata), code: SQLITE_CONSTRAINT)
         do {
             _ = try storage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b")], initialPageCapacity: 1)
@@ -94,7 +94,7 @@ struct StorageManagerScanBatchTests {
     @Test("增量 update 失败后仍尝试 insert/delete 且完整回滚")
     func incrementalFailureContinuesAndRollsBackEverything() throws {
         let script = SQLiteFaultScript()
-        let storage = try StorageManager(dbPath: ":memory:", schemaSetup: { Schema.setupSchema(db: $0) }, faultInjector: script.result(for:))
+        let storage = try StorageManager(dbPath: ":memory:", schemaSetup: { try Schema.setupSchema(db: $0) }, faultInjector: script.result(for:))
         _ = try storage.synchronizeInstalledApps([app("A", "com.test.a"), app("B", "com.test.b")], initialPageCapacity: 28)
         let before = try storage.persistedLayoutSnapshot()
         script.failNext(.step(.updateAppMetadata), code: SQLITE_IOERR)
@@ -114,7 +114,7 @@ struct StorageManagerScanBatchTests {
         let storage = try StorageManager(
             dbPath: ":memory:",
             schemaSetup: { database in
-                Schema.setupSchema(db: database)
+                try Schema.setupSchema(db: database)
                 let sql = """
                     CREATE TRIGGER abort_test_b BEFORE INSERT ON apps
                     WHEN NEW.bundle_id = 'com.test.b'
@@ -191,7 +191,7 @@ struct StorageManagerScanBatchTests {
         do {
             let storage = try StorageManager(
                 dbPath: path,
-                schemaSetup: { Schema.setupSchema(db: $0) },
+                schemaSetup: { try Schema.setupSchema(db: $0) },
                 faultInjector: script.result(for:)
             )
             before = try storage.persistedLayoutSnapshot()
