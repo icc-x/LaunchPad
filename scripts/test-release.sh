@@ -110,7 +110,8 @@ capture_provenance() {
     /usr/bin/shasum -a 256 "$controlled_path" \
       >> "$controlled_hashes_file" || return 1
   done < "$controlled_files_file"
-  /usr/bin/shasum -a 256 "$controlled_hashes_file" > "$controlled_hash_file" || return 1
+  /usr/bin/shasum -a 256 "$controlled_hashes_file" \
+    | /usr/bin/awk '{ print $1 }' > "$controlled_hash_file" || return 1
 }
 
 assert_start_provenance() {
@@ -531,6 +532,9 @@ probe_provenance_mutation() {
     git commit -q -m baseline || probe_status=$?
     HEAD_AT_START=$(git rev-parse HEAD) || probe_status=$?
     assert_start_provenance || probe_status=$?
+  fi
+  if (( probe_status == 0 )); then
+    capture_and_compare_end_provenance || probe_status=$?
   fi
   if (( probe_status == 0 )); then
     print -r -- 'let mutation = 2' >> Sources/probe.swift || probe_status=$?
