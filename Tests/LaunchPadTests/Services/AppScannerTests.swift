@@ -159,6 +159,39 @@ struct AppScannerTests {
         #expect(result.isComplete)
     }
 
+    @Test("反转 discovery roots 后重复 bundle ID 保留新顺序中的第一个")
+    func reversedRootOrderChangesDuplicateWinner() {
+        let fileSystem = MockFileSystemService()
+        let systemApp = app("System")
+        let userApp = app("User", in: secondDirectory)
+        fileSystem.directoryContentsMap[firstDirectory] = [systemApp]
+        fileSystem.directoryContentsMap[secondDirectory] = [userApp]
+        fileSystem.bundleInfos[systemApp] = info("System", "com.test.same")
+        fileSystem.bundleInfos[userApp] = info("User", "com.test.same")
+
+        let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+            .scanDirectories([root(secondDirectory), root(firstDirectory)])
+
+        #expect(result.apps.map(\.name) == ["User"])
+        #expect(result.apps.map(\.path) == [userApp.path])
+    }
+
+    @Test("同一 discovery root 内重复 bundle ID 保留枚举顺序中的第一个")
+    func duplicateWithinRootKeepsFirstEnumeratedApp() {
+        let fileSystem = MockFileSystemService()
+        let first = app("First")
+        let second = app("Second")
+        fileSystem.directoryContentsMap[firstDirectory] = [first, second]
+        fileSystem.bundleInfos[first] = info("First", "com.test.same")
+        fileSystem.bundleInfos[second] = info("Second", "com.test.same")
+
+        let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+            .scanDirectories([root(firstDirectory)])
+
+        #expect(result.apps.map(\.name) == ["First"])
+        #expect(result.apps.map(\.path) == [first.path])
+    }
+
     @Test("只有 optional root 的 fileNoSuchFile 是权威空根")
     func optionalMissingRootIsCompleteButEveryOtherRootErrorIsIncomplete() {
         let fileSystem = MockFileSystemService()

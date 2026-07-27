@@ -95,7 +95,7 @@ final class AppScanner: AppScanning {
         }
 
         return AppDiscoveryResult(
-            apps: deduplicated(apps),
+            apps: deduplicatedInDiscoveryOrder(apps),
             failedRootPaths: failedRootPaths,
             failedBundlePaths: failedBundlePaths
         )
@@ -125,8 +125,9 @@ final class AppScanner: AppScanning {
         return ScannedApp(name: name, bundleId: bundleId, path: url.path)
     }
 
-    private func deduplicated(_ apps: [ScannedApp]) -> [ScannedApp] {
-        var seen = Set<String>()
-        return apps.filter { seen.insert($0.bundleId).inserted }
+    /// 按 bundle ID 去重；较早的发现根及根内较早的枚举项拥有更高优先级。
+    private func deduplicatedInDiscoveryOrder(_ apps: [ScannedApp]) -> [ScannedApp] {
+        var seenBundleIDs = Set<String>()
+        return apps.filter { seenBundleIDs.insert($0.bundleId).inserted }
     }
 }
