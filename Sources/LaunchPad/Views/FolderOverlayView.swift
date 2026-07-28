@@ -92,7 +92,7 @@ public class FolderOverlayView: NSView {
     private let pageControlViewModel = PageControlViewModel()
     private var childItems: [PageItem] = []
     private var pages: [[PageItem]] = []
-    private var iconCache: IconCache?
+    private var iconCache: (any IconCaching)?
     private var projectedFolderViewportSize: CGSize?
     private var isReprojectingChildren = false
     private let scrollObservationOwner = ScrollObservationOwner()
@@ -270,7 +270,11 @@ public class FolderOverlayView: NSView {
 
     // MARK: - Open / Close
 
-    public func openFolder(item: PageItem, childItems: [PageItem], iconCache: IconCache?) {
+    public func openFolder(
+        item: PageItem,
+        childItems: [PageItem],
+        iconCache: (any IconCaching)?
+    ) {
         currentFolderID = item.id
         currentVisualPageIndex = 0
         self.childItems = childItems.sorted {
@@ -557,11 +561,10 @@ extension FolderOverlayView: NSCollectionViewDataSource {
         let item = pages[page][index]
         let cell = collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath) as! AppIconCell
 
-        var icon: NSImage?
-        if let app = item.app {
-            icon = iconCache?.icon(forItemId: item.id, path: app.path)
+        cell.configure(item: item, icon: nil)
+        if let app = item.app, let iconCache {
+            cell.loadIcon(from: iconCache, itemID: item.id, path: app.path)
         }
-        cell.configure(item: item, icon: icon)
         return cell
     }
 }

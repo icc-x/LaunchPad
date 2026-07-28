@@ -381,26 +381,27 @@ struct AppGridCollectionViewTests {
         #expect((spring.keyPath) == ("transform.scale"))
     }
 
-    // MARK: - Configure with storage (group cell child icons)
+    // MARK: - Configure with in-memory folder children
 
-    @Test func configure_withStorage_loadsChildIconsForGroupCell() {
+    @Test func reload_withFolderChildren_loadsChildIconsForGroupCell() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        // 配置 storage 后，group cell 应调用 fetchAllItems 加载子项图标
-        let storage = MockDataStoring()
         let childApp = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0,
                                                      app: TestDataFactory.makeAppInfo(id: 10, title: "ChildApp"))
-        storage.childItems = [childApp]
-        collectionView.configure(iconCache: fixture.iconCache, storage: storage)
 
         let group = TestDataFactory.makePageItem(id: 1, type: .group, ordering: 0,
                                                   group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder"))
-        collectionView.reload(pages: [[group]], searchResults: nil, searchQuery: nil)
+        collectionView.reload(
+            pages: [[group]],
+            searchResults: nil,
+            searchQuery: nil,
+            folderChildren: [group.id: [childApp]]
+        )
 
         let indexPath = IndexPath(item: 0, section: 0)
         let cell = collectionView.diffableDataSource.collectionView(collectionView, itemForRepresentedObjectAt: indexPath)
         #expect(cell is FolderCell)
-        #expect((storage.fetchAllItemsCallCount) == (1))
+        #expect(fixture.iconCache.requestedItemIDs == [childApp.id])
     }
 
     @Test func configureCell_groupItem_withoutStorage_doesNotCrash() {
@@ -930,29 +931,18 @@ struct AppGridCollectionViewTests {
 @MainActor
 private final class MockIconCaching: IconCaching {
     var iconResult = NSImage(size: NSSize(width: 64, height: 64))
+    private(set) var requestedItemIDs: [Int64] = []
 
-    func icon(forItemId itemId: Int64, path: String) -> NSImage {
-        return iconResult
+    @discardableResult
+    func loadIcon(
+        forItemId itemId: Int64,
+        path: String,
+        completion: @escaping @MainActor @Sendable (Int64, NSImage) -> Void
+    ) -> Task<Void, Never> {
+        requestedItemIDs.append(itemId)
+        completion(itemId, iconResult)
+        return Task {}
     }
-}
-
-// MARK: - Mock DataStoring (for group cell child icons)
-
-private final class MockDataStoring: DataStoring, @unchecked Sendable {
-    var childItems: [PageItem] = []
-    private(set) var fetchAllItemsCallCount = 0
-
-    func fetchAllItems(parentId: Int64?) throws -> [PageItem] {
-        fetchAllItemsCallCount += 1
-        return childItems
-    }
-
-    func insertItem(_ item: PageItem) throws -> Int64 { return item.id }
-    func updateItem(_ item: PageItem) throws {}
-    func deleteItem(id: Int64) throws {}
-    func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
-    func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
-    func fetchImage(itemId: Int64) throws -> CachedImageRecord? { return nil }
 }
 
 // MARK: - Branch coverage: .app type with nil app data
@@ -1023,14 +1013,16 @@ extension AppGridCollectionViewTests {
         let collectionView = fixture.collectionView
         // 覆盖 L230 guard let app = child.app else { return nil } 分支
         // 构造一个 group cell，其 children 包含 app 为 nil 的 item
-        let storage = MockDataStoring()
         let childNoApp = TestDataFactory.makePageItem(id: 10, type: .app, ordering: 0, app: nil)
-        storage.childItems = [childNoApp]
-        collectionView.configure(iconCache: fixture.iconCache, storage: storage)
 
         let group = TestDataFactory.makePageItem(id: 1, type: .group, ordering: 0,
                                                   group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder"))
-        collectionView.reload(pages: [[group]], searchResults: nil, searchQuery: nil)
+        collectionView.reload(
+            pages: [[group]],
+            searchResults: nil,
+            searchQuery: nil,
+            folderChildren: [group.id: [childNoApp]]
+        )
 
         // 触发 group cell 的实际创建，调用 configureCell → childIcons 处理 → L230
         let indexPath = IndexPath(item: 0, section: 0)

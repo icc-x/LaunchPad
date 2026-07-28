@@ -7,6 +7,37 @@ import AppKit
 
 @MainActor @Suite("FolderCell")
 struct FolderCellTests {
+    private final class ControlledIconCache: IconCaching {
+        struct Request {
+            let itemID: Int64
+            let completion: @MainActor @Sendable (Int64, NSImage) -> Void
+            let task: Task<Void, Never>
+        }
+
+        private(set) var requests: [Request] = []
+
+        func loadIcon(
+            forItemId itemId: Int64,
+            path: String,
+            completion: @escaping @MainActor @Sendable (Int64, NSImage) -> Void
+        ) -> Task<Void, Never> {
+            let stream = AsyncStream<Void> { _ in }
+            let task = Task {
+                for await _ in stream {}
+            }
+            requests.append(Request(
+                itemID: itemId,
+                completion: completion,
+                task: task
+            ))
+            return task
+        }
+
+        func complete(_ index: Int, image: NSImage) {
+            let request = requests[index]
+            request.completion(request.itemID, image)
+        }
+    }
     private func makeSUT() -> FolderCell {
         let cell = FolderCell()
         _ = cell.view
@@ -291,6 +322,31 @@ struct FolderCellTests {
 
         #expect(!cell.isEditing)
         #expect(!cell.isDeleteControlVisible)
+    }
+
+    @Test("FolderCell reuse 取消所有旧 child 请求并拒绝过期 completion")
+    func folderReuseCancelsAndRejectsStaleChildCompletion() throws {
+        let cell = makeSUT()
+        let cache = ControlledIconCache()
+        let oldFolder = makeGroup(id: 1)
+        let newFolder = makeGroup(id: 2)
+        let oldChild = TestDataFactory.makePageItem(
+            id: 10,
+            app: TestDataFactory.makeAppInfo(id: 10)
+        )
+        let newImage = NSImage(size: NSSize(width: 22, height: 22))
+        let staleImage = NSImage(size: NSSize(width: 99, height: 99))
+        cell.configure(item: oldFolder, childIcons: [])
+        cell.loadChildIcons([oldChild], from: cache)
+        let oldTask = try #require(cache.requests.first?.task)
+
+        cell.prepareForReuse()
+        cell.configure(item: newFolder, childIcons: [newImage])
+        cache.complete(0, image: staleImage)
+
+        #expect(oldTask.isCancelled)
+        #expect(cell.representedItemID == newFolder.id)
+        #expect(cell.configuredThumbnailImages[0] === newImage)
     }
 }
 #endif

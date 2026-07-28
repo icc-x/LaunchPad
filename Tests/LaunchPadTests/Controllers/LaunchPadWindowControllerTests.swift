@@ -13,7 +13,7 @@ struct LaunchPadWindowControllerTests {
     // MARK: - Test Doubles
 
     /// 组合存储 mock — 实现 DataStoring（ItemReading + ItemWriting + ImageStoring）
-    private final class MockDataStore: DataStoring, @unchecked Sendable {
+    private final class MockDataStore: DataStoring, LayoutReading, @unchecked Sendable {
         var pages: [PageItem] = []
         func fetchAllItems(parentId: Int64?) throws -> [PageItem] { pages }
         func insertItem(_ item: PageItem) throws -> Int64 { item.id }
@@ -22,6 +22,9 @@ struct LaunchPadWindowControllerTests {
         func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
         func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
         func fetchImage(itemId: Int64) throws -> CachedImageRecord? { nil }
+        func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
+            PersistedLayoutSnapshot(allItems: pages)
+        }
     }
 
     private final class AccessibilitySettingsProviderSpy: @unchecked Sendable {
@@ -71,13 +74,14 @@ struct LaunchPadWindowControllerTests {
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
         let scheduler = MockScheduler()
         let dragController = DragController(scheduler: scheduler)
-        let folderController = FolderController(itemWriter: storage)
         let viewController = LaunchPadViewController(
-            storage: storage,
-            layoutMutator: MockLayoutMutator(),
+            layoutRepository: LayoutRepository(
+                reader: storage,
+                mutator: MockLayoutMutator(),
+                writer: storage
+            ),
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController,
             applicationOpener: { _ in }
         )
         let lifecycle = WindowLifecycle()

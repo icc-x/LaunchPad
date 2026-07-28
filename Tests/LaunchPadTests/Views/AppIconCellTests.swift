@@ -7,6 +7,37 @@ import AppKit
 
 @MainActor @Suite("AppIconCell")
 struct AppIconCellTests {
+    private final class ControlledIconCache: IconCaching {
+        struct Request {
+            let itemID: Int64
+            let completion: @MainActor @Sendable (Int64, NSImage) -> Void
+            let task: Task<Void, Never>
+        }
+
+        private(set) var requests: [Request] = []
+
+        func loadIcon(
+            forItemId itemId: Int64,
+            path: String,
+            completion: @escaping @MainActor @Sendable (Int64, NSImage) -> Void
+        ) -> Task<Void, Never> {
+            let stream = AsyncStream<Void> { _ in }
+            let task = Task {
+                for await _ in stream {}
+            }
+            requests.append(Request(
+                itemID: itemId,
+                completion: completion,
+                task: task
+            ))
+            return task
+        }
+
+        func complete(_ index: Int, image: NSImage) {
+            let request = requests[index]
+            request.completion(request.itemID, image)
+        }
+    }
     private func makeSUT() -> AppIconCell {
         let cell = AppIconCell()
         cell.workspaceNotificationCenter = NotificationCenter()
@@ -365,6 +396,27 @@ struct AppIconCellTests {
         cell.setFolderCreationPreviewVisible(true)
         cell.prepareForReuse()
         #expect(!cell.isFolderCreationPreviewVisible)
+    }
+
+    @Test("reuse 取消旧请求且旧 completion 不覆盖新 item")
+    func reuseCancelsAndRejectsStaleIconCompletion() throws {
+        let cell = makeSUT()
+        let cache = ControlledIconCache()
+        let oldItem = TestDataFactory.makePageItem(id: 1)
+        let newItem = TestDataFactory.makePageItem(id: 2)
+        let newImage = NSImage(size: NSSize(width: 22, height: 22))
+        let staleImage = NSImage(size: NSSize(width: 99, height: 99))
+        cell.configure(item: oldItem, icon: nil)
+        cell.loadIcon(from: cache, itemID: oldItem.id, path: "/old.app")
+        let oldTask = try #require(cache.requests.first?.task)
+
+        cell.prepareForReuse()
+        cell.configure(item: newItem, icon: newImage)
+        cache.complete(0, image: staleImage)
+
+        #expect(oldTask.isCancelled)
+        #expect(cell.representedItemID == newItem.id)
+        #expect(cell.configuredIconImage === newImage)
     }
 }
 #endif

@@ -34,6 +34,27 @@ private func durations<T>(
     return (samples.sorted(), last)
 }
 
+@MainActor
+private func asyncDurations<T>(
+    warmupCount: Int = 3,
+    operation: @MainActor () async -> T
+) async -> (samples: [Duration], last: T) {
+    precondition(sampleCount > 0)
+    for _ in 0..<warmupCount { _ = await operation() }
+
+    let clock = ContinuousClock()
+    var samples: [Duration] = []
+    let firstStart = clock.now
+    var last = await operation()
+    samples.append(firstStart.duration(to: clock.now))
+    for _ in 1..<sampleCount {
+        let start = clock.now
+        last = await operation()
+        samples.append(start.duration(to: clock.now))
+    }
+    return (samples.sorted(), last)
+}
+
 private func median(_ samples: [Duration]) -> Duration {
     samples[samples.count / 2]
 }
@@ -64,6 +85,25 @@ private func deterministicIndices(
 private struct IconCacheBitmapFixture {
     let image: NSImage
     let tiffData: Data
+}
+
+@MainActor
+private final class PerformanceLoadedImage {
+    var value: NSImage?
+}
+
+@MainActor
+private func loadPerformanceIcon(
+    _ cache: IconCache,
+    itemID: Int64,
+    path: String
+) async -> NSImage? {
+    let loaded = PerformanceLoadedImage()
+    let task = cache.loadIcon(forItemId: itemID, path: path) { _, image in
+        loaded.value = image
+    }
+    await task.value
+    return loaded.value
 }
 
 private enum PerformanceFixtureError: Error {
@@ -198,7 +238,7 @@ struct PerformanceTests {
     #if canImport(AppKit)
     @Test("IconCache 1000 次内存命中 median/p95 < 300ms")
     @MainActor
-    func iconCache_1000randomAccess_perf() throws {
+    func iconCache_1000randomAccess_perf() async throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let fixture = try makeIconCacheBitmapFixture()
@@ -222,7 +262,7 @@ struct PerformanceTests {
             memoryLimit: 100
         )
         for (index, path) in paths.enumerated() {
-            _ = cache.icon(forItemId: Int64(index), path: path)
+            _ = await loadPerformanceIcon(cache, itemID: Int64(index), path: path)
         }
 
         let indices = deterministicIndices(
@@ -233,11 +273,12 @@ struct PerformanceTests {
         let storeSaveCountBeforeMeasurement = store.saveCallCount
         let providerFetchCountBeforeMeasurement = provider.fetchCallCount
 
-        let measurement = durations {
+        let measurement = await asyncDurations {
             var last: NSImage?
             for index in indices {
-                last = cache.icon(
-                    forItemId: Int64(index),
+                last = await loadPerformanceIcon(
+                    cache,
+                    itemID: Int64(index),
                     path: paths[index]
                 )
             }
@@ -254,7 +295,7 @@ struct PerformanceTests {
 
     @Test("IconCache 1000 次访问后无磁盘重复写入")
     @MainActor
-    func iconCache_1000access_noDiskWriteLeak() throws {
+    func iconCache_1000access_noDiskWriteLeak() async throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let fixture = try makeIconCacheBitmapFixture()
@@ -278,7 +319,7 @@ struct PerformanceTests {
             memoryLimit: itemCount
         )
         for (index, path) in paths.enumerated() {
-            _ = cache.icon(forItemId: Int64(index), path: path)
+            _ = await loadPerformanceIcon(cache, itemID: Int64(index), path: path)
         }
         let saveCountAfterPrefill = store.saveCallCount
         let indices = deterministicIndices(count: 1000, upperBound: itemCount)
@@ -286,7 +327,11 @@ struct PerformanceTests {
         #expect(indices.count == 1000)
         #expect(indices.allSatisfy { (0..<itemCount).contains($0) })
         for index in indices {
-            _ = cache.icon(forItemId: Int64(index), path: paths[index])
+            _ = await loadPerformanceIcon(
+                cache,
+                itemID: Int64(index),
+                path: paths[index]
+            )
         }
 
         #expect(store.saveCallCount == saveCountAfterPrefill)

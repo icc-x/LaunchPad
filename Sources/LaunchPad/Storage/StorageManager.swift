@@ -2,50 +2,9 @@ import Foundation
 import SQLite3
 import LaunchPadProtocols
 
-struct PersistedLayoutSnapshot: Equatable {
-    let allItems: [PageItem]
-
-    var rootItems: [PageItem] {
-        allItems.filter { $0.parentId == nil }.sorted(by: Self.layoutOrder)
-    }
-
-    var pages: [PageItem] {
-        rootItems.filter { $0.type == .page }
-    }
-
-    var pageChildren: [Int64: [PageItem]] {
-        Dictionary(uniqueKeysWithValues: pages.map { page in
-            (page.id, children(of: page.id))
-        })
-    }
-
-    var folderChildren: [Int64: [PageItem]] {
-        let groups = allItems.filter { $0.type == .group }
-        return Dictionary(uniqueKeysWithValues: groups.map { group in
-            (group.id, children(of: group.id))
-        })
-    }
-
-    var flattenedTopLevelIDs: [Int64] {
-        pages.flatMap { pageChildren[$0.id] ?? [] }.map(\.id)
-    }
-
-    func children(of parentID: Int64) -> [PageItem] {
-        allItems
-            .filter { $0.parentId == parentID }
-            .sorted(by: Self.layoutOrder)
-    }
-
-    private static func layoutOrder(_ lhs: PageItem, _ rhs: PageItem) -> Bool {
-        lhs.ordering == rhs.ordering
-            ? lhs.id < rhs.id
-            : lhs.ordering < rhs.ordering
-    }
-}
-
 /// SQLite 数据存储管理器。
 /// 生产环境使用文件路径，测试使用 ":memory:" 内存数据库。
-public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting, @unchecked Sendable {
+public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, ScanBatchWriting, @unchecked Sendable {
     private struct ResolvedPage {
         let id: Int64
         let ordering: Int
@@ -267,7 +226,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
         }
     }
 
-    func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
+    public func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
         try withDatabase { database in
             try readPersistedLayoutSnapshot(database: database)
         }

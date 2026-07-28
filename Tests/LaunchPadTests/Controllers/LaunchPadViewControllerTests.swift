@@ -10,9 +10,74 @@ import AppKit
 @Suite("LaunchPadViewController 键盘交互与执行动作")
 struct LaunchPadViewControllerTests {
 
+    private actor OutOfOrderLayoutRepository: LayoutRepositoryProtocol {
+        private var nextLoadID = 0
+        private var continuations: [Int: CheckedContinuation<PersistedLayoutSnapshot, Error>] = [:]
+        private let startedContinuation: AsyncStream<Int>.Continuation
+
+        init(startedContinuation: AsyncStream<Int>.Continuation) {
+            self.startedContinuation = startedContinuation
+        }
+
+        func load() async throws -> PersistedLayoutSnapshot {
+            let loadID = nextLoadID
+            nextLoadID += 1
+            startedContinuation.yield(loadID)
+            return try await withCheckedThrowingContinuation { continuation in
+                continuations[loadID] = continuation
+            }
+        }
+
+        func apply(_ intent: LayoutDropIntent, pageCapacity: Int) async throws {}
+        func renameFolder(_ item: PageItem, newTitle: String) async throws {}
+
+        func complete(loadID: Int, with snapshot: PersistedLayoutSnapshot) {
+            continuations.removeValue(forKey: loadID)?.resume(returning: snapshot)
+        }
+    }
+
+    private actor BlockingMutationRepository: LayoutRepositoryProtocol {
+        private let snapshot: PersistedLayoutSnapshot
+        private let applyStarted: AsyncStream<Void>.Continuation
+        private var applyContinuation: CheckedContinuation<Void, Never>?
+        private var applyAttempts = 0
+        private var renameAttempts = 0
+
+        init(
+            snapshot: PersistedLayoutSnapshot,
+            applyStarted: AsyncStream<Void>.Continuation
+        ) {
+            self.snapshot = snapshot
+            self.applyStarted = applyStarted
+        }
+
+        func load() async throws -> PersistedLayoutSnapshot { snapshot }
+
+        func apply(_ intent: LayoutDropIntent, pageCapacity: Int) async throws {
+            applyAttempts += 1
+            applyStarted.yield()
+            await withCheckedContinuation { continuation in
+                applyContinuation = continuation
+            }
+        }
+
+        func renameFolder(_ item: PageItem, newTitle: String) async throws {
+            renameAttempts += 1
+        }
+
+        func resumeApply() {
+            applyContinuation?.resume()
+            applyContinuation = nil
+        }
+
+        func counts() -> (apply: Int, rename: Int) {
+            (applyAttempts, renameAttempts)
+        }
+    }
+
     // MARK: - Test Doubles
 
-    private final class MockDataStore: DataStoring, @unchecked Sendable {
+    private final class MockDataStore: DataStoring, LayoutReading, @unchecked Sendable {
         var pages: [PageItem] = []
         var childrenByPage: [Int64: [PageItem]] = [:]
         var deletedIds: [Int64] = []
@@ -55,6 +120,29 @@ struct LaunchPadViewControllerTests {
         func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
         func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
         func fetchImage(itemId: Int64) throws -> CachedImageRecord? { nil }
+
+        func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
+            fetchAllItemsCallCount += 1
+            eventRecorder?("read-snapshot")
+            if let fetchError { throw fetchError }
+            if shouldThrowOnFetch {
+                throw NSError(domain: "MockDataStore", code: 1)
+            }
+            let children = childrenByPage.flatMap { parentID, items in
+                items.map { item in
+                    PageItem(
+                        id: item.id,
+                        uuid: item.uuid,
+                        type: item.type,
+                        ordering: item.ordering,
+                        parentId: parentID,
+                        app: item.app,
+                        group: item.group
+                    )
+                }
+            }
+            return PersistedLayoutSnapshot(allItems: pages + children)
+        }
     }
 
     /// 可控的长按手势：测试可设 state 与 location(in:)，以驱动 handleLongPress 各分支
@@ -75,20 +163,23 @@ struct LaunchPadViewControllerTests {
     }
 
     /// 加载视图并灌入数据，便于需要 collectionView 已就绪的测试
-    private func loadViewWithData(_ sut: LaunchPadViewController, storage: MockDataStore,
-                                  apps: [PageItem] = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")) {
+    private func loadViewWithData(
+        _ sut: LaunchPadViewController,
+        storage: MockDataStore,
+        apps: [PageItem] = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
+    ) async {
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         _ = sut.view
-        sut.loadData()
+        await sut.loadData().value
     }
 
     private func loadViewWithTwoPersistedPages(
         _ sut: LaunchPadViewController,
         storage: MockDataStore,
         apps: [PageItem] = TestDataFactory.makeAppItems(count: 60)
-    ) {
+    ) async {
         let firstPage = TestDataFactory.makePageItem(id: 101, type: .page, ordering: 0)
         let secondPage = TestDataFactory.makePageItem(id: 102, type: .page, ordering: 1)
         storage.pages = [firstPage, secondPage]
@@ -97,7 +188,7 @@ struct LaunchPadViewControllerTests {
             secondPage.id: Array(apps.dropFirst(30)),
         ]
         _ = sut.view
-        sut.loadData()
+        await sut.loadData().value
     }
 
     private func layout(
@@ -120,26 +211,107 @@ struct LaunchPadViewControllerTests {
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
         let dragController = DragController(scheduler: dragScheduler)
-        let folderController = FolderController(itemWriter: storage)
+        let repository = LayoutRepository(
+            reader: storage,
+            mutator: layoutMutator,
+            writer: storage
+        )
         let sut = LaunchPadViewController(
-            storage: storage,
-            layoutMutator: layoutMutator,
+            layoutRepository: repository,
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController,
             applicationOpener: applicationOpener
         )
         return (sut, dragController, storage)
     }
 
+    @Test("连续 load 乱序完成时只应用最新 generation")
+    func staleLayoutLoadCannotReplaceNewerSnapshot() async throws {
+        let started = AsyncStream<Int>.makeStream()
+        let repository = OutOfOrderLayoutRepository(
+            startedContinuation: started.continuation
+        )
+        let iconCache = IconCache(
+            iconProvider: MockIconProvider(),
+            imageStore: MockImageStore()
+        )
+        let sut = LaunchPadViewController(
+            layoutRepository: repository,
+            iconCache: iconCache,
+            dragController: DragController(),
+            applicationOpener: { _ in }
+        )
+        var starts = started.stream.makeAsyncIterator()
+
+        let olderTask = sut.loadData()
+        let olderID = try #require(await starts.next())
+        let newerTask = sut.loadData()
+        let newerID = try #require(await starts.next())
+        let olderPage = TestDataFactory.makePageItem(id: 1, type: .page)
+        let newerPage = TestDataFactory.makePageItem(id: 2, type: .page)
+
+        await repository.complete(
+            loadID: newerID,
+            with: PersistedLayoutSnapshot(allItems: [newerPage])
+        )
+        await newerTask.value
+        await repository.complete(
+            loadID: olderID,
+            with: PersistedLayoutSnapshot(allItems: [olderPage])
+        )
+        await olderTask.value
+
+        #expect(sut.authoritativeSnapshot?.pages.map(\.id) == [newerPage.id])
+    }
+
+    @Test("mutation 进行中拒绝重复 drop 与 rename")
+    func mutationInFlightRejectsDuplicateSubmissions() async throws {
+        let started = AsyncStream<Void>.makeStream()
+        var starts = started.stream.makeAsyncIterator()
+        let page = TestDataFactory.makePageItem(id: 1, type: .page)
+        let folder = TestDataFactory.makePageItem(
+            id: 2,
+            type: .group,
+            parentId: page.id,
+            group: TestDataFactory.makeGroupInfo(id: 2, title: "Folder")
+        )
+        let repository = BlockingMutationRepository(
+            snapshot: PersistedLayoutSnapshot(allItems: [page, folder]),
+            applyStarted: started.continuation
+        )
+        let sut = LaunchPadViewController(
+            layoutRepository: repository,
+            iconCache: IconCache(
+                iconProvider: MockIconProvider(),
+                imageStore: MockImageStore()
+            ),
+            dragController: DragController(),
+            applicationOpener: { _ in }
+        )
+        layout(sut)
+        await sut.loadData().value
+
+        #expect(sut.applyDropIntent(.deleteApp(itemID: 9)))
+        _ = await starts.next()
+        #expect(!sut.applyDropIntent(.deleteApp(itemID: 10)))
+        sut.handleFolderRename(item: folder, newTitle: "Renamed")
+        #expect(await repository.counts().apply == 1)
+        #expect(await repository.counts().rename == 0)
+
+        await repository.resumeApply()
+        #expect(await sut.layoutMutationTask?.value == true)
+    }
+
     private func makeSUT(storage: StorageManager) -> LaunchPadViewController {
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
         return LaunchPadViewController(
-            storage: storage,
-            layoutMutator: storage,
+            layoutRepository: LayoutRepository(
+                reader: storage,
+                mutator: storage,
+                writer: storage
+            ),
             iconCache: iconCache,
             dragController: DragController(),
-            folderController: FolderController(itemWriter: storage),
             applicationOpener: { _ in }
         )
     }
@@ -154,13 +326,15 @@ struct LaunchPadViewControllerTests {
         let iconProvider = MockIconProvider()
         let iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
         let dragController = DragController(scheduler: dragScheduler)
-        let folderController = FolderController(itemWriter: storage)
+        let repository = LayoutRepository(
+            reader: storage,
+            mutator: layoutMutator,
+            writer: storage
+        )
         let sut = LaunchPadViewController(
-            storage: storage,
-            layoutMutator: layoutMutator,
+            layoutRepository: repository,
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController,
             applicationOpener: { _ in },
             searchScheduler: searchScheduler
         )
@@ -223,13 +397,14 @@ struct LaunchPadViewControllerTests {
     private func makeOpenedFolderSUT(
         mutator: MockLayoutMutator,
         children: [PageItem]
-    ) -> (LaunchPadViewController, MockDataStore, PageItem) {
+    ) async -> (LaunchPadViewController, MockDataStore, PageItem) {
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let folder = makeFolder()
         storage.pages = [page]
         storage.childrenByPage = [1: [folder], 50: children]
         _ = sut.view
+        await sut.loadData().value
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         sut.folderOverlay.folderViewportSizeProvider = {
             CGSize(width: 800, height: 624)
@@ -307,10 +482,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("drop 成功只写一次并在返回后精确读取权威一页布局")
-    func dropSuccessAppliesOnceBeforeExactAuthoritativeReads() {
+    func dropSuccessAppliesOnceBeforeExactAuthoritativeReads() async throws {
         let mutator = MockLayoutMutator()
         let (sut, dragController, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         dragController.beginDrag(makeDragSession(itemID: 2))
         var trace: [String] = []
@@ -318,27 +493,30 @@ struct LaunchPadViewControllerTests {
         storage.eventRecorder = { trace.append($0) }
         let readsBefore = storage.fetchAllItemsCallCount
 
-        let result = sut.applyDropIntent(.moveTopLevel(
+        let accepted = sut.applyDropIntent(.moveTopLevel(
             itemID: 2,
             placement: .beforeItem(itemID: 1)
         ))
 
-        #expect(result)
+        #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        let succeeded = await mutationTask.value
+        #expect(succeeded)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.appliedIntents.count == 1)
         #expect(mutator.attemptedPageCapacities == [28])
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
-        #expect(trace == ["apply-start", "apply-return", "read-root", "read-page:1"])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
+        #expect(trace == ["apply-start", "apply-return", "read-snapshot"])
         #expect(dragController.session != nil)
     }
 
     @Test("drop 失败只尝试一次，throw 后精确读取并输出固定脱敏反馈")
-    func dropFailureDoesNotRetryAndReloadsAfterThrow() {
+    func dropFailureDoesNotRetryAndReloadsAfterThrow() async throws {
         let sentinel = "apply-secret-folder-title"
         let mutator = MockLayoutMutator()
         mutator.applyError = SensitiveError(description: sentinel)
         let (sut, dragController, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         dragController.beginDrag(makeDragSession(itemID: 2))
         var trace: [String] = []
@@ -348,18 +526,21 @@ struct LaunchPadViewControllerTests {
         sut.layoutDropFailureLogger = { events.append($0) }
         let readsBefore = storage.fetchAllItemsCallCount
 
-        let result = sut.applyDropIntent(.createFolder(
+        let accepted = sut.applyDropIntent(.createFolder(
             itemID: 2,
             targetItemID: 3,
             title: sentinel
         ))
 
-        #expect(!result)
+        #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        let succeeded = await mutationTask.value
+        #expect(!succeeded)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.appliedIntents.isEmpty)
         #expect(mutator.attemptedPageCapacities == [28])
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
-        #expect(trace == ["apply-start", "apply-throw", "read-root", "read-page:1"])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
+        #expect(trace == ["apply-start", "apply-throw", "read-snapshot"])
         #expect(sut.transientMessageView.message == "无法更新布局，请重试")
         #expect(events == [LayoutDropFailureEvent(
             kind: "create_folder",
@@ -373,15 +554,17 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("nil metrics 不尝试写；resize 后失败仍记录当前动态容量")
-    func dropUsesOnlyCurrentDynamicCapacity() {
+    func dropUsesOnlyCurrentDynamicCapacity() async throws {
         let mutator = MockLayoutMutator()
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         #expect(!sut.applyDropIntent(.deleteFolder(folderID: 9)))
         #expect(mutator.applyAttemptCount == 0)
 
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         #expect(sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        let firstMutationTask = try #require(sut.layoutMutationTask)
+        #expect(await firstMutationTask.value)
         mutator.applyError = LayoutDomainError.missingAnchor(999)
         sut.viewportSizeProvider = { CGSize(width: 1729, height: 496) }
         sut.viewDidLayout()
@@ -389,18 +572,38 @@ struct LaunchPadViewControllerTests {
         mutator.eventRecorder = { failureTrace.append($0) }
         storage.eventRecorder = { failureTrace.append($0) }
         let readsBeforeFailure = storage.fetchAllItemsCallCount
-        #expect(!sut.applyDropIntent(.moveTopLevel(
+        #expect(sut.applyDropIntent(.moveTopLevel(
             itemID: 2,
             placement: .beforeItem(itemID: 999)
         )))
+        let secondMutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await secondMutationTask.value))
 
         #expect(mutator.applyAttemptCount == 2)
         #expect(mutator.attemptedPageCapacities == [28, 40])
         #expect(mutator.appliedPageCapacities == [28])
-        #expect(storage.fetchAllItemsCallCount - readsBeforeFailure == 2)
+        #expect(storage.fetchAllItemsCallCount - readsBeforeFailure == 1)
         #expect(failureTrace == [
-            "apply-start", "apply-throw", "read-root", "read-page:1",
+            "apply-start", "apply-throw", "read-snapshot",
         ])
+    }
+
+    @Test("布局 mutation 在途时拒绝后续 drop、delete 与 rename")
+    func inFlightLayoutMutationRejectsDuplicateSubmissions() async throws {
+        let mutator = MockLayoutMutator()
+        let (sut, _, storage) = makeSUT(layoutMutator: mutator)
+        await loadViewWithData(sut, storage: storage)
+        layout(sut, viewportSize: CGSize(width: 1440, height: 496))
+        let folder = makeFolder(id: 50)
+
+        #expect(sut.applyDropIntent(.deleteApp(itemID: 2)))
+        let firstMutationTask = try #require(sut.layoutMutationTask)
+        #expect(!sut.applyDropIntent(.deleteFolder(folderID: folder.id)))
+        sut.handleFolderRename(item: folder, newTitle: "Rejected")
+
+        #expect(await firstMutationTask.value)
+        #expect(mutator.attemptedIntents == [.deleteApp(itemID: 2)])
+        #expect(storage.updatedItems.isEmpty)
     }
 
     @Test("七种 layout intent 映射完整且不记录 folder title")
@@ -459,14 +662,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("mutation 与失败 reload 的 sentinel 均不进入任何可观察输出")
-    func failedAuthoritativeReloadUsesSanitizedBoundary() {
+    func failedAuthoritativeReloadUsesSanitizedBoundary() async throws {
         let applySentinel = "apply-sensitive-error"
         let reloadSentinel = "reload-sensitive-error"
         let titleSentinel = "folder-sensitive-title"
         let mutator = MockLayoutMutator()
         mutator.applyError = SensitiveError(description: applySentinel)
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         storage.fetchError = SensitiveError(description: reloadSentinel)
         var events: [LayoutDropFailureEvent] = []
@@ -477,11 +680,13 @@ struct LaunchPadViewControllerTests {
         }
         sut.transientMessageView.postAnnouncement = { _, _ in }
 
-        #expect(!sut.applyDropIntent(.createFolder(
+        #expect(sut.applyDropIntent(.createFolder(
             itemID: 2,
             targetItemID: 3,
             title: titleSentinel
         )))
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await mutationTask.value))
 
         let observable = String(describing: events)
             + readFailureCategories.joined()
@@ -494,18 +699,22 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("连续失败提示接入约束完整且旧 auto-hide 不清除新提示")
-    func repeatedDropFailureKeepsLatestTransientMessage() throws {
+    func repeatedDropFailureKeepsLatestTransientMessage() async throws {
         let mutator = MockLayoutMutator()
         mutator.applyError = TestError.generic
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         var scheduled: [DispatchWorkItem] = []
         sut.transientMessageView.scheduleHide = { _, item in scheduled.append(item) }
         sut.transientMessageView.postAnnouncement = { _, _ in }
 
-        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 8)))
-        #expect(!sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        #expect(sut.applyDropIntent(.deleteFolder(folderID: 8)))
+        let firstMutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await firstMutationTask.value))
+        #expect(sut.applyDropIntent(.deleteFolder(folderID: 9)))
+        let secondMutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await secondMutationTask.value))
         #expect(scheduled.count == 2)
         scheduled[0].perform()
         #expect(sut.transientMessageView.message == "无法更新布局，请重试")
@@ -534,7 +743,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("搜索 mode 与 current query 完整派生三层拖放门禁")
-    func searchTransitionsSynchronizeAllDragBoundaries() throws {
+    func searchTransitionsSynchronizeAllDragBoundaries() async throws {
         let searchScheduler = MockScheduler()
         let dragScheduler = MockScheduler()
         let mutator = MockLayoutMutator()
@@ -543,7 +752,7 @@ struct LaunchPadViewControllerTests {
             dragScheduler: dragScheduler,
             layoutMutator: mutator
         )
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         let coordinator = try #require(sut.gridInteractionCoordinator)
         #expect(coordinator.isDragEnabled)
@@ -615,7 +824,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("native accept 只写一次并保留会话预览直到 ended")
-    func nativeAcceptWritesOnceAndEndedOwnsCleanup() throws {
+    func nativeAcceptWritesOnceAndEndedOwnsCleanup() async throws {
         let scheduler = MockScheduler()
         let mutator = MockLayoutMutator()
         let (sut, dragController, storage) = makeSUT(
@@ -640,7 +849,7 @@ struct LaunchPadViewControllerTests {
                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2")
             ),
         ]
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         let grid = try #require(extractCollectionView(from: sut))
         let coordinator = try #require(sut.gridInteractionCoordinator)
@@ -687,12 +896,14 @@ struct LaunchPadViewControllerTests {
         )
 
         #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.attemptedIntents == [
             .createFolder(itemID: 1, targetItemID: 2, title: "New Folder"),
         ])
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
-        #expect(trace == ["apply-start", "apply-return", "read-root", "read-page:1"])
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
+        #expect(trace == ["apply-start", "apply-return", "read-snapshot"])
         #expect(dragController.session != nil)
         #expect(previewCell.isFolderCreationPreviewVisible)
         #expect(scheduler.cancelCallCount == cancelCountBefore)
@@ -707,14 +918,14 @@ struct LaunchPadViewControllerTests {
         )
 
         #expect(mutator.applyAttemptCount == 1)
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
         #expect(dragController.session == nil)
         #expect(!previewCell.isFolderCreationPreviewVisible)
         #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
     }
 
     @Test("native accept 已提交但权威 reload 失败仍成功，ended 不重复写入")
-    func nativeAcceptCommitSurvivesAuthoritativeReloadFailure() throws {
+    func nativeAcceptCommitSurvivesAuthoritativeReloadFailure() async throws {
         let reloadSentinel = "reload-sensitive-error-after-commit"
         let scheduler = MockScheduler()
         let mutator = MockLayoutMutator()
@@ -740,7 +951,7 @@ struct LaunchPadViewControllerTests {
                 app: TestDataFactory.makeAppInfo(id: 2, title: "A2")
             ),
         ]
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         let grid = try #require(extractCollectionView(from: sut))
         let coordinator = try #require(sut.gridInteractionCoordinator)
@@ -795,13 +1006,15 @@ struct LaunchPadViewControllerTests {
         )
 
         #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.attemptedIntents == [expectedIntent])
         #expect(mutator.appliedIntents == [expectedIntent])
         #expect(mutator.attemptedPageCapacities == [28])
         #expect(mutator.appliedPageCapacities == [28])
         #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
-        #expect(trace == ["apply-start", "apply-return", "read-root"])
+        #expect(trace == ["apply-start", "apply-return", "read-snapshot"])
         #expect(readFailureCategories == ["authoritative_read_failed"])
         #expect(dropFailureEvents.isEmpty)
         #expect(sut.transientMessageView.message == nil)
@@ -826,7 +1039,7 @@ struct LaunchPadViewControllerTests {
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.appliedIntents == [expectedIntent])
         #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
-        #expect(trace == ["apply-start", "apply-return", "read-root"])
+        #expect(trace == ["apply-start", "apply-return", "read-snapshot"])
         #expect(dragController.session == nil)
         #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
     }
@@ -845,10 +1058,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("关闭窗口显式取消 native drag，后续 ended 不重复 cleanup")
-    func closeWindowCancelsNativeDragIdempotently() throws {
+    func closeWindowCancelsNativeDragIdempotently() async throws {
         let scheduler = MockScheduler()
         let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         let coordinator = try #require(sut.gridInteractionCoordinator)
         let grid = try #require(extractCollectionView(from: sut))
         var previewChanges: [Int64?] = []
@@ -1131,14 +1344,14 @@ struct LaunchPadViewControllerTests {
     // MARK: - loadData
 
     @Test("loadData with empty storage does not crash")
-    func loadData_emptyStorage_noCrash() {
+    func loadData_emptyStorage_noCrash() async {
         let (sut, _, _) = makeSUT()
         _ = sut.view // trigger loadView
-        sut.loadData()
+        await sut.loadData().value
     }
 
     @Test("loadData with pages populates internal state")
-    func loadData_withPages_populatesState() {
+    func loadData_withPages_populatesState() async {
         let (sut, _, storage) = makeSUT()
         _ = sut.view // trigger loadView
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
@@ -1147,13 +1360,13 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [1: [app]]
 
-        sut.loadData()
+        await sut.loadData().value
 
         #expect(sut.selectedItemID == nil)
     }
 
     @Test("loadData with multiple pages")
-    func loadData_multiplePages_noCrash() {
+    func loadData_multiplePages_noCrash() async {
         let (sut, _, storage) = makeSUT()
         _ = sut.view // trigger loadView
         let page1 = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
@@ -1163,7 +1376,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page1, page2]
         storage.childrenByPage = [1: apps1, 2: apps2]
 
-        sut.loadData()
+        await sut.loadData().value
     }
 
     // MARK: - handleKeyEvent edge cases
@@ -1322,13 +1535,14 @@ struct LaunchPadViewControllerTests {
     // MARK: - moveSelection（视图加载后）
 
     @Test("视图加载后 down 方向键选中第一个图标")
-    func moveSelection_down_selectsFirstItem() {
+    func moveSelection_down_selectsFirstItem() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
 
         _ = sut.handleKeyEvent(.downArrow)
 
@@ -1336,13 +1550,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("视图加载后 tab 键顺序选中下一个图标")
-    func moveSelection_tab_selectsNextItem() {
+    func moveSelection_tab_selectsNextItem() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
 
         _ = sut.handleKeyEvent(.downArrow)
         let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
@@ -1352,13 +1567,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("视图加载后 up 方向键向上移动选中")
-    func moveSelection_up_movesUp() {
+    func moveSelection_up_movesUp() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 10, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
         let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
 
         // down 两次：第一次选中 0，第二次跳到下一行（0 + columns）
@@ -1374,10 +1590,10 @@ struct LaunchPadViewControllerTests {
     // MARK: - 分页导航
 
     @Test("视图加载后 rightArrow 翻到下一页且到达末页后不越界")
-    func nextPage_navigatesForward() throws {
+    func nextPage_navigatesForward() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let scrollView = try #require(extractScrollView(from: sut))
         let productionCallback = try #require(scrollView.onPageChanged)
@@ -1401,10 +1617,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("视图加载后 leftArrow 翻到上一页且不越界")
-    func previousPage_navigatesBackward() throws {
+    func previousPage_navigatesBackward() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         _ = sut.handleKeyEvent(.rightArrow)
         _ = sut.handleKeyEvent(.rightArrow)
@@ -1430,10 +1646,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("dragController.onPageChange 回调触发翻页导航")
-    func handlePageChange_viaDragControllerCallback() throws {
+    func handlePageChange_viaDragControllerCallback() async throws {
         let (sut, dragController, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let scrollView = try #require(extractScrollView(from: sut))
         let productionCallback = try #require(scrollView.onPageChanged)
@@ -1468,19 +1684,22 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("coordinator activation 对 group 类型打开文件夹并加载子项")
-    func coordinatorActivation_group_opensFolder() throws {
+    func coordinatorActivation_group_opensFolder() async throws {
         let (sut, _, storage) = makeSUT()
         _ = sut.view
         let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
                                                    parentId: 1,
                                                    group: TestDataFactory.makeGroupInfo(id: 100, title: "Folder"))
-        storage.childrenByPage = [100: []]
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [folder], folder.id: []]
+        await sut.loadData().value
 
         let before = storage.fetchAllItemsCallCount
         let coordinator = try #require(sut.gridInteractionCoordinator)
         coordinator.onItemActivated?(folder)
-        // openFolder 调用 storage.fetchAllItems(parentId: folder.id) 加载子项
-        #expect(storage.fetchAllItemsCallCount > before)
+        #expect(storage.fetchAllItemsCallCount == before)
+        #expect(sut.folderOverlay.currentFolderID == folder.id)
     }
 
     @Test("ViewController 强持当前 grid coordinator 并完成真实 delegate 装配")
@@ -1512,13 +1731,13 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("同 viewport 重建 view 后为新 grid 恢复 metrics、snapshot 与稳定选择")
-    func loadViewRebuildRehydratesCurrentGridAtSameViewport() throws {
+    func loadViewRebuildRehydratesCurrentGridAtSameViewport() async throws {
         let (sut, _, storage) = makeSUT()
         let expectedMetrics = GridLayoutCalculator.calculate(
             viewportSize: CGSize(width: 1440, height: 496)
         )
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         sut.navigateToPage(2)
         _ = sut.selectItem(id: 60)
@@ -1572,7 +1791,7 @@ struct LaunchPadViewControllerTests {
     // MARK: - handleSearch 非空查询
 
     @Test("handleSearch 非空查询执行一次注入搜索")
-    func handleSearch_nonEmptyQuery_runsInjectedSearchOnce() {
+    func handleSearch_nonEmptyQuery_runsInjectedSearchOnce() async {
         let searchScheduler = MockScheduler()
         let (sut, _, storage) = makeSUTWithSearchScheduler(searchScheduler: searchScheduler)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
@@ -1586,6 +1805,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [1: [safari]]
         layout(sut)
+        await sut.loadData().value
 
         var searchCalls: [(ids: [Int64], query: String)] = []
         sut.searchRunner = { items, query, completion in
@@ -1634,6 +1854,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [first]]
         layout(sut)
+        await sut.loadData().value
 
         #expect(sut.executeSearch(items: [first], query: "match").map(\.id) == [first.id])
         let (reloads, reloadContinuation) = AsyncStream<Void>.makeStream()
@@ -1646,12 +1867,12 @@ struct LaunchPadViewControllerTests {
         #expect(sut.currentSearchResults.map(\.id) == [first.id])
 
         storage.childrenByPage[page.id] = [first, second]
-        sut.loadData()
+        await sut.loadData().value
         _ = await reloadIterator.next()
         #expect(sut.currentSearchResults.map(\.id) == [first.id, second.id])
 
         storage.childrenByPage[page.id] = [second]
-        sut.loadData()
+        await sut.loadData().value
         _ = await reloadIterator.next()
         #expect(sut.currentSearchResults.map(\.id) == [second.id])
 
@@ -1664,7 +1885,7 @@ struct LaunchPadViewControllerTests {
             app: TestDataFactory.makeAppInfo(id: second.id, title: "Other")
         )
         storage.childrenByPage[page.id] = [renamed]
-        sut.loadData()
+        await sut.loadData().value
         _ = await reloadIterator.next()
 
         #expect(sut.currentSearchQuery == "match")
@@ -1673,7 +1894,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("active query 的权威读取失败不改变 generation、结果或 runner 次数")
-    func failedAuthoritativeReloadPreservesActiveSearchState() {
+    func failedAuthoritativeReloadPreservesActiveSearchState() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let match = TestDataFactory.makePageItem(
@@ -1686,6 +1907,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [match]]
         layout(sut)
+        await sut.loadData().value
         var runnerCalls = 0
         sut.searchRunner = { items, query, completion in
             runnerCalls += 1
@@ -1700,7 +1922,7 @@ struct LaunchPadViewControllerTests {
         #expect(runnerCalls == 1)
 
         storage.fetchError = TestError.generic
-        sut.loadData()
+        await sut.loadData().value
 
         #expect(sut.searchRequestGeneration == generationBeforeFailure)
         #expect(sut.currentSearchResults == resultsBeforeFailure)
@@ -1708,7 +1930,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("相同 query 的旧 completion 不覆盖较新权威 reload")
-    func sameQueryStaleCompletionCannotOverwriteNewerReload() throws {
+    func sameQueryStaleCompletionCannotOverwriteNewerReload() async throws {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let old = TestDataFactory.makePageItem(
@@ -1728,6 +1950,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [old]]
         layout(sut)
+        await sut.loadData().value
         var requests: [([PageItem], ([PageItem]) -> Void)] = []
         sut.searchRunner = { items, _, completion in
             requests.append((items, completion))
@@ -1735,7 +1958,7 @@ struct LaunchPadViewControllerTests {
 
         sut.handleSearch(query: "match")
         storage.childrenByPage[page.id] = [latest]
-        sut.loadData()
+        await sut.loadData().value
 
         try #require(requests.count == 2)
         requests[1].1(requests[1].0)
@@ -1748,7 +1971,7 @@ struct LaunchPadViewControllerTests {
     // MARK: - 编辑模式删除 / 文件夹重命名（通过 collectionView 回调）
 
     @Test("onItemDelete 仅提交 typed layout intent 并退出编辑模式")
-    func onItemDeleteAppliesAtomicLayoutIntentAndExitsEditMode() {
+    func onItemDeleteAppliesAtomicLayoutIntentAndExitsEditMode() async throws {
         let mutator = MockLayoutMutator()
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
@@ -1757,12 +1980,15 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [1: [app]]
         layout(sut)
+        await sut.loadData().value
         guard let cv = extractCollectionView(from: sut) else {
             Issue.record("collectionView not accessible via reflection")
             return
         }
 
         cv.onItemDelete?(app)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
 
         #expect(mutator.appliedIntents == [.deleteApp(itemID: 10)])
         #expect(storage.deletedIds.isEmpty)
@@ -1771,7 +1997,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("普通 app 删除通过布局事务压密同页 ordering")
-    func appDeleteCompactsPersistedOrdering() throws {
+    func appDeleteCompactsPersistedOrdering() async throws {
         let storage = try StorageManager(dbPath: ":memory:")
         let pageID = try storage.insertItem(
             TestDataFactory.makePageItem(id: 0, uuid: "delete-page", type: .page)
@@ -1803,6 +2029,8 @@ struct LaunchPadViewControllerTests {
         layout(sut)
 
         sut.handleItemDelete(apps[1])
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
 
         let snapshot = try storage.persistedLayoutSnapshot()
         #expect(snapshot.flattenedTopLevelIDs == [apps[0].id, apps[2].id])
@@ -1810,7 +2038,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("普通 app 删除清理非唯一空末页")
-    func appDeleteRemovesObsoleteLastPage() throws {
+    func appDeleteRemovesObsoleteLastPage() async throws {
         let storage = try StorageManager(dbPath: ":memory:")
         let firstPageID = try storage.insertItem(
             TestDataFactory.makePageItem(id: 0, uuid: "delete-first-page", type: .page, ordering: 0)
@@ -1848,6 +2076,8 @@ struct LaunchPadViewControllerTests {
         layout(sut)
 
         sut.handleItemDelete(removed)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
 
         let snapshot = try storage.persistedLayoutSnapshot()
         #expect(snapshot.pages.map(\.id) == [firstPageID])
@@ -1856,7 +2086,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("普通 app 删除全布局最后一项后保留唯一空页")
-    func appDeletePreservesOneEmptyPage() throws {
+    func appDeletePreservesOneEmptyPage() async throws {
         let storage = try StorageManager(dbPath: ":memory:")
         let pageID = try storage.insertItem(
             TestDataFactory.makePageItem(id: 0, uuid: "delete-only-page", type: .page)
@@ -1883,6 +2113,8 @@ struct LaunchPadViewControllerTests {
         layout(sut)
 
         sut.handleItemDelete(persistedItem)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
 
         let snapshot = try storage.persistedLayoutSnapshot()
         #expect(snapshot.pages.map(\.id) == [pageID])
@@ -1892,7 +2124,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("onFolderRenamed 将新标题写入存储")
-    func onFolderRenamed_persistsNewTitle() {
+    func onFolderRenamed_persistsNewTitle() async throws {
         let (sut, _, storage) = makeSUT()
         let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
                                                    parentId: 1,
@@ -1906,6 +2138,8 @@ struct LaunchPadViewControllerTests {
         }
 
         cv.onFolderRenamed?(folder, "Renamed Folder")
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
 
         #expect(storage.updatedItems.count == 1)
         #expect(storage.updatedItems.first?.group?.title == "Renamed Folder")
@@ -1923,9 +2157,9 @@ struct LaunchPadViewControllerTests {
     // MARK: - viewDidLayout
 
     @Test("viewport resize 只重投影且保持稳定顺序，不写存储")
-    func resizeReprojectsWithoutWritesAndPreservesStableOrder() {
+    func resizeReprojectsWithoutWritesAndPreservesStableOrder() async {
         let (sut, _, storage) = makeSUT()
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         let insertedBefore = storage.insertedItems
         let updatedBefore = storage.updatedItems
         let deletedBefore = storage.deletedIds
@@ -1942,10 +2176,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("resize clamp 旧页并按稳定 ID 恢复选择")
-    func resizeClampsPreviousPageAndRestoresSelectionByID() throws {
+    func resizeClampsPreviousPageAndRestoresSelectionByID() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let grid = try #require(extractCollectionView(from: sut))
         let scrollView = try #require(extractScrollView(from: sut))
@@ -2002,10 +2236,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("resize 同步七列键盘步长、跨 section 选择与无障碍行")
-    func resizeSynchronizesKeyboardAndAccessibilityRows() throws {
+    func resizeSynchronizesKeyboardAndAccessibilityRows() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
         _ = sut.selectItem(id: itemIDs[27])
@@ -2023,10 +2257,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("空搜索结果保留 search page 并清除不再可见的选择")
-    func emptySearchProjectsOneEmptyPageAndClearsSelection() {
+    func emptySearchProjectsOneEmptyPageAndClearsSelection() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         _ = sut.selectItem(id: apps[0].id)
         sut.searchRunner = { _, _, _ in }
@@ -2045,10 +2279,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("清空搜索丢弃结果缓存并恢复普通 stable-ID 投影")
-    func clearingSearchRestoresNormalProjection() {
+    func clearingSearchRestoresNormalProjection() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         sut.searchRunner = { _, _, _ in }
         sut.handleSearch(query: "app")
@@ -2067,10 +2301,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("scroll callback 同步页模型且不递归滚动")
-    func scrollCallbackSynchronizesPageWithoutRecursion() throws {
+    func scrollCallbackSynchronizesPageWithoutRecursion() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let scrollView = try #require(extractScrollView(from: sut))
         let productionCallback = try #require(scrollView.onPageChanged)
@@ -2136,11 +2370,11 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("selectedIndex 兼容适配器从稳定 ID 投影展平索引")
-    func selectedIndexCompatibilityAdapterProjectsFlattenedIndex() {
+    func selectedIndexCompatibilityAdapterProjectsFlattenedIndex() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 30)
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         sut.viewDidLayout()
 
         #expect(sut.selectedIndex == nil)
@@ -2152,10 +2386,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("nil 与未知 stable ID 均清除当前选择")
-    func selectItemClearsNilAndUnknownStableIDs() {
+    func selectItemClearsNilAndUnknownStableIDs() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         _ = sut.selectItem(id: apps[0].id)
         #expect(sut.selectedItemID == apps[0].id)
@@ -2168,10 +2402,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("程序化 grid selection 不发 coordinator 业务输出")
-    func programmaticSelectionDoesNotEmitCoordinatorOutput() throws {
+    func programmaticSelectionDoesNotEmitCoordinatorOutput() async throws {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         let coordinator = try #require(sut.gridInteractionCoordinator)
         var outputIDs: [Int64] = []
@@ -2184,10 +2418,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("coordinator mouse selection 绑定 stable ID")
-    func coordinatorSelectionUpdatesStableID() throws {
+    func coordinatorSelectionUpdatesStableID() async throws {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         let coordinator = try #require(sut.gridInteractionCoordinator)
 
@@ -2216,10 +2450,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("pageControl dot 在真实多页投影中同步目标页并拒绝越界")
-    func pageControl_onDotSelected_navigates() throws {
+    func pageControl_onDotSelected_navigates() async throws {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let scrollView = try #require(extractScrollView(from: sut))
         let productionCallback = try #require(scrollView.onPageChanged)
@@ -2288,10 +2522,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("native session 的 gesture terminal 不读取也不抢 ended cleanup")
-    func handleLongPressNativeSessionWaitsForNativeEnded() throws {
+    func handleLongPressNativeSessionWaitsForNativeEnded() async throws {
         let scheduler = MockScheduler()
         let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut)
         let coordinator = try #require(sut.gridInteractionCoordinator)
         dragController.beginDrag(makeDragSession())
@@ -2317,7 +2551,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("gesture-only dragging 的 ended/cancelled/failed 各自只清理并读取一次")
-    func handleLongPressGestureOnlyTerminalMatrix() {
+    func handleLongPressGestureOnlyTerminalMatrix() async {
         for gestureState in [
             NSGestureRecognizer.State.ended,
             .cancelled,
@@ -2325,16 +2559,23 @@ struct LaunchPadViewControllerTests {
         ] {
             let scheduler = MockScheduler()
             let (sut, dragController, storage) = makeSUT(dragScheduler: scheduler)
-            loadViewWithData(sut, storage: storage)
+            await loadViewWithData(sut, storage: storage)
             dragController.handleDragStart()
             let readsBefore = storage.fetchAllItemsCallCount
             let cancelCountBefore = scheduler.cancelCallCount
+            let (readEvents, readContinuation) = AsyncStream<Void>.makeStream()
+            var readIterator = readEvents.makeAsyncIterator()
+            storage.eventRecorder = { event in
+                if event == "read-snapshot" { readContinuation.yield() }
+            }
 
             sut.handleLongPress(MockPressGesture(state: gestureState))
+            _ = await readIterator.next()
+            readContinuation.finish()
 
             #expect(dragController.state == .idle)
             #expect(dragController.session == nil)
-            #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+            #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
             #expect(scheduler.cancelCallCount == cancelCountBefore + 1)
         }
     }
@@ -2512,7 +2753,7 @@ struct LaunchPadViewControllerTests {
     // MARK: - 错误分支（catch）
 
     @Test("handleItemDelete app 失败提交一次 typed intent 并刷新权威布局")
-    func handleItemDeleteFailureUsesAtomicIntentAndReloads() {
+    func handleItemDeleteFailureUsesAtomicIntentAndReloads() async throws {
         let mutator = MockLayoutMutator()
         mutator.applyError = TestError.generic
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
@@ -2531,6 +2772,7 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [app]]
         layout(sut)
+        await sut.loadData().value
         var events: [LayoutDropFailureEvent] = []
         var announcements: [String] = []
         sut.layoutDropFailureLogger = { events.append($0) }
@@ -2540,12 +2782,14 @@ struct LaunchPadViewControllerTests {
         let readsBefore = storage.fetchAllItemsCallCount
 
         sut.handleItemDelete(app)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await mutationTask.value))
 
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.attemptedIntents == [.deleteApp(itemID: app.id)])
         #expect(mutator.appliedIntents.isEmpty)
         #expect(storage.deletedIds.isEmpty)
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 2)
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
         #expect(events == [LayoutDropFailureEvent(
             kind: "delete_app",
             sourceID: app.id,
@@ -2567,25 +2811,28 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("handleFolderRename 重命名失败时记录错误不崩溃")
-    func handleFolderRename_throws_logs() {
+    func handleFolderRename_throws_logs() async throws {
         let (sut, _, storage) = makeSUT()
         storage.shouldThrowOnUpdate = true
         let folder = TestDataFactory.makePageItem(id: 100, type: .group, ordering: 0,
                                                   parentId: 1,
                                                   group: TestDataFactory.makeGroupInfo(id: 100, title: "Old"))
         sut.handleFolderRename(item: folder, newTitle: "New")
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await mutationTask.value))
     }
 
     // MARK: - handleSearch 有数据时遍历 itemsByPage
 
     @Test("handleSearch 空查询在有数据时遍历 itemsByPage")
-    func handleSearch_emptyQuery_withData() {
+    func handleSearch_emptyQuery_withData() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 3, titlePrefix: "App")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
         sut.searchRunner = { items, _, completion in completion(items) }
         sut.handleSearch(query: "app")
         #expect(sut.currentSearchResults.map(\.id) == apps.map(\.id))
@@ -2598,14 +2845,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("handleSearch 非空查询在有数据时 flatMap itemsByPage")
-    func handleSearch_nonEmptyQuery_withData() {
+    func handleSearch_nonEmptyQuery_withData() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 3, titlePrefix: "Alpha")
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         _ = sut.view
-        sut.loadData()
+        await sut.loadData().value
         var receivedItemIDs: [Int64] = []
         var receivedQueries: [String] = []
         sut.searchRunner = { items, query, completion in
@@ -2625,7 +2872,7 @@ struct LaunchPadViewControllerTests {
     // MARK: - openFolder 多子项排序
 
     @Test("openFolder 多个子项按 ordering 排序")
-    func openFolder_multipleChildren_sorted() {
+    func openFolder_multipleChildren_sorted() async {
         let (sut, _, storage) = makeSUT()
         _ = sut.view
         sut.folderOverlay.folderViewportSizeProvider = {
@@ -2638,7 +2885,10 @@ struct LaunchPadViewControllerTests {
                                                    app: TestDataFactory.makeAppInfo(id: 10, title: "B"))
         let child2 = TestDataFactory.makePageItem(id: 20, type: .app, ordering: 0, parentId: 100,
                                                    app: TestDataFactory.makeAppInfo(id: 20, title: "A"))
-        storage.childrenByPage = [100: [child1, child2]]
+        let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
+        storage.pages = [page]
+        storage.childrenByPage = [page.id: [folder], folder.id: [child1, child2]]
+        await sut.loadData().value
 
         sut.openFolder(folder)
 
@@ -2660,9 +2910,9 @@ struct LaunchPadViewControllerTests {
     // MARK: - executeAction .launchFirstMatch
 
     @Test("enter 在搜索模式触发 launchFirstMatch 并选中首个结果")
-    func launchFirstMatch_selectsFirstItem() {
+    func launchFirstMatch_selectsFirstItem() async {
         let (sut, _, storage) = makeSUT()
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut)
         sut.keyboardNavigator.mode = .search(query: "App")
         _ = sut.handleKeyEvent(.enter)
@@ -2858,13 +3108,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("没有选择时 Up 保持 nil")
-    func moveSelectionUpWithoutSelectionDoesNothing() {
+    func moveSelectionUpWithoutSelectionDoesNothing() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5)
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
 
         _ = sut.handleKeyEvent(.upArrow)
 
@@ -2872,13 +3123,14 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("没有选择时首次 Tab 选中 snapshot 首项")
-    func moveSelectionFirstTabSelectsSnapshotFirstItem() {
+    func moveSelectionFirstTabSelectsSnapshotFirstItem() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
         let apps = TestDataFactory.makeAppItems(count: 5)
         storage.pages = [page]
         storage.childrenByPage = [1: apps]
         layout(sut)
+        await sut.loadData().value
 
         _ = sut.handleKeyEvent(.tab)
 
@@ -2886,10 +3138,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("Down 可跨 visual section 并同步当前页")
-    func moveSelectionDownCrossesVisualSection() {
+    func moveSelectionDownCrossesVisualSection() async {
         let (sut, _, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let itemIDs = sut.gridSnapshot.itemIdentifiers.map(\.id)
         _ = sut.selectItem(id: itemIDs[27])
@@ -2902,10 +3154,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("Tab 在末项保持原 stable ID")
-    func moveSelectionNextAtEndDoesNothing() {
+    func moveSelectionNextAtEndDoesNothing() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 5)
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
         layout(sut)
         _ = sut.selectItem(id: apps.last?.id)
 
@@ -2915,10 +3167,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("主网格视觉页在 reload、scroll、导航、dot、edge 与 selection 原语同步")
-    func gridVisualPageSynchronizesAtPrimitiveBoundaries() throws {
+    func gridVisualPageSynchronizesAtPrimitiveBoundaries() async throws {
         let (sut, dragController, storage) = makeSUT()
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
-        loadViewWithTwoPersistedPages(sut, storage: storage)
+        await loadViewWithTwoPersistedPages(sut, storage: storage)
         sut.viewDidLayout()
         let grid = try #require(extractCollectionView(from: sut))
         let scrollView = try #require(extractScrollView(from: sut))
@@ -2980,7 +3232,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("folder exterior resolver 经 overlay、window 转为 grid local 坐标")
-    func folderExteriorResolverConvertsThroughWindowIntoGridCoordinates() throws {
+    func folderExteriorResolverConvertsThroughWindowIntoGridCoordinates() async throws {
         let apps = [
             TestDataFactory.makePageItem(
                 id: 1,
@@ -3000,7 +3252,7 @@ struct LaunchPadViewControllerTests {
             ),
         ]
         let (sut, _, storage) = makeSUT()
-        loadViewWithData(sut, storage: storage, apps: apps)
+        await loadViewWithData(sut, storage: storage, apps: apps)
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 1280, height: 820),
@@ -3048,9 +3300,9 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("folder inner reorder 成功后只写一次并重载 remaining children")
-    func folderReorderSuccessReloadsRemainingChildrenOnce() {
+    func folderReorderSuccessReloadsRemainingChildrenOnce() async throws {
         let mutator = MockLayoutMutator()
-        let (sut, storage, _) = makeOpenedFolderSUT(
+        let (sut, storage, _) = await makeOpenedFolderSUT(
             mutator: mutator,
             children: [
                 makeFolderChild(id: 11, ordering: 0),
@@ -3059,12 +3311,14 @@ struct LaunchPadViewControllerTests {
         )
         let readsBefore = storage.fetchAllItemsCallCount
 
-        let succeeded = sut.handleFolderDrop(
+        let accepted = sut.handleFolderDrop(
             session: makeFolderChildSession(),
             destination: .inside(.afterItem(itemID: 11))
         )
 
-        #expect(succeeded)
+        #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.attemptedIntents == [
             .reorderFolderItem(
@@ -3073,7 +3327,7 @@ struct LaunchPadViewControllerTests {
                 placement: .afterItem(itemID: 11)
             ),
         ])
-        #expect(storage.fetchAllItemsCallCount - readsBefore == 3)
+        #expect(storage.fetchAllItemsCallCount - readsBefore == 1)
         #expect(sut.folderOverlay.currentFolderID == 50)
         #expect(sut.folderOverlay.collectionView(
             sut.folderOverlay.folderCollectionView,
@@ -3085,9 +3339,9 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("folder drag-out auto-dissolve 后关闭 overlay 且只有一次 mutation")
-    func folderDragOutAutoDissolveClosesOverlay() {
+    func folderDragOutAutoDissolveClosesOverlay() async throws {
         let mutator = MockLayoutMutator()
-        let (sut, storage, _) = makeOpenedFolderSUT(
+        let (sut, storage, _) = await makeOpenedFolderSUT(
             mutator: mutator,
             children: [makeFolderChild(id: 10, ordering: 0)]
         )
@@ -3098,12 +3352,14 @@ struct LaunchPadViewControllerTests {
             }
         }
 
-        let succeeded = sut.handleFolderDrop(
+        let accepted = sut.handleFolderDrop(
             session: makeFolderChildSession(),
             destination: .outside(.afterItem(itemID: 99))
         )
 
-        #expect(succeeded)
+        #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.attemptedIntents == [
             .removeFromFolder(
@@ -3120,10 +3376,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("folder mutation 失败后重载原 children、返回 false 且显示固定消息")
-    func folderMutationFailureReloadsOriginalChildrenAndReturnsFalse() {
+    func folderMutationFailureReloadsOriginalChildrenAndReturnsFalse() async throws {
         let mutator = MockLayoutMutator()
         mutator.applyError = SensitiveError(description: "folder-sensitive-error")
-        let (sut, storage, _) = makeOpenedFolderSUT(
+        let (sut, storage, _) = await makeOpenedFolderSUT(
             mutator: mutator,
             children: [
                 makeFolderChild(id: 10, ordering: 0),
@@ -3131,12 +3387,14 @@ struct LaunchPadViewControllerTests {
             ]
         )
 
-        let succeeded = sut.handleFolderDrop(
+        let accepted = sut.handleFolderDrop(
             session: makeFolderChildSession(),
             destination: .inside(.afterItem(itemID: 11))
         )
 
-        #expect(!succeeded)
+        #expect(accepted)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await mutationTask.value))
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.appliedIntents.isEmpty)
         #expect(sut.folderOverlay.currentFolderID == 50)
@@ -3151,10 +3409,10 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("文件夹删除取消时零 mutation，确认后只提交安全删除 intent")
-    func folderDeleteRequiresConfirmation() {
+    func folderDeleteRequiresConfirmation() async throws {
         let mutator = MockLayoutMutator()
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         let folder = makeFolder(id: 50)
 
@@ -3165,20 +3423,24 @@ struct LaunchPadViewControllerTests {
 
         sut.confirmFolderDeletion = { _ in true }
         sut.handleItemDelete(folder)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.attemptedIntents == [.deleteFolder(folderID: 50)])
         #expect(storage.deletedIds.isEmpty)
     }
 
     @Test("folder 删除 mutation failure 只走统一错误反馈")
-    func folderDeleteFailureUsesUnifiedWriterFeedback() {
+    func folderDeleteFailureUsesUnifiedWriterFeedback() async throws {
         let mutator = MockLayoutMutator()
         mutator.applyError = SensitiveError(description: "delete-folder-sensitive")
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
-        loadViewWithData(sut, storage: storage)
+        await loadViewWithData(sut, storage: storage)
         layout(sut, viewportSize: CGSize(width: 1440, height: 496))
         sut.confirmFolderDeletion = { _ in true }
 
         sut.handleItemDelete(makeFolder())
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(!(await mutationTask.value))
 
         #expect(mutator.applyAttemptCount == 1)
         #expect(mutator.appliedIntents.isEmpty)
@@ -3187,7 +3449,7 @@ struct LaunchPadViewControllerTests {
     }
 
     @Test("page 删除严格 no-op，top-level app 删除仅提交 typed intent")
-    func pageDeleteIsNoOpAndAppDeleteUsesTypedIntent() {
+    func pageDeleteIsNoOpAndAppDeleteUsesTypedIntent() async throws {
         let mutator = MockLayoutMutator()
         let (sut, _, storage) = makeSUT(layoutMutator: mutator)
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)
@@ -3201,12 +3463,15 @@ struct LaunchPadViewControllerTests {
         storage.pages = [page]
         storage.childrenByPage = [page.id: [app]]
         layout(sut)
+        await sut.loadData().value
 
         sut.handleItemDelete(page)
         #expect(mutator.applyAttemptCount == 0)
         #expect(storage.deletedIds.isEmpty)
 
         sut.handleItemDelete(app)
+        let mutationTask = try #require(sut.layoutMutationTask)
+        #expect(await mutationTask.value)
         #expect(mutator.appliedIntents == [.deleteApp(itemID: app.id)])
         #expect(storage.deletedIds.isEmpty)
     }

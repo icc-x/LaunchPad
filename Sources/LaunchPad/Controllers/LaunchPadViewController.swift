@@ -59,7 +59,7 @@ struct LayoutDropFailureEvent: Sendable, Equatable {
 /// 主视图控制器 — 协调所有子视图和控制器
 /// 连接：KeyboardNavigator → SearchEngine → DiffableDataSource → NSCollectionView
 ///       DragController → drag-session preview lifecycle
-///       FolderController → FolderOverlayView
+///       LayoutRepository → FolderOverlayView
 @MainActor
 public class LaunchPadViewController: NSViewController {
 
@@ -76,12 +76,10 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Dependencies
 
-    private let storage: DataStoring
-    private let layoutMutator: LayoutMutating
-    private let iconCache: IconCache
+    private let layoutRepository: any LayoutRepositoryProtocol
+    private let iconCache: any IconCaching
     let keyboardNavigator: KeyboardNavigator
     let dragController: DragController
-    private let folderController: FolderController
     private let applicationOpener: (URL) -> Void
     /// 窗口生命周期状态机（nil 时回退到 applicationOpener）
     public var lifecycle: WindowLifecycle?
@@ -164,6 +162,10 @@ public class LaunchPadViewController: NSViewController {
 
     private var allPages: [PageItem] = []
     private var itemsByPage: [Int64: [PageItem]] = [:]
+    private(set) var authoritativeSnapshot: PersistedLayoutSnapshot?
+    private var layoutLoadGeneration = 0
+    private var isLayoutMutationInFlight = false
+    private(set) var layoutMutationTask: Task<Bool, Never>?
     private(set) var gridMetrics: GridMetrics?
     private(set) var visualPages: [[PageItem]] = [[]]
     public private(set) var selectedItemID: Int64?
@@ -213,22 +215,18 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Init
 
-    public init(
-        storage: DataStoring,
-        layoutMutator: LayoutMutating,
-        iconCache: IconCache,
+    init(
+        layoutRepository: any LayoutRepositoryProtocol,
+        iconCache: any IconCaching,
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
         dragController: DragController,
-        folderController: FolderController,
         applicationOpener: @escaping (URL) -> Void,
         searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
-        self.storage = storage
-        self.layoutMutator = layoutMutator
+        self.layoutRepository = layoutRepository
         self.iconCache = iconCache
         self.keyboardNavigator = keyboardNavigator
         self.dragController = dragController
-        self.folderController = folderController
         self.applicationOpener = applicationOpener
         self.searchScheduler = searchScheduler
         super.init(nibName: nil, bundle: nil)
@@ -253,7 +251,7 @@ public class LaunchPadViewController: NSViewController {
 
         // Collection view
         collectionView = AppGridCollectionView(frame: .zero)
-        collectionView.configure(iconCache: iconCache, storage: storage)
+        collectionView.configure(iconCache: iconCache)
         let coordinator = AppGridInteractionCoordinator(
             dragController: dragController,
             pasteboardUUIDReader: { $0.string(forType: .string) }
@@ -410,7 +408,7 @@ public class LaunchPadViewController: NSViewController {
             self?.handlePageChange(direction)
         }
 
-        // 文件夹重命名：连接 FolderCell.onRenamed → FolderController.renameFolder
+        // 文件夹重命名：连接 FolderCell.onRenamed → LayoutRepository.renameFolder
         collectionView.onFolderRenamed = { [weak self] item, newTitle in
             self?.handleFolderRename(item: item, newTitle: newTitle)
         }
@@ -511,23 +509,11 @@ public class LaunchPadViewController: NSViewController {
             return false
         }
 
-        let succeeded = applyDropIntent(intent)
-        if let folder = findItem(byId: session.sourceParentID),
-           let children = try? storage.fetchAllItems(parentId: folder.id) {
-            folderOverlay.reloadChildren(children)
-        } else {
-            folderOverlay.closeFolder()
-        }
-        return succeeded
+        return applyDropIntent(intent)
     }
 
     private func findItem(byId itemID: Int64) -> PageItem? {
-        for items in itemsByPage.values {
-            if let item = items.first(where: { $0.id == itemID }) {
-                return item
-            }
-        }
-        return nil
+        authoritativeSnapshot?.allItems.first { $0.id == itemID }
     }
 
     private var isSearchActive: Bool {
@@ -599,23 +585,31 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Data Loading
 
-    public func loadData() {
-        _ = reloadAuthoritativeLayout(logRawError: true)
+    @discardableResult
+    public func loadData() -> Task<Void, Never> {
+        layoutLoadGeneration += 1
+        let generation = layoutLoadGeneration
+        return Task { @MainActor [weak self] in
+            guard let self else { return }
+            _ = await reloadAuthoritativeLayout(
+                generation: generation,
+                logRawError: true
+            )
+        }
     }
 
     @discardableResult
-    private func reloadAuthoritativeLayout(logRawError: Bool) -> Bool {
+    private func reloadAuthoritativeLayout(
+        generation: Int,
+        logRawError: Bool
+    ) async -> Bool {
         do {
-            let layout = try LayoutPersistence.loadLayout(reader: storage)
-            allPages = layout.pages
-            itemsByPage = layout.itemsByPage
-            if currentSearchQuery.isEmpty {
-                reloadProjectedLayout(preserving: selectedItemID)
-            } else {
-                scheduleSearch(query: currentSearchQuery)
-            }
+            let snapshot = try await layoutRepository.load()
+            guard generation == layoutLoadGeneration else { return false }
+            applyAuthoritativeSnapshot(snapshot)
             return true
         } catch {
+            guard generation == layoutLoadGeneration else { return false }
             if logRawError {
                 NSLog("[LaunchPadViewController] Failed to load data: \(error)")
             } else {
@@ -625,21 +619,66 @@ public class LaunchPadViewController: NSViewController {
         }
     }
 
+    private func applyAuthoritativeSnapshot(
+        _ snapshot: PersistedLayoutSnapshot
+    ) {
+        authoritativeSnapshot = snapshot
+        allPages = snapshot.pages
+        itemsByPage = snapshot.pageChildren
+        if currentSearchQuery.isEmpty {
+            reloadProjectedLayout(preserving: selectedItemID)
+        } else {
+            scheduleSearch(query: currentSearchQuery)
+        }
+
+        guard isViewLoaded,
+              let openFolderID = folderOverlay.currentFolderID else { return }
+        if findItem(byId: openFolderID)?.type == .group {
+            folderOverlay.reloadChildren(snapshot.folderChildren[openFolderID] ?? [])
+        } else {
+            folderOverlay.closeFolder()
+        }
+    }
+
     @discardableResult
     func applyDropIntent(_ intent: LayoutDropIntent) -> Bool {
         guard !isSearchActive,
-              let capacity = gridMetrics?.itemsPerPage else { return false }
+              let capacity = gridMetrics?.itemsPerPage,
+              !isLayoutMutationInFlight else { return false }
 
-        do {
-            try layoutMutator.apply(intent, pageCapacity: capacity)
-            _ = reloadAuthoritativeLayout(logRawError: false)
-            return true
-        } catch {
-            _ = reloadAuthoritativeLayout(logRawError: false)
-            transientMessageView.show(message: "无法更新布局，请重试")
-            layoutDropFailureLogger(LayoutDropFailureEvent(intent: intent))
-            return false
+        isLayoutMutationInFlight = true
+        let repository = layoutRepository
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            let mutationSucceeded: Bool
+            do {
+                try await repository.apply(intent, pageCapacity: capacity)
+                mutationSucceeded = true
+            } catch {
+                mutationSucceeded = false
+            }
+
+            layoutLoadGeneration += 1
+            let generation = layoutLoadGeneration
+            _ = await reloadAuthoritativeLayout(
+                generation: generation,
+                logRawError: false
+            )
+            isLayoutMutationInFlight = false
+
+            if mutationSucceeded {
+                if case .deleteApp = intent {
+                    dragController.handleCancel()
+                    updateJiggleState()
+                }
+            } else {
+                transientMessageView.show(message: "无法更新布局，请重试")
+                layoutDropFailureLogger(LayoutDropFailureEvent(intent: intent))
+            }
+            return mutationSucceeded
         }
+        layoutMutationTask = task
+        return true
     }
 
     // MARK: - Search
@@ -713,6 +752,7 @@ public class LaunchPadViewController: NSViewController {
             searchResults: isSearchActive ? currentSearchResults : nil,
             searchQuery: isSearchActive ? currentSearchQuery : nil,
             searchResultPages: isSearchActive ? visualPages : nil,
+            folderChildren: authoritativeSnapshot?.folderChildren ?? [:],
             animatingDifferences: false,
             reconfigureItems: true,
             animateEntrance: false
@@ -797,10 +837,7 @@ public class LaunchPadViewController: NSViewController {
             guard confirmFolderDeletion(item) else { return }
             _ = applyDropIntent(.deleteFolder(folderID: item.id))
         case .app:
-            if applyDropIntent(.deleteApp(itemID: item.id)) {
-                dragController.handleCancel()
-                updateJiggleState()
-            }
+            _ = applyDropIntent(.deleteApp(itemID: item.id))
         case .page:
             return
         }
@@ -891,22 +928,39 @@ public class LaunchPadViewController: NSViewController {
     }
 
     func openFolder(_ folderItem: PageItem) {
-        do {
-            let children = try storage.fetchAllItems(parentId: folderItem.id)
-                .sorted { $0.ordering < $1.ordering }
-            folderOverlay.openFolder(item: folderItem, childItems: children, iconCache: iconCache)
-        } catch {
-            NSLog("[LaunchPadViewController] Failed to load folder contents: \(error)")
-        }
+        guard let authoritativeFolder = findItem(byId: folderItem.id),
+              authoritativeFolder.type == .group else { return }
+        folderOverlay.openFolder(
+            item: authoritativeFolder,
+            childItems: authoritativeSnapshot?.folderChildren[folderItem.id] ?? [],
+            iconCache: iconCache
+        )
     }
 
     func handleFolderRename(item: PageItem, newTitle: String) {
-        do {
-            try folderController.renameFolder(item: item, newTitle: newTitle)
-            loadData()
-        } catch {
-            NSLog("[LaunchPadViewController] Failed to rename folder: \(error)")
+        guard !isLayoutMutationInFlight else { return }
+        isLayoutMutationInFlight = true
+        let repository = layoutRepository
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return false }
+            let renameSucceeded: Bool
+            do {
+                try await repository.renameFolder(item, newTitle: newTitle)
+                renameSucceeded = true
+            } catch {
+                renameSucceeded = false
+                NSLog("[LaunchPadViewController] Failed to rename folder")
+            }
+            layoutLoadGeneration += 1
+            let generation = layoutLoadGeneration
+            _ = await reloadAuthoritativeLayout(
+                generation: generation,
+                logRawError: false
+            )
+            isLayoutMutationInFlight = false
+            return renameSucceeded
         }
+        layoutMutationTask = task
     }
 
     // MARK: - Keyboard

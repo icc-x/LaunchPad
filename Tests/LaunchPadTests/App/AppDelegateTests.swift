@@ -301,13 +301,14 @@ struct AppDelegateTests {
         let storage = try StorageManager(dbPath: ":memory:")
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
         let dragController = DragController()
-        let folderController = FolderController(itemWriter: storage)
         return LaunchPadViewController(
-            storage: storage,
-            layoutMutator: storage,
+            layoutRepository: LayoutRepository(
+                reader: storage,
+                mutator: storage,
+                writer: storage
+            ),
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController,
             applicationOpener: { _ in }
         )
     }
@@ -487,7 +488,7 @@ struct AppDelegateTests {
         sut.installServices(manager)
 
         #expect(referencesSameObject(sut.storage as Any, manager))
-        #expect(referencesSameObject(sut.layoutMutator as Any, manager))
+        #expect(sut.layoutRepository != nil)
         #expect(referencesSameObject(sut.scanBatchWriter as Any, manager))
         #expect(sut.iconCache != nil)
         #expect(sut.appScanner != nil)
@@ -510,17 +511,19 @@ struct AppDelegateTests {
         #expect(sut.hotkeyManager === expectedManager)
     }
 
-    @Test("重复 installServices 原子替换三个存储协议引用")
+    @Test("重复 installServices 原子替换存储与布局仓储引用")
     func repeatedInstallServicesReplacesStorageReferencesTogether() throws {
         let sut = makeDelegate()
         let first = try StorageManager(dbPath: ":memory:")
         let second = try StorageManager(dbPath: ":memory:")
 
         sut.installServices(first)
+        let firstRepository = sut.layoutRepository
         sut.installServices(second)
 
         #expect(referencesSameObject(sut.storage as Any, second))
-        #expect(referencesSameObject(sut.layoutMutator as Any, second))
+        #expect(sut.layoutRepository != nil)
+        #expect(!referencesSameObject(firstRepository as Any, sut.layoutRepository as Any))
         #expect(referencesSameObject(sut.scanBatchWriter as Any, second))
     }
 
@@ -538,9 +541,9 @@ struct AppDelegateTests {
         #expect(sut.windowController != nil)
     }
 
-    @Test("setupControllers 只允许 storage 与 layoutMutator 同时存在")
+    @Test("setupControllers 只依赖 layoutRepository 与 iconCache")
     func setupControllersRequiresBothTypedDependencies() throws {
-        for (hasStorage, hasMutator) in [
+        for (hasRepository, hasIconCache) in [
             (false, false),
             (true, false),
             (false, true),
@@ -548,12 +551,13 @@ struct AppDelegateTests {
         ] {
             let sut = makeDelegate()
             sut.installServices(try StorageManager(dbPath: ":memory:"))
-            if !hasStorage { sut.storage = nil }
-            if !hasMutator { sut.layoutMutator = nil }
+            sut.storage = nil
+            if !hasRepository { sut.layoutRepository = nil }
+            if !hasIconCache { sut.iconCache = nil }
 
             sut.setupControllers()
 
-            let shouldBuild = hasStorage && hasMutator
+            let shouldBuild = hasRepository && hasIconCache
             #expect((sut.viewController != nil) == shouldBuild)
             #expect((sut.lifecycle != nil) == shouldBuild)
             #expect((sut.windowController != nil) == shouldBuild)

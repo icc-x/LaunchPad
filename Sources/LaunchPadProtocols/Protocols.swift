@@ -10,6 +10,11 @@ public protocol ItemReading: Sendable {
     func fetchAllItems(parentId: Int64?) throws -> [PageItem]
 }
 
+/// Reads the complete persisted layout in one storage operation.
+public protocol LayoutReading: Sendable {
+    func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot
+}
+
 // MARK: - 数据写入协议
 
 /// 写操作 — AppScanner 同步、DragController 重排使用
@@ -124,9 +129,14 @@ public protocol FileSystemService: Sendable {
 
 /// 图标缓存抽象 — AppGridCollectionView 不应直接依赖具体 IconCache 类
 @MainActor
-public protocol IconCaching: Sendable {
+public protocol IconCaching: AnyObject {
     #if canImport(AppKit)
-    func icon(forItemId itemId: Int64, path: String) -> NSImage
+    @discardableResult
+    func loadIcon(
+        forItemId itemId: Int64,
+        path: String,
+        completion: @escaping @MainActor @Sendable (Int64, NSImage) -> Void
+    ) -> Task<Void, Never>
     #endif
 }
 

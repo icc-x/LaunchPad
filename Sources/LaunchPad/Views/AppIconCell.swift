@@ -26,7 +26,10 @@ public class AppIconCell: NSCollectionViewItem {
             height: iconHeightConstraint?.constant ?? 0
         )
     }
+    var configuredIconImage: NSImage? { iconImageView.image }
     private var workspaceObservers: [NSObjectProtocol] = []
+    private var iconLoadTask: Task<Void, Never>?
+    public private(set) var representedItemID: Int64?
 
     /// 删除按钮点击回调
     public var onDelete: (() -> Void)?
@@ -218,6 +221,9 @@ public class AppIconCell: NSCollectionViewItem {
     // MARK: - Configuration
 
     public func configure(item: PageItem, icon: NSImage?, iconSize: CGFloat = 64) {
+        iconLoadTask?.cancel()
+        iconLoadTask = nil
+        representedItemID = item.id
         configuredIconSize = iconSize
         iconWidthConstraint?.constant = iconSize
         iconHeightConstraint?.constant = iconSize
@@ -242,6 +248,22 @@ public class AppIconCell: NSCollectionViewItem {
         } else {
             iconImageView.layer?.borderWidth = 0
             titleLabel.font = NSFont.systemFont(ofSize: 11)
+        }
+    }
+
+    func loadIcon(
+        from iconCache: any IconCaching,
+        itemID: Int64,
+        path: String
+    ) {
+        iconLoadTask?.cancel()
+        iconLoadTask = iconCache.loadIcon(
+            forItemId: itemID,
+            path: path
+        ) { [weak self] completedItemID, image in
+            guard let self,
+                  representedItemID == completedItemID else { return }
+            iconImageView.image = image
         }
     }
 
@@ -303,6 +325,9 @@ public class AppIconCell: NSCollectionViewItem {
 
     override public func prepareForReuse() {
         super.prepareForReuse()
+        iconLoadTask?.cancel()
+        iconLoadTask = nil
+        representedItemID = nil
         setFolderCreationPreviewVisible(false)
         unregisterWorkspaceNotifications()
         stopJiggling()

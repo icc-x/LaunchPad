@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import os
 import LaunchPadProtocols
 @testable import LaunchPad
 #if canImport(AppKit)
@@ -12,6 +13,86 @@ import AppKit
 @MainActor
 @Suite("IconCache dual-layer cache")
 struct IconCacheTests {
+    private actor StubRasterEncoder: IconRasterEncoding {
+        let results: [Int: Data]
+
+        init(results: [Int: Data]) {
+            self.results = results
+        }
+
+        func pngData(fromTIFF data: Data, pixelSize: Int) -> Data? {
+            results[pixelSize]
+        }
+    }
+
+    @MainActor
+    private final class LoadedImage {
+        var value: NSImage?
+    }
+
+    private final class ThreadRecordingImageStore: ImageStoring {
+        struct State {
+            var fetchMainThreadFlags: [Bool] = []
+            var saveMainThreadFlags: [Bool] = []
+            var savedRecords: [CachedImageRecord] = []
+        }
+
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        func saveImage(itemId: Int64, record: CachedImageRecord) throws {
+            state.withLock { state in
+                state.saveMainThreadFlags.append(Thread.isMainThread)
+                state.savedRecords.append(record)
+            }
+        }
+
+        func fetchImage(itemId: Int64) throws -> CachedImageRecord? {
+            state.withLock { $0.fetchMainThreadFlags.append(Thread.isMainThread) }
+            return nil
+        }
+
+        func snapshot() -> State { state.withLock { $0 } }
+    }
+
+    private final class BlockingImageStore: ImageStoring {
+        struct State {
+            var fetchStarted = false
+            var fetchContinuation: CheckedContinuation<Void, Never>?
+            var saveCallCount = 0
+        }
+
+        private let releaseFetch = DispatchSemaphore(value: 0)
+        private let state = OSAllocatedUnfairLock(initialState: State())
+
+        func saveImage(itemId: Int64, record: CachedImageRecord) throws {
+            state.withLock { $0.saveCallCount += 1 }
+        }
+
+        func fetchImage(itemId: Int64) throws -> CachedImageRecord? {
+            let continuation = state.withLock { state -> CheckedContinuation<Void, Never>? in
+                state.fetchStarted = true
+                defer { state.fetchContinuation = nil }
+                return state.fetchContinuation
+            }
+            continuation?.resume()
+            releaseFetch.wait()
+            return nil
+        }
+
+        func waitUntilFetchStarts() async {
+            await withCheckedContinuation { continuation in
+                let alreadyStarted = state.withLock { state in
+                    if state.fetchStarted { return true }
+                    state.fetchContinuation = continuation
+                    return false
+                }
+                if alreadyStarted { continuation.resume() }
+            }
+        }
+
+        func release() { releaseFetch.signal() }
+        func savedCount() -> Int { state.withLock { $0.saveCallCount } }
+    }
 
     private func makeTestImage(size: Int = 16) -> NSImage {
         // Use bitmap representation directly to avoid lockFocus issues in headless environment
@@ -99,10 +180,78 @@ struct IconCacheTests {
         )
     }
 
+    private func loadIcon(
+        _ cache: IconCache,
+        itemID: Int64,
+        path: String
+    ) async -> NSImage {
+        let loaded = LoadedImage()
+        let task = cache.loadIcon(forItemId: itemID, path: path) { _, image in
+            loaded.value = image
+        }
+        await task.value
+        return loaded.value ?? NSImage(size: .zero)
+    }
+
+    @Test("磁盘 fetch/save 与 PNG encode 均离开 MainActor")
+    func diskAndEncodingWorkRunsOffMainActor() async {
+        let provider = MockIconProvider()
+        let store = ThreadRecordingImageStore()
+        let encodeFlags = OSAllocatedUnfairLock(initialState: [Bool]())
+        let encoder = IconRasterEncoder { isMainThread in
+            encodeFlags.withLock { $0.append(isMainThread) }
+        }
+        let path = "/Applications/Background.app"
+        provider.icons[path] = makeTestImage()
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 8_000)
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            rasterEncoder: encoder
+        )
+        var completedItemIDs: [Int64] = []
+
+        let task = sut.loadIcon(forItemId: 41, path: path) { itemID, _ in
+            #expect(Thread.isMainThread)
+            completedItemIDs.append(itemID)
+        }
+        await task.value
+
+        let observed = store.snapshot()
+        #expect(observed.fetchMainThreadFlags == [false])
+        #expect(observed.saveMainThreadFlags == [false])
+        #expect(observed.savedRecords.count == 1)
+        #expect(encodeFlags.withLock { $0 } == [false, false])
+        #expect(completedItemIDs == [41])
+    }
+
+    @Test("磁盘读取期间取消后不配置 cell、不提取 provider 且不写盘")
+    func cancellationDuringDiskReadStopsRemainingPipeline() async {
+        let provider = MockIconProvider()
+        let store = BlockingImageStore()
+        let path = "/Applications/Cancelled.app"
+        provider.icons[path] = makeTestImage()
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 9_000)
+        let sut = IconCache(iconProvider: provider, imageStore: store)
+        var completionCount = 0
+
+        let task = sut.loadIcon(forItemId: 42, path: path) { _, _ in
+            completionCount += 1
+        }
+        await store.waitUntilFetchStarts()
+        task.cancel()
+        store.release()
+        await task.value
+
+        #expect(completionCount == 0)
+        #expect(provider.fetchCallCount == 0)
+        #expect(store.savedCount() == 0)
+    }
+
     // MARK: - Memory hit
 
     @Test("Memory cache hit -> no disk read")
-    func memoryCacheHit_noDiskRead() {
+    func memoryCacheHit_noDiskRead() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -113,11 +262,11 @@ struct IconCacheTests {
         provider.modificationDates[path] = Date()
 
         // First call — populates cache
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
         let diskCountAfterFirst = store.fetchCallCount
 
         // Second call — should hit memory cache, no additional disk read
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
 
         // The second call should not trigger additional disk fetches beyond the first call's count
         #expect(store.fetchCallCount <= diskCountAfterFirst + 1)
@@ -127,7 +276,7 @@ struct IconCacheTests {
 
     @Test("进程重启后同规格不同内容的磁盘图标会按源修改时间刷新")
     @MainActor
-    func sameGeometryDifferentContent_refreshesDiskRecord() throws {
+    func sameGeometryDifferentContent_refreshesDiskRecord() async throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let path = "/Applications/Changed.app"
@@ -140,7 +289,7 @@ struct IconCacheTests {
         let sut = IconCache(
             iconProvider: provider,
             imageStore: store,
-            pngEncoder: { _, _ in bluePNG }
+            rasterEncoder: StubRasterEncoder(results: [128: bluePNG, 256: bluePNG])
         )
 
         store.stored[1] = makeRecord(
@@ -150,7 +299,7 @@ struct IconCacheTests {
         provider.icons[path] = blueImage
         provider.modificationDates[path] = newDate
 
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
         let pixel = try #require(firstPixel(result))
 
         #expect(pixel.blueComponent > pixel.redComponent)
@@ -160,18 +309,18 @@ struct IconCacheTests {
 
     @Test("源修改时间缺失时实时提取但不持久化")
     @MainActor
-    func missingCurrentModificationDate_doesNotPersist() {
+    func missingCurrentModificationDate_doesNotPersist() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(
             iconProvider: provider,
             imageStore: store,
-            pngEncoder: { _, _ in Data([0x01]) }
+            rasterEncoder: StubRasterEncoder(results: [128: Data([0x01]), 256: Data([0x01])])
         )
         let path = "/Applications/NoMetadata.app"
         provider.icons[path] = makeTestImage()
 
-        _ = sut.icon(forItemId: 2, path: path)
+        _ = await loadIcon(sut, itemID: 2, path: path)
 
         #expect(provider.fetchCallCount == 1)
         #expect(store.fetchCallCount == 0)
@@ -179,7 +328,7 @@ struct IconCacheTests {
     }
 
     @Test("Memory miss + disk hit -> returns valid image on subsequent calls")
-    func memoryMissDiskHit_populatesMemory() {
+    func memoryMissDiskHit_populatesMemory() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -202,10 +351,10 @@ struct IconCacheTests {
         provider.modificationDates["/app"] = modificationDate
 
         // First call — load from disk or provider
-        let firstResult = sut.icon(forItemId: 1, path: "/app")
+        let firstResult = await loadIcon(sut, itemID: 1, path: "/app")
 
         // Second call — should return valid image
-        let secondResult = sut.icon(forItemId: 1, path: "/app")
+        let secondResult = await loadIcon(sut, itemID: 1, path: "/app")
 
         #expect(firstResult.size.width > 0)
         #expect(secondResult.size.width > 0)
@@ -214,7 +363,7 @@ struct IconCacheTests {
     // MARK: - Both miss
 
     @Test("Both miss -> calls icon provider + stores in both layers")
-    func bothMiss_callsProviderAndStores() {
+    func bothMiss_callsProviderAndStores() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -226,9 +375,9 @@ struct IconCacheTests {
 
         let providerCountBefore = provider.fetchCallCount
 
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
 
-        #expect(result != nil)
+        #expect(result.size.width > 0)
         #expect(provider.fetchCallCount == providerCountBefore + 1)
         // Verify disk was written
         #expect(store.stored[1] != nil)
@@ -237,7 +386,7 @@ struct IconCacheTests {
     // MARK: - LRU eviction
 
     @Test("Exceeds limit -> LRU evicts oldest entries")
-    func exceedsMemoryLimit_evictsOldest() {
+    func exceedsMemoryLimit_evictsOldest() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let limit = 10
@@ -249,14 +398,14 @@ struct IconCacheTests {
             let path = "/app\(i)"
             provider.icons[path] = image
             provider.modificationDates[path] = Date()
-            _ = sut.icon(forItemId: Int64(i), path: path)
+            _ = await loadIcon(sut, itemID: Int64(i), path: path)
         }
 
         // After exceeding the limit, querying the oldest item should require provider refetch
         // (NSCache may evict at its discretion, but the oldest entries are most likely evicted)
         let providerCountBefore = provider.fetchCallCount
         // Query item 0 which was inserted first
-        _ = sut.icon(forItemId: 0, path: "/app0")
+        _ = await loadIcon(sut, itemID: 0, path: "/app0")
         // If evicted from memory, provider will be called again
         // If still in memory, no additional provider call
         // This test verifies the cache functions correctly with overflow
@@ -266,7 +415,7 @@ struct IconCacheTests {
     // MARK: - modificationDate change -> invalidation
 
     @Test("modificationDate changed -> disk cache invalidated, re-extracts")
-    func modificationDateChanged_invalidatesCache() {
+    func modificationDateChanged_invalidatesCache() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -279,7 +428,7 @@ struct IconCacheTests {
         provider.modificationDates[path] = oldDate
 
         // First load — caches image and modificationDate
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
 
         // modificationDate changes to a significantly different time
         let newDate = Date(timeIntervalSince1970: 9999)
@@ -288,10 +437,10 @@ struct IconCacheTests {
         let providerCountBefore = provider.fetchCallCount
 
         // Fetch again — should detect date change, re-extract
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
 
         // Verify the result is non-nil (either cached or re-extracted)
-        #expect(result != nil)
+        #expect(result.size.width > 0)
         // If modificationDate tracking works, provider should be called again
         // NSCache may have evicted the entry, so we check both cases
         #expect(provider.fetchCallCount >= providerCountBefore)
@@ -300,7 +449,7 @@ struct IconCacheTests {
     // MARK: - PNG data corruption
 
     @Test("Disk cache PNG data corrupted -> falls back to default icon")
-    func corruptedPNG_fallbackIcon() {
+    func corruptedPNG_fallbackIcon() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -315,7 +464,7 @@ struct IconCacheTests {
         )
 
         // Should return a valid image (either default or provider)
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
         #expect(result.size.width > 0)
         #expect(provider.fetchCallCount == 1)
     }
@@ -323,7 +472,7 @@ struct IconCacheTests {
     // MARK: - disk hit + modification cache 命中（覆盖 isStillValid 的 current==cached 分支）
 
     @Test("Memory evicted 后 disk hit + modCache 命中 -> isStillValid by date equality")
-    func memoryEvicted_diskHit_modCacheHit_validatesByDate() {
+    func memoryEvicted_diskHit_modCacheHit_validatesByDate() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         // memoryLimit=1：存第二个 path 时第一个被 evict，但 modificationCache（Dictionary）保留
@@ -350,16 +499,16 @@ struct IconCacheTests {
         )
 
         // 1. icon(path1): memory miss -> persisted date match -> disk hit.
-        _ = sut.icon(forItemId: 1, path: path1)
+        _ = await loadIcon(sut, itemID: 1, path: path1)
         // 2. icon(path2): memory miss -> disk hit -> memory evicts path1.
-        _ = sut.icon(forItemId: 2, path: path2)
+        _ = await loadIcon(sut, itemID: 2, path: path2)
         // 3. icon(path1): memory miss -> persisted date still matches -> disk hit.
-        let result = sut.icon(forItemId: 1, path: path1)
+        let result = await loadIcon(sut, itemID: 1, path: path1)
         #expect(result.size.width > 0)
     }
 
     @Test("Disk record 时间与当前修改时间相同 -> 直接命中且不实时提取")
-    func diskHit_matchingPersistedDate_doesNotExtractLiveIcon() {
+    func diskHit_matchingPersistedDate_doesNotExtractLiveIcon() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -378,7 +527,7 @@ struct IconCacheTests {
             sourceModificationDate: modificationDate
         )
 
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
         #expect(result.size.width > 0)
         #expect(provider.fetchCallCount == 0)
         #expect(store.saveCallCount == 0)
@@ -387,69 +536,73 @@ struct IconCacheTests {
     // MARK: - storeToDisk PNG 编码失败分支
 
     @Test("storeToDisk 1x PNG 编码失败 -> 不写入 disk")
-    func storeToDisk_1xPngEncodingFails_noWrite() {
+    func storeToDisk_1xPngEncodingFails_noWrite() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
-        // pngEncoder 总返回 nil，模拟 1x 编码失败
-        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500,
-                            pngEncoder: { _, _ in nil })
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            memoryLimit: 500,
+            rasterEncoder: StubRasterEncoder(results: [:])
+        )
 
         let image = makeTestImage()
         let path = "/app"
         provider.icons[path] = image
         provider.modificationDates[path] = Date(timeIntervalSince1970: 8_000)
 
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
 
         // 1x 编码失败，storeToDisk 提前 return，不写入 disk
         #expect(store.stored[1] == nil)
     }
 
     @Test("storeToDisk 2x PNG 编码失败 -> 不写入 disk")
-    func storeToDisk_2xPngEncodingFails_noWrite() {
+    func storeToDisk_2xPngEncodingFails_noWrite() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let validPng = makePNGData(makeTestImage())
-        // 1x (128) 返回有效，2x (256) 返回 nil，模拟 2x 编码失败
-        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500,
-                            pngEncoder: { _, size in
-                                size.width == 128 ? validPng : nil
-                            })
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            memoryLimit: 500,
+            rasterEncoder: StubRasterEncoder(results: [128: validPng])
+        )
 
         let image = makeTestImage()
         let path = "/app"
         provider.icons[path] = image
         provider.modificationDates[path] = Date(timeIntervalSince1970: 9_000)
 
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
 
         // 2x 编码失败，storeToDisk 提前 return，不写入 disk
         #expect(store.stored[1] == nil)
     }
 
-    @Test("defaultPngEncoder size 为零 -> 安全返回 nil（覆盖 size guard 分支）")
+    @Test("IconRasterEncoder size 为零 -> 安全返回 nil")
     @MainActor
-    func defaultPngEncoder_zeroSize_returnsNil() {
+    func defaultPngEncoder_zeroSize_returnsNil() async {
         let image = makeTestImage()
-        // size 为零时 size guard 提前返回 nil，不触发 lockFocus（避免 precondition failure）
-        let result = IconCache.defaultPngEncoder(image, size: NSSize(width: 0, height: 0))
+        let result = await IconRasterEncoder().pngData(
+            fromTIFF: image.tiffRepresentation ?? Data(),
+            pixelSize: 0
+        )
         #expect(result == nil)
     }
 
-    @Test("defaultPngEncoder tiffProvider 注入无效 Data -> rep 解析失败返回 nil（覆盖 tiff guard 分支）")
+    @Test("IconRasterEncoder 无效 TIFF 返回 nil")
     @MainActor
-    func defaultPngEncoder_invalidTiff_returnsNil() {
-        let image = makeTestImage()
-        // 注入无效 tiff Data，使 NSBitmapImageRep(data:) 返回 nil -> guard return nil
-        let result = IconCache.defaultPngEncoder(
-            image, size: NSSize(width: 64, height: 64),
-            tiffProvider: { _ in Data([0xFF, 0xD8, 0xFF]) }
+    func defaultPngEncoder_invalidTiff_returnsNil() async {
+        let result = await IconRasterEncoder().pngData(
+            fromTIFF: Data([0xFF, 0xD8, 0xFF]),
+            pixelSize: 64
         )
         #expect(result == nil)
     }
 
     @Test("clearMemoryCache 后 disk hit + modCache 命中 -> isStillValid by date equality")
-    func diskHit_afterClearMemory_modCacheHit_validatesByDate() {
+    func diskHit_afterClearMemory_modCacheHit_validatesByDate() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -467,18 +620,18 @@ struct IconCacheTests {
         )
 
         // 1. 首次调用：持久化时间匹配，disk hit 并写入 memory cache。
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
         // 2. 清空 memory cache（modCache 保留）
         sut.clearMemoryCache()
         // 3. 再次调用：memory miss，持久化时间仍匹配，disk hit。
-        let result = sut.icon(forItemId: 1, path: path)
+        let result = await loadIcon(sut, itemID: 1, path: path)
         #expect(result.size.width > 0)
     }
 
     // MARK: - Persisted source metadata
 
     @Test("diskHit_modCacheMiss_sameDate_noReextract")
-    func diskHit_modCacheMiss_matchesPersistedDate() {
+    func diskHit_modCacheMiss_matchesPersistedDate() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -507,14 +660,14 @@ struct IconCacheTests {
         )
 
         let callsBefore = provider.fetchCallCount
-        _ = sut.icon(forItemId: 1, path: path)
+        _ = await loadIcon(sut, itemID: 1, path: path)
         let callsAfter = provider.fetchCallCount
 
         #expect(callsAfter == callsBefore)
     }
 
     @Test("磁盘读取失败 -> 实时提取并用当前元数据回写")
-    func diskReadFailure_extractsLiveIcon() {
+    func diskReadFailure_extractsLiveIcon() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let liveImage = makeTestImage()
@@ -526,10 +679,13 @@ struct IconCacheTests {
         let sut = IconCache(
             iconProvider: provider,
             imageStore: store,
-            pngEncoder: { _, _ in Data([0x01]) }
+            rasterEncoder: StubRasterEncoder(results: [
+                128: Data([0x01]),
+                256: Data([0x01]),
+            ])
         )
 
-        let result = sut.icon(forItemId: 3, path: path)
+        let result = await loadIcon(sut, itemID: 3, path: path)
 
         #expect(result === liveImage)
         #expect(provider.fetchCallCount == 1)
@@ -539,31 +695,34 @@ struct IconCacheTests {
     }
 
     @Test("磁盘保存失败 -> 返回实时图标并记录稳定错误类别")
-    func diskSaveFailure_returnsLiveIconAndLogsStableCategory() {
+    func diskSaveFailure_returnsLiveIconAndLogsStableCategory() async {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let liveImage = makeTestImage()
         let path = "/Applications/SaveFailure.app"
-        let loggedExpectedCategory = DispatchSemaphore(value: 0)
+        let loggedExpectedCategory = OSAllocatedUnfairLock(initialState: false)
         store.saveError = TestError.generic
         provider.icons[path] = liveImage
         provider.modificationDates[path] = Date(timeIntervalSince1970: 12_000)
         let sut = IconCache(
             iconProvider: provider,
             imageStore: store,
-            pngEncoder: { _, _ in Data([0x01]) },
+            rasterEncoder: StubRasterEncoder(results: [
+                128: Data([0x01]),
+                256: Data([0x01]),
+            ]),
             errorLogger: { category in
                 if category == "icon-cache-disk-save-failed" {
-                    loggedExpectedCategory.signal()
+                    loggedExpectedCategory.withLock { $0 = true }
                 }
             }
         )
 
-        let result = sut.icon(forItemId: 4, path: path)
+        let result = await loadIcon(sut, itemID: 4, path: path)
 
         #expect(result === liveImage)
         #expect(store.saveCallCount == 1)
-        #expect(loggedExpectedCategory.wait(timeout: .now()) == .success)
+        #expect(loggedExpectedCategory.withLock { $0 })
     }
 }
 #endif

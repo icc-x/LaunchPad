@@ -21,7 +21,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Services
 
     var storage: (any DataStoring)!
-    var layoutMutator: (any LayoutMutating)!
+    var layoutRepository: (any LayoutRepositoryProtocol)!
     var scanBatchWriter: (any ScanBatchWriting)! {
         didSet { scanCoordinator = nil }
     }
@@ -223,13 +223,17 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     private func installStorage(_ manager: StorageManager) {
         storage = manager
-        layoutMutator = manager
+        layoutRepository = LayoutRepository(
+            reader: manager,
+            mutator: manager,
+            writer: manager
+        )
         scanBatchWriter = manager
     }
 
     func bootstrapServices() {
         storage = nil
-        layoutMutator = nil
+        layoutRepository = nil
         scanBatchWriter = nil
         let bootstrapper = AppBootstrapper(
             storageFactory: storageFactory,
@@ -273,21 +277,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     func setupControllers() {
-        guard let storage, let layoutMutator else { return }
+        guard let layoutRepository, let iconCache else { return }
 
         // Drag controller
         let dragController = DragController()
 
-        // Folder controller
-        let folderController = FolderController(itemWriter: storage)
-
         // View controller
         let vc = LaunchPadViewController(
-            storage: storage,
-            layoutMutator: layoutMutator,
+            layoutRepository: layoutRepository,
             iconCache: iconCache,
             dragController: dragController,
-            folderController: folderController,
             applicationOpener: applicationOpener
         )
         viewController = vc

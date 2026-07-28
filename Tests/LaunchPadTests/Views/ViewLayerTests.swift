@@ -1,4 +1,5 @@
 import Testing
+import os
 @testable import LaunchPad
 @testable import LaunchPadProtocols
 
@@ -101,15 +102,31 @@ import AppKit
 
 /// Tests for LayoutPersistence (0% → target 100%)
 @Suite("LayoutPersistence") struct LayoutPersistenceTests {
+    private final class SnapshotReader: LayoutReading {
+        let snapshot: PersistedLayoutSnapshot
+        private let calls = OSAllocatedUnfairLock(initialState: 0)
+        var callCount: Int { calls.withLock { $0 } }
+
+        init(snapshot: PersistedLayoutSnapshot) {
+            self.snapshot = snapshot
+        }
+
+        func persistedLayoutSnapshot() throws -> PersistedLayoutSnapshot {
+            calls.withLock { $0 += 1 }
+            return snapshot
+        }
+    }
 
     @Test func loadLayout_emptyStorage_returnsEmptyLayout() throws {
-        let reader = MockItemReader()
-        reader.items = []
+        let reader = SnapshotReader(
+            snapshot: PersistedLayoutSnapshot(allItems: [])
+        )
 
         let layout = try LayoutPersistence.loadLayout(reader: reader)
 
         #expect(layout.pages.isEmpty)
-        #expect(layout.itemsByPage.isEmpty)
+        #expect(layout.pageChildren.isEmpty)
+        #expect(reader.callCount == 1)
     }
 
     @Test func loadLayout_withPages_returnsCorrectStructure() throws {
@@ -119,22 +136,18 @@ import AppKit
         let app2 = TestDataFactory.makePageItem(id: 11, type: .app, ordering: 1, parentId: 1)
         let app3 = TestDataFactory.makePageItem(id: 12, type: .app, ordering: 0, parentId: 2)
 
-        let reader = MockItemReader()
-        // fetchAllItems(nil) returns top-level items (pages)
-        reader.fetchAllItemsHandler = { parentId in
-            if parentId == nil { return [page1, page2] }
-            if parentId == 1 { return [app1, app2] }
-            if parentId == 2 { return [app3] }
-            return []
-        }
+        let reader = SnapshotReader(snapshot: PersistedLayoutSnapshot(
+            allItems: [page2, app3, page1, app2, app1]
+        ))
 
         let layout = try LayoutPersistence.loadLayout(reader: reader)
 
         #expect(layout.pages.count == 2)
         #expect(layout.pages[0].id == 1)
         #expect(layout.pages[1].id == 2)
-        #expect(layout.itemsByPage[1]?.count == 2)
-        #expect(layout.itemsByPage[2]?.count == 1)
+        #expect(layout.pageChildren[1]?.map(\.id) == [app1.id, app2.id])
+        #expect(layout.pageChildren[2]?.map(\.id) == [app3.id])
+        #expect(reader.callCount == 1)
     }
 
     @Test func saveLayout_callsUpdateForEachItem() throws {

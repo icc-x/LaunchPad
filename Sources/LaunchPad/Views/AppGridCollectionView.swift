@@ -18,7 +18,7 @@ public class AppGridCollectionView: NSCollectionView {
 
     private(set) var diffableDataSource: DataSource!
     private var iconCache: IconCaching?
-    private var storage: DataStoring?
+    private var folderChildren: [Int64: [PageItem]] = [:]
     private(set) var gridMetrics: GridMetrics?
     public private(set) var currentVisualPageIndex = 0
     private var previewedFolderTargetID: Int64?
@@ -96,9 +96,8 @@ public class AppGridCollectionView: NSCollectionView {
 
     // MARK: - Public API
 
-    public func configure(iconCache: IconCaching, storage: DataStoring? = nil) {
+    public func configure(iconCache: any IconCaching) {
         self.iconCache = iconCache
-        self.storage = storage
     }
 
     /// Reload the grid with new data.
@@ -107,10 +106,12 @@ public class AppGridCollectionView: NSCollectionView {
         searchResults: [PageItem]?,
         searchQuery: String?,
         searchResultPages: [[PageItem]]? = nil,
+        folderChildren: [Int64: [PageItem]] = [:],
         animatingDifferences: Bool = true,
         reconfigureItems: Bool = false,
         animateEntrance: Bool = true
     ) {
+        self.folderChildren = folderChildren
         setFolderCreationPreview(targetItemID: nil)
         var snapshot = DiffableDataSourceBuilder.buildSnapshot(
             pages: pages,
@@ -296,35 +297,28 @@ public class AppGridCollectionView: NSCollectionView {
     }
 
     private func configureAppCell(_ cell: AppIconCell, item: PageItem) {
-        let icon = item.app.flatMap {
-            iconCache?.icon(forItemId: item.id, path: $0.path)
-        }
         cell.configure(
             item: item,
-            icon: icon,
+            icon: nil,
             iconSize: gridMetrics?.iconSize ?? 64
         )
+        if let app = item.app, let iconCache {
+            cell.loadIcon(from: iconCache, itemID: item.id, path: app.path)
+        }
         cell.onDelete = { [weak self] in
             self?.onItemDelete?(item)
         }
     }
 
     private func configureFolderCell(_ cell: FolderCell, item: PageItem) {
-        let childIcons: [NSImage]
-        if let storage,
-           let children = try? storage.fetchAllItems(parentId: item.id) {
-            childIcons = children.prefix(9).compactMap { child in
-                guard let app = child.app else { return nil }
-                return iconCache?.icon(forItemId: child.id, path: app.path)
-            }
-        } else {
-            childIcons = []
-        }
         cell.configure(
             item: item,
-            childIcons: childIcons,
+            childIcons: [],
             iconSize: gridMetrics?.iconSize ?? 64
         )
+        if let iconCache {
+            cell.loadChildIcons(folderChildren[item.id] ?? [], from: iconCache)
+        }
         cell.onRenamed = { [weak self] newTitle in
             self?.onFolderRenamed?(item, newTitle)
         }

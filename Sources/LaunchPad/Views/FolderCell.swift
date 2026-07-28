@@ -13,6 +13,9 @@ public class FolderCell: NSCollectionViewItem {
     private let thumbnailGrid = NSView()
     private let deleteButton = NSButton()
     private var thumbnailImageViews: [NSImageView] = []
+    private var iconLoadTasks: [Task<Void, Never>] = []
+    private var representedChildIDs: [Int64?] = Array(repeating: nil, count: 9)
+    public private(set) var representedItemID: Int64?
     let containerView = NSView()
     let frostedBackground = NSVisualEffectView()
 
@@ -49,6 +52,9 @@ public class FolderCell: NSCollectionViewItem {
     }
     var configuredThumbnailFrames: [CGRect] {
         thumbnailImageViews.map(\.frame)
+    }
+    var configuredThumbnailImages: [NSImage?] {
+        thumbnailImageViews.map(\.image)
     }
     var configuredThumbnailGridBounds: CGRect {
         thumbnailGrid.bounds
@@ -192,6 +198,8 @@ public class FolderCell: NSCollectionViewItem {
         childIcons: [NSImage],
         iconSize: CGFloat = 64
     ) {
+        cancelIconLoads()
+        representedItemID = item.id
         let thumbnailSpacing: CGFloat = 2
         let thumbnailSize = max(0, (iconSize - 2 * thumbnailSpacing) / 3)
         configuredIconSize = iconSize
@@ -235,10 +243,43 @@ public class FolderCell: NSCollectionViewItem {
         }
     }
 
+    func loadChildIcons(
+        _ children: [PageItem],
+        from iconCache: any IconCaching
+    ) {
+        cancelIconLoads()
+        let folderID = representedItemID
+        for (index, child) in children.prefix(thumbnailImageViews.count).enumerated() {
+            guard let app = child.app else { continue }
+            representedChildIDs[index] = child.id
+            let task = iconCache.loadIcon(
+                forItemId: child.id,
+                path: app.path
+            ) { [weak self] completedItemID, image in
+                guard let self,
+                      representedItemID == folderID,
+                      representedChildIDs[index] == completedItemID else {
+                    return
+                }
+                thumbnailImageViews[index].image = image
+                thumbnailImageViews[index].isHidden = false
+            }
+            iconLoadTasks.append(task)
+        }
+    }
+
+    private func cancelIconLoads() {
+        iconLoadTasks.forEach { $0.cancel() }
+        iconLoadTasks.removeAll()
+        representedChildIDs = Array(repeating: nil, count: thumbnailImageViews.count)
+    }
+
     // MARK: - Reuse
 
     override public func prepareForReuse() {
         super.prepareForReuse()
+        cancelIconLoads()
+        representedItemID = nil
         setEditing(false)
         titleLabel.stringValue = ""
         titleLabel.isEditable = false
