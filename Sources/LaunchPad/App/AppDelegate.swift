@@ -29,7 +29,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     var appScanner: (any AppScanning)! {
         didSet { scanCoordinator = nil }
     }
-    var searchEngine: SearchEngine!
     var hotkeyManager: HotkeyManager!
     var fileWatcher: FileWatcher?
     var appBootstrapper: AppBootstrapper?
@@ -269,9 +268,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         let fileSystemService = SystemFileSystemService()
         appScanner = AppScanner(fileSystemService: fileSystemService)
 
-        // Search
-        searchEngine = SearchEngine()
-
         // Hotkey
         hotkeyManager = hotkeyManagerFactory()
     }
@@ -290,7 +286,6 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             storage: storage,
             layoutMutator: layoutMutator,
             iconCache: iconCache,
-            searchEngine: searchEngine,
             dragController: dragController,
             folderController: folderController,
             applicationOpener: applicationOpener

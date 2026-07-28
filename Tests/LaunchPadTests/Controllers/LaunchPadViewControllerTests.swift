@@ -1613,7 +1613,7 @@ struct LaunchPadViewControllerTests {
         #expect(searchScheduler.scheduledActions.isEmpty)
     }
 
-    @Test("默认 runner 忽略同 query 旧缓存并以权威布局重算新增删除与重命名")
+    @Test("默认 runner 忽略同 query 旧结果并以权威布局重算新增删除与重命名")
     func defaultRunnerRecomputesActiveSearchFromLatestLayout() async {
         let (sut, _, storage) = makeSUT()
         let page = TestDataFactory.makePageItem(id: 1, type: .page, ordering: 0)

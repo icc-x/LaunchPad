@@ -126,36 +126,6 @@ struct PerformanceTests {
         #expect(percentile95(measurement.samples) < .milliseconds(50))
     }
 
-    @Test("SearchEngine 缓存命中 median/p95 < 1ms")
-    func search_cached_under1ms() {
-        let items = (0..<1000).map { index in
-            TestDataFactory.makePageItem(
-                id: Int64(index),
-                uuid: "cache-\(index)",
-                ordering: index,
-                app: TestDataFactory.makeAppInfo(
-                    id: Int64(index),
-                    title: "App \(index)",
-                    bundleId: "com.test.cache\(index)"
-                )
-            )
-        }
-        let counter = MatchCounter()
-        let engine = SearchEngine(matchCounter: counter)
-
-        _ = engine.cachedSearch(items: items, query: "test")
-        #expect(counter.count == 1000)
-
-        let measurement = durations {
-            engine.cachedSearch(items: items, query: "test")
-        }
-
-        #expect(measurement.last.count == 1000)
-        #expect(counter.count == 1000)
-        #expect(median(measurement.samples) < .milliseconds(1))
-        #expect(percentile95(measurement.samples) < .milliseconds(1))
-    }
-
     @Test("Diffable snapshot 1002 项 median/p95 < 10ms")
     func snapshot_1000items_under10ms() {
         let pages = (0..<3).map { pageIndex in

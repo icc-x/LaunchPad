@@ -300,14 +300,12 @@ struct AppDelegateTests {
     private func makeViewController() throws -> LaunchPadViewController {
         let storage = try StorageManager(dbPath: ":memory:")
         let iconCache = IconCache(iconProvider: MockIconProvider(), imageStore: storage)
-        let searchEngine = SearchEngine()
         let dragController = DragController()
         let folderController = FolderController(itemWriter: storage)
         return LaunchPadViewController(
             storage: storage,
             layoutMutator: storage,
             iconCache: iconCache,
-            searchEngine: searchEngine,
             dragController: dragController,
             folderController: folderController,
             applicationOpener: { _ in }
@@ -422,7 +420,6 @@ struct AppDelegateTests {
         #expect(sut.storage != nil)
         #expect(sut.iconCache != nil)
         #expect(sut.appScanner != nil)
-        #expect(sut.searchEngine != nil)
         #expect(sut.hotkeyManager != nil)
         #expect(sut.lifecycle != nil)
         #expect(sut.viewController != nil)
@@ -494,7 +491,6 @@ struct AppDelegateTests {
         #expect(referencesSameObject(sut.scanBatchWriter as Any, manager))
         #expect(sut.iconCache != nil)
         #expect(sut.appScanner != nil)
-        #expect(sut.searchEngine != nil)
         #expect(sut.hotkeyManager != nil)
     }
 

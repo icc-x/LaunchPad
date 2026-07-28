@@ -79,7 +79,6 @@ public class LaunchPadViewController: NSViewController {
     private let storage: DataStoring
     private let layoutMutator: LayoutMutating
     private let iconCache: IconCache
-    private let searchEngine: SearchEngine
     let keyboardNavigator: KeyboardNavigator
     let dragController: DragController
     private let folderController: FolderController
@@ -182,9 +181,9 @@ public class LaunchPadViewController: NSViewController {
     ) -> Void
 
     lazy var searchRunner: SearchRunner = {
-        [searchQueue, searchEngine] items, query, completion in
+        [searchQueue] items, query, completion in
         searchQueue.async {
-            let results = searchEngine.search(items: items, query: query)
+            let results = SearchEngine().search(items: items, query: query)
             DispatchQueue.main.async {
                 MainActor.assumeIsolated { completion(results) }
             }
@@ -218,7 +217,6 @@ public class LaunchPadViewController: NSViewController {
         storage: DataStoring,
         layoutMutator: LayoutMutating,
         iconCache: IconCache,
-        searchEngine: SearchEngine = SearchEngine(),
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
         dragController: DragController,
         folderController: FolderController,
@@ -228,7 +226,6 @@ public class LaunchPadViewController: NSViewController {
         self.storage = storage
         self.layoutMutator = layoutMutator
         self.iconCache = iconCache
-        self.searchEngine = searchEngine
         self.keyboardNavigator = keyboardNavigator
         self.dragController = dragController
         self.folderController = folderController
@@ -678,7 +675,7 @@ public class LaunchPadViewController: NSViewController {
 
     /// 在后台执行搜索（抽出便于同步测试，无需后台线程）
     func executeSearch(items: [PageItem], query: String) -> [PageItem] {
-        searchEngine.cachedSearch(items: items, query: query)
+        SearchEngine().search(items: items, query: query)
     }
 
     /// 应用搜索结果到 UI（抽出便于同步测试，覆盖过期守卫与结果展示）

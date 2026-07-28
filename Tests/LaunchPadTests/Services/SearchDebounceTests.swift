@@ -85,27 +85,6 @@ struct SearchDebounceTests {
         #expect(searchCount == 1)
     }
 
-    // MARK: - 缓存验证（SearchEngine 层面）
-
-    @Test("相同查询第二次命中缓存，不重复计算")
-    func cachedSearch_sameQueryHitsCache() {
-        let items = [
-            TestDataFactory.makePageItem(id: 1, app: TestDataFactory.makeAppInfo(id: 1, title: "Safari")),
-            TestDataFactory.makePageItem(id: 2, app: TestDataFactory.makeAppInfo(id: 2, title: "Settings")),
-        ]
-
-        let counter = MatchCounter()
-        let engineWithCounter = SearchEngine(cacheSize: 50, matchCounter: counter)
-
-        _ = engineWithCounter.cachedSearch(items: items, query: "sa")
-        let countAfterFirst = counter.count
-
-        _ = engineWithCounter.cachedSearch(items: items, query: "sa")
-        let countAfterSecond = counter.count
-
-        #expect(countAfterSecond == countAfterFirst) // 缓存命中，没有重新匹配
-    }
-
     // MARK: - cancelPending
 
     @Test("cancelPending 取消所有待执行搜索")
