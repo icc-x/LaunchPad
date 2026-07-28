@@ -38,6 +38,28 @@ struct AppDelegateTests {
         var count = 0
     }
 
+    @MainActor
+    private final class ScanOutcomeRecorder {
+        private var outcomes: [ScanOutcome] = []
+        private var continuation: CheckedContinuation<ScanOutcome, Never>?
+
+        func record(_ outcome: ScanOutcome) {
+            if let continuation {
+                self.continuation = nil
+                continuation.resume(returning: outcome)
+            } else {
+                outcomes.append(outcome)
+            }
+        }
+
+        func next() async -> ScanOutcome {
+            if !outcomes.isEmpty { return outcomes.removeFirst() }
+            return await withCheckedContinuation { continuation in
+                self.continuation = continuation
+            }
+        }
+    }
+
     /// 可控的 DataStoring 实现：通过属性控制 fetchAllItems 的返回/抛错，其余为无操作
     private struct MockStoring: DataStoring, @unchecked Sendable {
         var itemsToReturn: [PageItem] = []
@@ -136,6 +158,12 @@ struct AppDelegateTests {
         sut.storageFactory = { _ in try StorageManager(dbPath: ":memory:") }
         sut.scanBatchWriter = RecordingScanBatchWriter()
         return sut
+    }
+
+    private func observeScanOutcomes(of sut: AppDelegate) -> ScanOutcomeRecorder {
+        let recorder = ScanOutcomeRecorder()
+        sut.scanOutcomeObserver = { recorder.record($0) }
+        return recorder
     }
 
     private func makeFileSystemWithApps(count: Int) -> MockFileSystemService {
@@ -903,35 +931,40 @@ struct AppDelegateTests {
     // MARK: - performInitialScan
 
     @Test("performInitialScan 传递空扫描和目标容量到 batch writer")
-    func performInitialScanForwardsEmptyScanToBatchWriter() {
+    func performInitialScanForwardsEmptyScanToBatchWriter() async {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         sut.scanBatchWriter = writer
         sut.appScanner = AppScanner(fileSystemService: MockFileSystemService(), excludedBundleIds: [])
         sut.targetWindowContentSizeProvider = { CGSize(width: 1440, height: 598) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps == [[]])
         #expect(writer.receivedCapacities == [28])
     }
 
     @Test("performInitialScan 与 performIncrementalScan 共用 batch writer")
-    func scanEntryPointsUseTheSameBatchWriter() {
+    func scanEntryPointsUseTheSameBatchWriter() async {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         sut.scanBatchWriter = writer
         sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 1), excludedBundleIds: [])
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .success)
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps.count == 2)
         #expect(writer.receivedApps.allSatisfy { $0.map(\.bundleId) == ["com.test.app0"] })
     }
 
     @Test("默认 discovery roots 精确区分 required system roots 与 optional home root")
-    func defaultDiscoveryRootsAllowMissingHomeRootAndStillWrite() {
+    func defaultDiscoveryRootsAllowMissingHomeRootAndStillWrite() async {
         let sut = makeDelegate()
         let homeRoot = URL(fileURLWithPath: NSHomeDirectory() + "/Applications")
         #expect(sut.discoveryRoots == [
@@ -951,7 +984,9 @@ struct AppDelegateTests {
         sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
         sut.scanBatchWriter = writer
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps == [[]])
         #expect(writer.receivedCapacities.count == 1)
@@ -1019,10 +1054,12 @@ struct AppDelegateTests {
         let scheduler = MockScheduler()
         sut.watchedPaths = ["/Applications"]
         sut.fileWatcherFactory = { FileWatcher(debounceInterval: 0.1, backend: backend, scheduler: scheduler) }
+        let outcomes = observeScanOutcomes(of: sut)
         sut.setupFileWatcher()
         backend.emit()
         await Task.yield()
         scheduler.advance(by: 0.1)
+        #expect(await outcomes.next() == .success)
         #expect(writer.receivedApps.count == 1)
     }
 
@@ -1172,14 +1209,16 @@ struct AppDelegateTests {
     }
 
     @Test("首次扫描使用目标显示器真实容量")
-    func initialScanUsesTargetViewportCapacity() {
+    func initialScanUsesTargetViewportCapacity() async {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         sut.scanBatchWriter = writer
         sut.appScanner = AppScanner(fileSystemService: makeFileSystemWithApps(count: 29), excludedBundleIds: [])
         sut.targetWindowContentSizeProvider = { CGSize(width: 1440, height: 598) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps.count == 1)
         #expect(writer.receivedApps.first?.count == 29)
@@ -1187,7 +1226,7 @@ struct AppDelegateTests {
     }
 
     @Test("成功扫描只刷新已加载 VC 一次")
-    func successfulScanReloadsOnlyLoadedViewController() throws {
+    func successfulScanReloadsOnlyLoadedViewController() async throws {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         sut.scanBatchWriter = writer
@@ -1197,17 +1236,20 @@ struct AppDelegateTests {
         var reloads = 0
         sut.viewControllerReloader = { _ in reloads += 1 }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .success)
         #expect(!viewController.isViewLoaded)
         #expect(reloads == 0)
 
         _ = viewController.view
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
         #expect(reloads == 1)
     }
 
     @Test("根目录读取失败禁止 destructive sync，后续完整扫描可恢复")
-    func incompleteRootDiscoverySkipsWriteAndAcceptsLaterCompleteScan() throws {
+    func incompleteRootDiscoverySkipsWriteAndAcceptsLaterCompleteScan() async throws {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         let fileSystem = makeFileSystemWithApps(count: 1)
@@ -1222,7 +1264,9 @@ struct AppDelegateTests {
         sut.viewControllerReloader = { _ in reloads += 1 }
         sut.scanFailureLogger = { categories.append($0) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .discoveryIncomplete)
 
         #expect(writer.receivedApps.isEmpty)
         #expect(reloads == 0)
@@ -1230,6 +1274,7 @@ struct AppDelegateTests {
 
         fileSystem.shouldThrowOnContentsOfDirectory = false
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps.map { $0.map(\.bundleId) } == [["com.test.app0"]])
         #expect(reloads == 1)
@@ -1237,7 +1282,7 @@ struct AppDelegateTests {
     }
 
     @Test("已枚举 app 的 plist 不可读禁止 destructive sync，后续完整扫描可恢复")
-    func unreadableBundleDiscoverySkipsWriteAndAcceptsLaterCompleteScan() throws {
+    func unreadableBundleDiscoverySkipsWriteAndAcceptsLaterCompleteScan() async throws {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         let fileSystem = MockFileSystemService()
@@ -1255,7 +1300,9 @@ struct AppDelegateTests {
         sut.viewControllerReloader = { _ in reloads += 1 }
         sut.scanFailureLogger = { categories.append($0) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .discoveryIncomplete)
 
         #expect(writer.receivedApps.isEmpty)
         #expect(reloads == 0)
@@ -1267,6 +1314,7 @@ struct AppDelegateTests {
         ]
         fileSystem.unreadableBundleURLs = []
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
 
         #expect(writer.receivedApps.map { $0.map(\.bundleId) } == [["com.test.existing"]])
         #expect(reloads == 1)
@@ -1274,7 +1322,7 @@ struct AppDelegateTests {
     }
 
     @Test("file-backed initial scan 的 required root 失败在重开前后保留完整拓扑")
-    func fileBackedFailedRootPreservesTopologyAcrossReopenAndRecovery() throws {
+    func fileBackedFailedRootPreservesTopologyAcrossReopenAndRecovery() async throws {
         let directory = try temporaryDatabaseDirectory("LaunchPadAppDelegateRootFailure")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("layout.sqlite").path
@@ -1287,6 +1335,7 @@ struct AppDelegateTests {
         let sut = makeDelegate()
         sut.discoveryRoots = [AppDiscoveryRoot(url: root, missingPolicy: .required)]
         sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+        let outcomes = observeScanOutcomes(of: sut)
 
         var storage: StorageManager? = try StorageManager(dbPath: path)
         let ids = try seedPersistedTopology(in: try #require(storage))
@@ -1294,6 +1343,7 @@ struct AppDelegateTests {
         sut.scanBatchWriter = storage
 
         sut.performInitialScan()
+        #expect(await outcomes.next() == .discoveryIncomplete)
 
         #expect(try #require(storage).persistedLayoutSnapshot() == before)
         expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
@@ -1316,6 +1366,7 @@ struct AppDelegateTests {
         )
         sut.scanBatchWriter = storage
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
 
         let recovered = try #require(storage).persistedLayoutSnapshot()
         let appended = try #require(
@@ -1340,7 +1391,7 @@ struct AppDelegateTests {
     )
     func fileBackedBundleFailurePreservesTopologyAcrossReopenAndRecovery(
         _ failure: ExistingBundleFailure
-    ) throws {
+    ) async throws {
         let directory = try temporaryDatabaseDirectory("LaunchPadAppDelegateBundleFailure")
         defer { try? FileManager.default.removeItem(at: directory) }
         let path = directory.appendingPathComponent("layout.sqlite").path
@@ -1366,6 +1417,7 @@ struct AppDelegateTests {
         let sut = makeDelegate()
         sut.discoveryRoots = [AppDiscoveryRoot(url: root, missingPolicy: .required)]
         sut.appScanner = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+        let outcomes = observeScanOutcomes(of: sut)
 
         var storage: StorageManager? = try StorageManager(dbPath: path)
         let ids = try seedPersistedTopology(in: try #require(storage))
@@ -1373,6 +1425,7 @@ struct AppDelegateTests {
         sut.scanBatchWriter = storage
 
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .discoveryIncomplete)
 
         #expect(try #require(storage).persistedLayoutSnapshot() == before)
         expectStableTopology(try #require(storage).persistedLayoutSnapshot(), ids: ids)
@@ -1395,6 +1448,7 @@ struct AppDelegateTests {
         )
         sut.scanBatchWriter = storage
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .success)
 
         let recovered = try #require(storage).persistedLayoutSnapshot()
         let appended = try #require(
@@ -1414,7 +1468,7 @@ struct AppDelegateTests {
     }
 
     @Test("批事务失败不刷新并只记录固定分类")
-    func scanBatchFailureKeepsLoadedUIAndLogs() throws {
+    func scanBatchFailureKeepsLoadedUIAndLogs() async throws {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         writer.error = TestError.generic
@@ -1428,15 +1482,18 @@ struct AppDelegateTests {
         sut.viewControllerReloader = { _ in reloads += 1 }
         sut.scanFailureLogger = { categories.append($0) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .writeFailed)
         sut.performIncrementalScan()
+        #expect(await outcomes.next() == .writeFailed)
 
         #expect(reloads == 0)
         #expect(categories == ["scan-batch-failed", "scan-batch-failed"])
     }
 
     @Test("批 writer 返回失败结果时不刷新并只记录固定分类")
-    func unsuccessfulScanBatchResultKeepsLoadedUIAndLogs() throws {
+    func unsuccessfulScanBatchResultKeepsLoadedUIAndLogs() async throws {
         let sut = makeDelegate()
         let writer = RecordingScanBatchWriter()
         var failedResult = ScanSyncResult()
@@ -1452,7 +1509,9 @@ struct AppDelegateTests {
         sut.viewControllerReloader = { _ in reloads += 1 }
         sut.scanFailureLogger = { categories.append($0) }
 
+        let outcomes = observeScanOutcomes(of: sut)
         sut.performInitialScan()
+        #expect(await outcomes.next() == .writeFailed)
 
         #expect(reloads == 0)
         #expect(categories == ["scan-batch-failed"])

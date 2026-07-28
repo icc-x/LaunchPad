@@ -22,9 +22,13 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     var storage: (any DataStoring)!
     var layoutMutator: (any LayoutMutating)!
-    var scanBatchWriter: (any ScanBatchWriting)!
+    var scanBatchWriter: (any ScanBatchWriting)! {
+        didSet { scanCoordinator = nil }
+    }
     var iconCache: IconCache!
-    var appScanner: AppScanner!
+    var appScanner: (any AppScanning)! {
+        didSet { scanCoordinator = nil }
+    }
     var searchEngine: SearchEngine!
     var hotkeyManager: HotkeyManager!
     var fileWatcher: FileWatcher?
@@ -174,7 +178,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     var viewControllerReloader: (LaunchPadViewController) -> Void = { $0.loadData() }
     var scanFailureLogger: (String) -> Void = { NSLog("[AppDelegate] %@", $0) }
-    private let scanLock = NSLock()
+    /// 测试观察扫描结果已完成 MainActor 回填的边界。
+    var scanOutcomeObserver: (@MainActor @Sendable (ScanOutcome) -> Void)?
+    private var scanCoordinator: AppScanCoordinator?
     private var isTerminating = false
 
     // MARK: - Application Lifecycle
@@ -197,9 +203,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         setupControllers()
         setupMenuBar()
         setupHotkey()
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            self?.performInitialScan()
-        }
+        performInitialScan()
         setupFileWatcher()
     }
 
@@ -454,29 +458,38 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func performScan() {
-        scanLock.lock()
-        defer { scanLock.unlock() }
-        let discovery = appScanner.scanDirectories(discoveryRoots)
-        guard discovery.isComplete else {
-            scanFailureLogger("app-discovery-incomplete")
-            return
-        }
         let viewport = LaunchPadViewController.gridViewportSize(
             forWindowContentSize: targetWindowContentSizeProvider()
         )
         let capacity = GridLayoutCalculator.calculate(viewportSize: viewport).itemsPerPage
-        do {
-            let result = try scanBatchWriter.synchronizeInstalledApps(
-                discovery.apps,
-                initialPageCapacity: capacity
+        guard let appScanner, let scanBatchWriter else { return }
+
+        let coordinator: AppScanCoordinator
+        if let scanCoordinator {
+            coordinator = scanCoordinator
+        } else {
+            let created = AppScanCoordinator(
+                scanner: appScanner,
+                writer: scanBatchWriter
             )
-            guard result.isSuccessful else {
-                scanFailureLogger("scan-batch-failed")
-                return
+            scanCoordinator = created
+            coordinator = created
+        }
+
+        coordinator.scan(
+            roots: discoveryRoots,
+            pageCapacity: capacity
+        ) { [weak self] outcome in
+            guard let self else { return }
+            switch outcome {
+            case .success:
+                self.reloadLoadedViewControllerAfterScan()
+            case .discoveryIncomplete:
+                self.scanFailureLogger("app-discovery-incomplete")
+            case .writeFailed:
+                self.scanFailureLogger("scan-batch-failed")
             }
-            reloadLoadedViewControllerAfterScan()
-        } catch {
-            scanFailureLogger("scan-batch-failed")
+            self.scanOutcomeObserver?(outcome)
         }
     }
 
