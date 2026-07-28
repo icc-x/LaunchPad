@@ -8,12 +8,19 @@ public enum SchemaError: Error, Equatable {
     case versionInsertPrepareFailed(Int32)
     case versionBindFailed(Int32)
     case versionInsertStepFailed(Int32)
+    case versionReadPrepareFailed(Int32)
+    case versionReadStepFailed(Int32)
+    case unsupportedVersion(Int32)
+    case migrationBeginFailed(Int32)
+    case migrationStatementFailed(index: Int, code: Int32)
+    case migrationCommitFailed(Int32)
+    case migrationRollbackFailed(Int32)
 }
 
 /// 数据库 Schema 定义与迁移
 public enum Schema {
 
-    public static let currentVersion = 1
+    public static let currentVersion = 2
 
     // MARK: - Table Creation SQL
 
@@ -51,6 +58,7 @@ public enum Schema {
             item_id     INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
             icon_1x     BLOB,
             icon_2x     BLOB,
+            source_modified_at REAL,
             updated_at  REAL DEFAULT (strftime('%s','now'))
         )
         """
@@ -77,6 +85,7 @@ public enum Schema {
         }
 
         try ensureVersionRecord(db: db)
+        try migrateIfNeeded(db: db)
     }
 
     private static let defaultStatements: [String] = [
@@ -130,6 +139,73 @@ public enum Schema {
         let insertStepCode = sqlite3_step(insertStmt)
         guard insertStepCode == SQLITE_DONE else {
             throw SchemaError.versionInsertStepFailed(insertStepCode)
+        }
+    }
+
+    private static func migrateIfNeeded(db: OpaquePointer) throws {
+        let version = try readVersion(db: db)
+        switch version {
+        case 1:
+            try migrateV1ToV2(db: db)
+        case Int32(currentVersion):
+            return
+        default:
+            throw SchemaError.unsupportedVersion(version)
+        }
+    }
+
+    private static func readVersion(db: OpaquePointer) throws -> Int32 {
+        var statement: OpaquePointer?
+        let prepareCode = sqlite3_prepare_v2(
+            db,
+            "SELECT version FROM schema_version LIMIT 1",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareCode == SQLITE_OK else {
+            throw SchemaError.versionReadPrepareFailed(prepareCode)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        let stepCode = sqlite3_step(statement)
+        guard stepCode == SQLITE_ROW else {
+            throw SchemaError.versionReadStepFailed(stepCode)
+        }
+        return sqlite3_column_int(statement, 0)
+    }
+
+    private static func migrateV1ToV2(db: OpaquePointer) throws {
+        let beginCode = sqlite3_exec(db, "BEGIN IMMEDIATE", nil, nil, nil)
+        guard beginCode == SQLITE_OK else {
+            throw SchemaError.migrationBeginFailed(beginCode)
+        }
+
+        do {
+            let statements = [
+                "ALTER TABLE image_cache ADD COLUMN source_modified_at REAL",
+                "UPDATE schema_version SET version = 2",
+            ]
+            for (index, sql) in statements.enumerated() {
+                let code = sqlite3_exec(db, sql, nil, nil, nil)
+                guard code == SQLITE_OK else {
+                    throw SchemaError.migrationStatementFailed(
+                        index: index,
+                        code: code
+                    )
+                }
+            }
+
+            let commitCode = sqlite3_exec(db, "COMMIT", nil, nil, nil)
+            guard commitCode == SQLITE_OK else {
+                throw SchemaError.migrationCommitFailed(commitCode)
+            }
+        } catch {
+            let rollbackCode = sqlite3_exec(db, "ROLLBACK", nil, nil, nil)
+            guard rollbackCode == SQLITE_OK else {
+                throw SchemaError.migrationRollbackFailed(rollbackCode)
+            }
+            throw error
         }
     }
 }

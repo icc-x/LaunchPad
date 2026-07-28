@@ -89,22 +89,24 @@ final class MockLayoutMutator: LayoutMutating, @unchecked Sendable {
 // MARK: - MockImageStoring
 
 final class MockImageStore: ImageStoring, @unchecked Sendable {
-    var storedImages: [Int64: (icon1x: Data, icon2x: Data)] = [:]
-    var stored: [Int64: (icon1x: Data, icon2x: Data)] {
+    var storedImages: [Int64: CachedImageRecord] = [:]
+    var stored: [Int64: CachedImageRecord] {
         get { storedImages }
         set { storedImages = newValue }
     }
-    var fetchResult: (Data, Data)?
+    var fetchResult: CachedImageRecord?
     var fetchError: Error?
+    var saveError: Error?
     private(set) var fetchCallCount = 0
     private(set) var saveCallCount = 0
 
-    func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {
+    func saveImage(itemId: Int64, record: CachedImageRecord) throws {
         saveCallCount += 1
-        storedImages[itemId] = (icon1x, icon2x)
+        if let saveError { throw saveError }
+        storedImages[itemId] = record
     }
 
-    func fetchImage(itemId: Int64) throws -> (Data, Data)? {
+    func fetchImage(itemId: Int64) throws -> CachedImageRecord? {
         fetchCallCount += 1
         if let error = fetchError { throw error }
         return fetchResult ?? storedImages[itemId]

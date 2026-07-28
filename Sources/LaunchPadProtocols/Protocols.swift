@@ -30,8 +30,8 @@ public protocol LayoutMutating: Sendable {
 
 /// IconCache 专用 — 磁盘层读写
 public protocol ImageStoring: Sendable {
-    func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws
-    func fetchImage(itemId: Int64) throws -> (Data, Data)?
+    func saveImage(itemId: Int64, record: CachedImageRecord) throws
+    func fetchImage(itemId: Int64) throws -> CachedImageRecord?
 }
 
 // MARK: - 组合存储协议
@@ -123,6 +123,7 @@ public protocol FileSystemService: Sendable {
 // MARK: - 图标缓存协议
 
 /// 图标缓存抽象 — AppGridCollectionView 不应直接依赖具体 IconCache 类
+@MainActor
 public protocol IconCaching: Sendable {
     #if canImport(AppKit)
     func icon(forItemId itemId: Int64, path: String) -> NSImage

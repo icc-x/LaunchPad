@@ -138,6 +138,18 @@ private func withSQLiteDatabase<T>(
     return try body(database)
 }
 
+private func makeCachedImageRecord(
+    icon1x: Data = Data([1]),
+    icon2x: Data = Data([2]),
+    sourceModificationDate: Date = Date(timeIntervalSince1970: 1_234)
+) -> CachedImageRecord {
+    CachedImageRecord(
+        icon1x: icon1x,
+        icon2x: icon2x,
+        sourceModificationDate: sourceModificationDate
+    )
+}
+
 @Suite("StorageManager 基础 CRUD")
 struct StorageManagerTests {
 
@@ -315,12 +327,14 @@ struct StorageManagerAdvancedTests {
         let icon1x = Data(repeating: 0xAA, count: 100)
         let icon2x = Data(repeating: 0xBB, count: 200)
 
-        try sut.saveImage(itemId: itemId, icon1x: icon1x, icon2x: icon2x)
+        let record = makeCachedImageRecord(
+            icon1x: icon1x,
+            icon2x: icon2x
+        )
+        try sut.saveImage(itemId: itemId, record: record)
 
         let fetched = try sut.fetchImage(itemId: itemId)
-        #expect(fetched != nil)
-        #expect(fetched!.0 == icon1x)
-        #expect(fetched!.1 == icon2x)
+        #expect(fetched == record)
     }
 
     @Test("不存在的图标返回 nil")
@@ -485,14 +499,24 @@ struct StorageManagerUpdateTests {
         let sut = try makeSUT()
         let id = try sut.insertItem(TestDataFactory.makePageItem(type: .app, app: TestDataFactory.makeAppInfo()))
 
-        try sut.saveImage(itemId: id, icon1x: Data(repeating: 0xAA, count: 10), icon2x: Data(repeating: 0xBB, count: 20))
+        try sut.saveImage(
+            itemId: id,
+            record: makeCachedImageRecord(
+                icon1x: Data(repeating: 0xAA, count: 10),
+                icon2x: Data(repeating: 0xBB, count: 20),
+                sourceModificationDate: Date(timeIntervalSince1970: 100)
+            )
+        )
         // 再次保存覆盖
-        try sut.saveImage(itemId: id, icon1x: Data(repeating: 0xCC, count: 30), icon2x: Data(repeating: 0xDD, count: 40))
+        let replacement = makeCachedImageRecord(
+            icon1x: Data(repeating: 0xCC, count: 30),
+            icon2x: Data(repeating: 0xDD, count: 40),
+            sourceModificationDate: Date(timeIntervalSince1970: 200)
+        )
+        try sut.saveImage(itemId: id, record: replacement)
 
         let fetched = try sut.fetchImage(itemId: id)
-        #expect(fetched != nil)
-        #expect(fetched!.0 == Data(repeating: 0xCC, count: 30))
-        #expect(fetched!.1 == Data(repeating: 0xDD, count: 40))
+        #expect(fetched == replacement)
     }
 
     // MARK: - 错误分支覆盖（prepare 失败 + step 失败）
@@ -564,7 +588,7 @@ struct StorageManagerUpdateTests {
     func noSchema_saveImage_prepareFails() throws {
         let sut = try makeNoSchemaSUT()
         #expect(throws: StorageError.self) {
-            try sut.saveImage(itemId: 1, icon1x: Data([1]), icon2x: Data([2]))
+            try sut.saveImage(itemId: 1, record: makeCachedImageRecord())
         }
     }
 
@@ -657,7 +681,10 @@ struct StorageManagerUpdateTests {
         let sut = try makeSUT()
         // itemId 不存在，image_cache.item_id 外键约束 -> step 失败
         #expect(throws: StorageError.self) {
-            try sut.saveImage(itemId: 999999, icon1x: Data([1]), icon2x: Data([2]))
+            try sut.saveImage(
+                itemId: 999999,
+                record: makeCachedImageRecord()
+            )
         }
     }
 
@@ -770,6 +797,30 @@ struct StorageManagerFetchImageNullBlobTests {
         sqlite3_exec(db, insertSQL, nil, nil, nil)
 
         let result = try sut.fetchImage(itemId: 2)
+        #expect(result == nil)
+    }
+
+    @Test("v1 迁移行 source_modified_at 为 NULL 时返回 nil")
+    func fetchImage_sourceModificationDateNull_returnsNil() throws {
+        var capturedDB: OpaquePointer?
+        let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
+            try Schema.setupSchema(db: db)
+            capturedDB = db
+        })
+        let db = try #require(capturedDB)
+
+        sqlite3_exec(
+            db,
+            """
+            INSERT INTO image_cache (item_id, icon_1x, icon_2x, source_modified_at)
+            VALUES (3, x'010203', x'040506', NULL)
+            """,
+            nil,
+            nil,
+            nil
+        )
+
+        let result = try sut.fetchImage(itemId: 3)
         #expect(result == nil)
     }
 }
@@ -1021,8 +1072,7 @@ struct StorageManagerSQLiteBoundaryTests {
         )
         try terminalSUT.saveImage(
             itemId: itemID,
-            icon1x: Data([1]),
-            icon2x: Data([2])
+            record: makeCachedImageRecord()
         )
         terminalScript.fail(
             .step(.fetchImage),
@@ -1134,7 +1184,7 @@ struct StorageManagerSQLiteBoundaryTests {
             parentId: pageID,
             orderedIds: [appID, anchorID]
         )
-        try sut.saveImage(itemId: appID, icon1x: Data([1]), icon2x: Data([2]))
+        try sut.saveImage(itemId: appID, record: makeCachedImageRecord())
         _ = try sut.fetchImage(itemId: appID)
         try sut.apply(
             .moveTopLevel(

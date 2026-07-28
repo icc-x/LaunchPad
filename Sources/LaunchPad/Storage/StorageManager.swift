@@ -176,18 +176,17 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
         }
     }
 
-    public func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {
+    public func saveImage(itemId: Int64, record: CachedImageRecord) throws {
         try withDatabase { database in
             try saveImageStatement(
                 itemID: itemId,
-                icon1x: icon1x,
-                icon2x: icon2x,
+                record: record,
                 database: database
             )
         }
     }
 
-    public func fetchImage(itemId: Int64) throws -> (Data, Data)? {
+    public func fetchImage(itemId: Int64) throws -> CachedImageRecord? {
         try withDatabase { database in
             try fetchImageStatement(itemID: itemId, database: database)
         }
@@ -1405,14 +1404,15 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
 
     private func saveImageStatement(
         itemID: Int64,
-        icon1x: Data,
-        icon2x: Data,
+        record: CachedImageRecord,
         database: OpaquePointer
     ) throws {
         let kind = SQLiteStatementKind.saveImage
         let sql = """
-            INSERT OR REPLACE INTO image_cache (item_id, icon_1x, icon_2x)
-            VALUES (?, ?, ?)
+            INSERT OR REPLACE INTO image_cache (
+                item_id, icon_1x, icon_2x, source_modified_at
+            )
+            VALUES (?, ?, ?, ?)
             """
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
@@ -1423,7 +1423,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
             kind: kind
         ) == SQLITE_OK else { throw StorageError.prepareFailed }
         try bindInt64(itemID, statement: statement, index: 1, kind: kind)
-        let firstCode = icon1x.withUnsafeBytes { bytes in
+        let firstCode = record.icon1x.withUnsafeBytes { bytes in
             sqliteDriver.bind(
                 sqlite3_bind_blob(
                     statement,
@@ -1436,7 +1436,7 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
                 index: 2
             )
         }
-        let secondCode = icon2x.withUnsafeBytes { bytes in
+        let secondCode = record.icon2x.withUnsafeBytes { bytes in
             sqliteDriver.bind(
                 sqlite3_bind_blob(
                     statement,
@@ -1452,6 +1452,16 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
         guard firstCode == SQLITE_OK, secondCode == SQLITE_OK else {
             throw StorageError.bindFailed
         }
+        let dateCode = sqliteDriver.bind(
+            sqlite3_bind_double(
+                statement,
+                4,
+                record.sourceModificationDate.timeIntervalSince1970
+            ),
+            kind: kind,
+            index: 4
+        )
+        guard dateCode == SQLITE_OK else { throw StorageError.bindFailed }
         guard sqliteDriver.step(statement, kind: kind) == SQLITE_DONE,
               sqliteDriver.changes(database: database, kind: kind) == 1 else {
             throw StorageError.insertFailed
@@ -1461,13 +1471,17 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
     private func fetchImageStatement(
         itemID: Int64,
         database: OpaquePointer
-    ) throws -> (Data, Data)? {
+    ) throws -> CachedImageRecord? {
         let kind = SQLiteStatementKind.fetchImage
         var statement: OpaquePointer?
         defer { sqlite3_finalize(statement) }
         guard sqliteDriver.prepare(
             database: database,
-            sql: "SELECT icon_1x, icon_2x FROM image_cache WHERE item_id = ?",
+            sql: """
+                SELECT icon_1x, icon_2x, source_modified_at
+                FROM image_cache
+                WHERE item_id = ?
+                """,
             statement: &statement,
             kind: kind
         ) == SQLITE_OK else { throw StorageError.prepareFailed }
@@ -1475,17 +1489,21 @@ public final class StorageManager: DataStoring, LayoutMutating, ScanBatchWriting
         let firstStep = sqliteDriver.step(statement, kind: kind)
         guard firstStep != SQLITE_DONE else { return nil }
         guard firstStep == SQLITE_ROW else { throw StorageError.queryFailed }
-        let result: (Data, Data)?
+        let result: CachedImageRecord?
         if let first = sqlite3_column_blob(statement, 0),
-           let second = sqlite3_column_blob(statement, 1) {
-            result = (
-                Data(
+           let second = sqlite3_column_blob(statement, 1),
+           sqlite3_column_type(statement, 2) != SQLITE_NULL {
+            result = CachedImageRecord(
+                icon1x: Data(
                     bytes: first,
                     count: Int(sqlite3_column_bytes(statement, 0))
                 ),
-                Data(
+                icon2x: Data(
                     bytes: second,
                     count: Int(sqlite3_column_bytes(statement, 1))
+                ),
+                sourceModificationDate: Date(
+                    timeIntervalSince1970: sqlite3_column_double(statement, 2)
                 )
             )
         } else {

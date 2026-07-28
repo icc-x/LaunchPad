@@ -197,6 +197,7 @@ struct PerformanceTests {
 
     #if canImport(AppKit)
     @Test("IconCache 1000 次内存命中 median/p95 < 300ms")
+    @MainActor
     func iconCache_1000randomAccess_perf() throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
@@ -207,7 +208,11 @@ struct PerformanceTests {
 
         provider.iconResult = fixture.image
         for (index, path) in paths.enumerated() {
-            store.storedImages[Int64(index)] = (fixture.tiffData, fixture.tiffData)
+            store.storedImages[Int64(index)] = CachedImageRecord(
+                icon1x: fixture.tiffData,
+                icon2x: fixture.tiffData,
+                sourceModificationDate: fixedModificationDate
+            )
             provider.modificationDates[path] = fixedModificationDate
         }
 
@@ -248,6 +253,7 @@ struct PerformanceTests {
     }
 
     @Test("IconCache 1000 次访问后无磁盘重复写入")
+    @MainActor
     func iconCache_1000access_noDiskWriteLeak() throws {
         let provider = MockIconProvider()
         let store = MockImageStore()
@@ -258,7 +264,11 @@ struct PerformanceTests {
 
         provider.iconResult = fixture.image
         for (index, path) in paths.enumerated() {
-            store.storedImages[Int64(index)] = (fixture.tiffData, fixture.tiffData)
+            store.storedImages[Int64(index)] = CachedImageRecord(
+                icon1x: fixture.tiffData,
+                icon2x: fixture.tiffData,
+                sourceModificationDate: fixedModificationDate
+            )
             provider.modificationDates[path] = fixedModificationDate
         }
 

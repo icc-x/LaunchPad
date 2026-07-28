@@ -73,8 +73,8 @@ struct AppDelegateTests {
         func updateItem(_ item: PageItem) throws {}
         func deleteItem(id: Int64) throws {}
         func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
-        func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {}
-        func fetchImage(itemId: Int64) throws -> (Data, Data)? { nil }
+        func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
+        func fetchImage(itemId: Int64) throws -> CachedImageRecord? { nil }
     }
 
     private final class RecordingScanBatchWriter: ScanBatchWriting, @unchecked Sendable {

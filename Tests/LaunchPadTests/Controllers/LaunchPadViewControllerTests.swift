@@ -53,8 +53,8 @@ struct LaunchPadViewControllerTests {
             deletedIds.append(id)
         }
         func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
-        func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {}
-        func fetchImage(itemId: Int64) throws -> (Data, Data)? { nil }
+        func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
+        func fetchImage(itemId: Int64) throws -> CachedImageRecord? { nil }
     }
 
     /// 可控的长按手势：测试可设 state 与 location(in:)，以驱动 handleLongPress 各分支

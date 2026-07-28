@@ -61,12 +61,17 @@ struct ProtocolTests {
         let store: ImageStoring = MockImageStore()
         let icon1x = Data([1, 2, 3])
         let icon2x = Data([4, 5, 6])
+        let sourceModificationDate = Date(timeIntervalSince1970: 1_234)
+        let record = CachedImageRecord(
+            icon1x: icon1x,
+            icon2x: icon2x,
+            sourceModificationDate: sourceModificationDate
+        )
 
-        try store.saveImage(itemId: 42, icon1x: icon1x, icon2x: icon2x)
+        try store.saveImage(itemId: 42, record: record)
         let fetched = try #require(try store.fetchImage(itemId: 42))
 
-        #expect(fetched.0 == icon1x)
-        #expect(fetched.1 == icon2x)
+        #expect(fetched == record)
     }
 
     @Test("FileSystemService existential 转发目录与存在性查询")

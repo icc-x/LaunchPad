@@ -9,10 +9,11 @@ import AppKit
 /// Lookup order: memory -> disk -> IconProvider (live extraction).
 /// After extraction, stores in both layers simultaneously.
 ///
-/// Thread safety: This class is marked `@unchecked Sendable` because NSCache
-/// does not declare Sendable conformance but is internally thread-safe (uses locks).
+/// AppKit image access is isolated to the main actor. The modification-date
+/// dictionary retains its lock so cache helper invariants remain explicit.
 #if canImport(AppKit)
-public final class IconCache: IconCaching, @unchecked Sendable {
+@MainActor
+public final class IconCache: IconCaching {
 
     private let iconProvider: IconProviding
     private let imageStore: ImageStoring
@@ -22,6 +23,9 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     private let modLock = NSLock()
     /// PNG 编码器（可注入，测试用于模拟编码失败覆盖 guard return 分支）
     private let pngEncoder: (NSImage, NSSize) -> Data?
+    private let errorLogger: @Sendable (String) -> Void
+
+    static let diskSaveFailureCategory = "icon-cache-disk-save-failed"
 
     /// Create icon cache
     ///
@@ -30,11 +34,15 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     ///   - imageStore: Disk storage
     ///   - memoryLimit: Memory cache entry limit, default 500
     ///   - pngEncoder: PNG 编码器（测试注入 nil 模拟编码失败）
+    ///   - errorLogger: Records stable cache error categories without raw error details.
     public init(
         iconProvider: IconProviding,
         imageStore: ImageStoring,
         memoryLimit: Int = 500,
-        pngEncoder: ((NSImage, NSSize) -> Data?)? = nil
+        pngEncoder: ((NSImage, NSSize) -> Data?)? = nil,
+        errorLogger: @escaping @Sendable (String) -> Void = {
+            NSLog("[IconCache] %@", $0)
+        }
     ) {
         self.iconProvider = iconProvider
         self.imageStore = imageStore
@@ -43,6 +51,7 @@ public final class IconCache: IconCaching, @unchecked Sendable {
         self.pngEncoder = pngEncoder ?? { image, size in
             IconCache.defaultPngEncoder(image, size: size)
         }
+        self.errorLogger = errorLogger
     }
 
     /// 默认 PNG 编码：lockFocus 缩放后转 PNG（internal 以便测试覆盖 guard 失败分支）
@@ -104,14 +113,18 @@ public final class IconCache: IconCaching, @unchecked Sendable {
     /// - Returns: Icon image, returns default NSApplicationIcon on failure
     public func icon(forItemId itemId: Int64, path: String) -> NSImage {
         let cacheKey = NSString(string: path)
+        let currentModificationDate = iconProvider.modificationDate(
+            forPath: path
+        )
 
         // 1. Check memory cache
         if let cachedImage = memoryCache.object(forKey: cacheKey) {
             // Verify modificationDate hasn't changed
-            let currentModDate = iconProvider.modificationDate(forPath: path)
             let cachedModDate = self.cachedModDate(for: path)
 
-            if let current = currentModDate, let cached = cachedModDate, current == cached {
+            if let current = currentModificationDate,
+               let cached = cachedModDate,
+               current == cached {
                 return cachedImage
             }
             // modificationDate changed, evict cache
@@ -120,45 +133,18 @@ public final class IconCache: IconCaching, @unchecked Sendable {
         }
 
         // 2. Check disk cache
-        if let diskData = try? imageStore.fetchImage(itemId: itemId) {
-            let currentModDate = iconProvider.modificationDate(forPath: path)
-            if let image = NSImage(data: diskData.0) {
-                // Check if disk cache is still valid
-                let cachedModDate = self.cachedModDate(for: path)
-                let isStillValid: Bool
-                if let current = currentModDate {
-                    if let cached = cachedModDate {
-                        isStillValid = (current == cached)
-                    } else {
-                        // Modification cache evicted — compare disk icon against live icon
-                        // Both go through tiffRepresentation for format consistency (fixes P2-5)
-                        let liveIcon = iconProvider.icon(forPath: path)
-                        if let decodedDiskImage = NSImage(data: diskData.0) {
-                            let diskRep = decodedDiskImage.representations.first
-                            let liveRep = liveIcon.representations.first
-                            isStillValid = (diskRep?.pixelsWide == liveRep?.pixelsWide
-                                && diskRep?.pixelsHigh == liveRep?.pixelsHigh
-                                && diskRep?.bitsPerSample == liveRep?.bitsPerSample)
-                        } else {
-                            isStillValid = false
-                        }
-                    }
-                } else {
-                    // No current modification date available, assume disk data is valid
-                    isStillValid = true
-                }
-
-                if isStillValid {
-                    // Disk data valid, populate memory cache and return
+        if let currentModificationDate {
+            do {
+                if let record = try imageStore.fetchImage(itemId: itemId),
+                   record.sourceModificationDate == currentModificationDate,
+                   let image = NSImage(data: record.icon1x) {
                     memoryCache.setObject(image, forKey: cacheKey)
-                    if let modDate = currentModDate {
-                        setCachedModDate(modDate, for: path)
-                    }
+                    setCachedModDate(currentModificationDate, for: path)
                     return image
                 }
-                // Disk data invalid (modificationDate changed), continue to provider
+            } catch {
+                // A disk read failure is a cache miss; live extraction remains authoritative.
             }
-            // PNG corrupted, continue to provider
         }
 
         // 3. Live extraction from provider
@@ -166,18 +152,24 @@ public final class IconCache: IconCaching, @unchecked Sendable {
 
         // Store in memory cache
         memoryCache.setObject(image, forKey: cacheKey)
-        if let modDate = iconProvider.modificationDate(forPath: path) {
-            setCachedModDate(modDate, for: path)
+        if let currentModificationDate {
+            setCachedModDate(currentModificationDate, for: path)
+            storeToDisk(
+                image: image,
+                itemId: itemId,
+                sourceModificationDate: currentModificationDate
+            )
         }
-
-        // Store in disk cache
-        storeToDisk(image: image, itemId: itemId)
 
         return image
     }
 
     /// Write image to disk cache
-    private func storeToDisk(image: NSImage, itemId: Int64) {
+    private func storeToDisk(
+        image: NSImage,
+        itemId: Int64,
+        sourceModificationDate: Date
+    ) {
         // @1x: 128×128pt
         guard let png1x = pngEncoder(image, NSSize(width: 128, height: 128)) else {
             return
@@ -188,7 +180,18 @@ public final class IconCache: IconCaching, @unchecked Sendable {
             return
         }
 
-        try? imageStore.saveImage(itemId: itemId, icon1x: png1x, icon2x: png2x)
+        do {
+            try imageStore.saveImage(
+                itemId: itemId,
+                record: CachedImageRecord(
+                    icon1x: png1x,
+                    icon2x: png2x,
+                    sourceModificationDate: sourceModificationDate
+                )
+            )
+        } catch {
+            errorLogger(Self.diskSaveFailureCategory)
+        }
     }
 }
 #endif

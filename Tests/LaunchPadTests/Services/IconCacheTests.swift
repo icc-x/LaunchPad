@@ -1,5 +1,6 @@
 import Testing
 import Foundation
+import LaunchPadProtocols
 @testable import LaunchPad
 #if canImport(AppKit)
 import AppKit
@@ -8,6 +9,7 @@ import AppKit
 // MARK: - Tests
 
 #if canImport(AppKit)
+@MainActor
 @Suite("IconCache dual-layer cache")
 struct IconCacheTests {
 
@@ -30,6 +32,45 @@ struct IconCacheTests {
         return NSImage(cgImage: cgImage, size: NSSize(width: size, height: size))
     }
 
+    private func makeSolidColorImage(
+        red: UInt8,
+        green: UInt8,
+        blue: UInt8,
+        size: Int = 128
+    ) -> NSImage {
+        guard let bitmapRep = NSBitmapImageRep(
+            bitmapDataPlanes: nil,
+            pixelsWide: size,
+            pixelsHigh: size,
+            bitsPerSample: 8,
+            samplesPerPixel: 4,
+            hasAlpha: true,
+            isPlanar: false,
+            colorSpaceName: .deviceRGB,
+            bytesPerRow: size * 4,
+            bitsPerPixel: 32
+        ), let pixels = bitmapRep.bitmapData else {
+            return NSImage(size: NSSize(width: size, height: size))
+        }
+        for offset in stride(from: 0, to: size * size * 4, by: 4) {
+            pixels[offset] = red
+            pixels[offset + 1] = green
+            pixels[offset + 2] = blue
+            pixels[offset + 3] = 255
+        }
+        let image = NSImage(size: NSSize(width: size, height: size))
+        image.addRepresentation(bitmapRep)
+        return image
+    }
+
+    private func firstPixel(_ image: NSImage) -> NSColor? {
+        guard let tiff = image.tiffRepresentation,
+              let representation = NSBitmapImageRep(data: tiff) else {
+            return nil
+        }
+        return representation.colorAt(x: 0, y: 0)?.usingColorSpace(.deviceRGB)
+    }
+
     private func makePNGData(_ image: NSImage) -> Data {
         guard let tiff = image.tiffRepresentation,
               let rep = NSBitmapImageRep(data: tiff),
@@ -44,6 +85,18 @@ struct IconCacheTests {
             return bitmapRep.representation(using: .png, properties: [:]) ?? Data()
         }
         return png
+    }
+
+    private func makeRecord(
+        icon1x: Data,
+        icon2x: Data? = nil,
+        sourceModificationDate: Date
+    ) -> CachedImageRecord {
+        CachedImageRecord(
+            icon1x: icon1x,
+            icon2x: icon2x ?? icon1x,
+            sourceModificationDate: sourceModificationDate
+        )
     }
 
     // MARK: - Memory hit
@@ -72,6 +125,59 @@ struct IconCacheTests {
 
     // MARK: - Memory miss + disk hit
 
+    @Test("进程重启后同规格不同内容的磁盘图标会按源修改时间刷新")
+    @MainActor
+    func sameGeometryDifferentContent_refreshesDiskRecord() throws {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let path = "/Applications/Changed.app"
+        let redImage = makeSolidColorImage(red: 255, green: 0, blue: 0)
+        let blueImage = makeSolidColorImage(red: 0, green: 0, blue: 255)
+        let redPNG = makePNGData(redImage)
+        let bluePNG = makePNGData(blueImage)
+        let oldDate = Date(timeIntervalSince1970: 1_000)
+        let newDate = Date(timeIntervalSince1970: 2_000)
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            pngEncoder: { _, _ in bluePNG }
+        )
+
+        store.stored[1] = makeRecord(
+            icon1x: redPNG,
+            sourceModificationDate: oldDate
+        )
+        provider.icons[path] = blueImage
+        provider.modificationDates[path] = newDate
+
+        let result = sut.icon(forItemId: 1, path: path)
+        let pixel = try #require(firstPixel(result))
+
+        #expect(pixel.blueComponent > pixel.redComponent)
+        #expect(store.saveCallCount == 1)
+        #expect(store.stored[1]?.sourceModificationDate == newDate)
+    }
+
+    @Test("源修改时间缺失时实时提取但不持久化")
+    @MainActor
+    func missingCurrentModificationDate_doesNotPersist() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            pngEncoder: { _, _ in Data([0x01]) }
+        )
+        let path = "/Applications/NoMetadata.app"
+        provider.icons[path] = makeTestImage()
+
+        _ = sut.icon(forItemId: 2, path: path)
+
+        #expect(provider.fetchCallCount == 1)
+        #expect(store.fetchCallCount == 0)
+        #expect(store.saveCallCount == 0)
+    }
+
     @Test("Memory miss + disk hit -> returns valid image on subsequent calls")
     func memoryMissDiskHit_populatesMemory() {
         let provider = MockIconProvider()
@@ -88,8 +194,12 @@ struct IconCacheTests {
         let pngData = bitmapRep.representation(using: .png, properties: [:]) ?? Data()
 
         // Disk has cached data
-        store.stored[1] = (icon1x: pngData, icon2x: pngData)
-        provider.modificationDates["/app"] = Date()
+        let modificationDate = Date(timeIntervalSince1970: 3_000)
+        store.stored[1] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: modificationDate
+        )
+        provider.modificationDates["/app"] = modificationDate
 
         // First call — load from disk or provider
         let firstResult = sut.icon(forItemId: 1, path: "/app")
@@ -196,14 +306,18 @@ struct IconCacheTests {
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
 
         // Disk has corrupted data
-        store.stored[1] = (icon1x: Data([0xFF, 0xD8, 0xFF]), icon2x: Data([0xFF, 0xD8, 0xFF]))
-
         let path = "/Applications/Broken.app"
-        provider.modificationDates[path] = Date()
+        let modificationDate = Date(timeIntervalSince1970: 4_000)
+        provider.modificationDates[path] = modificationDate
+        store.stored[1] = makeRecord(
+            icon1x: Data([0xFF, 0xD8, 0xFF]),
+            sourceModificationDate: modificationDate
+        )
 
         // Should return a valid image (either default or provider)
         let result = sut.icon(forItemId: 1, path: path)
         #expect(result.size.width > 0)
+        #expect(provider.fetchCallCount == 1)
     }
 
     // MARK: - disk hit + modification cache 命中（覆盖 isStillValid 的 current==cached 分支）
@@ -226,20 +340,26 @@ struct IconCacheTests {
         provider.modificationDates[path2] = Date(timeIntervalSince1970: 6000)
 
         // 预设 disk 数据，确保后续 disk hit（绕过 storeToDisk 在 headless 环境的不确定性）
-        store.stored[1] = (icon1x: pngData, icon2x: pngData)
-        store.stored[2] = (icon1x: pngData, icon2x: pngData)
+        store.stored[1] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: fixedDate
+        )
+        store.stored[2] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: Date(timeIntervalSince1970: 6000)
+        )
 
-        // 1. icon(path1): memory miss -> disk hit -> cachedModDate nil -> 比较 live -> isStillValid false -> live -> 存 memory(path1) + modCache(path1)
+        // 1. icon(path1): memory miss -> persisted date match -> disk hit.
         _ = sut.icon(forItemId: 1, path: path1)
-        // 2. icon(path2): memory miss -> disk hit -> live -> 存 memory(path2, evict path1) + modCache(path2)
+        // 2. icon(path2): memory miss -> disk hit -> memory evicts path1.
         _ = sut.icon(forItemId: 2, path: path2)
-        // 3. icon(path1): memory miss (evicted) -> disk hit -> modCache 命中 -> current==cached -> isStillValid true
+        // 3. icon(path1): memory miss -> persisted date still matches -> disk hit.
         let result = sut.icon(forItemId: 1, path: path1)
         #expect(result.size.width > 0)
     }
 
-    @Test("Disk hit + currentModDate 非 nil 但 modCache 未命中 -> 比较 live icon")
-    func diskHit_currentModDateSet_modCacheMiss_comparesLive() {
+    @Test("Disk record 时间与当前修改时间相同 -> 直接命中且不实时提取")
+    func diskHit_matchingPersistedDate_doesNotExtractLiveIcon() {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -248,15 +368,20 @@ struct IconCacheTests {
         let image = makeTestImage()
         let path = "/app"
         provider.icons[path] = image
-        provider.modificationDates[path] = Date()
+        let modificationDate = Date(timeIntervalSince1970: 7_000)
+        provider.modificationDates[path] = modificationDate
 
         // 直接预设 store 的 disk 数据（绕过 storeToDisk，使首次即 disk hit 且 modCache 为空）
         let pngData = makePNGData(image)
-        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+        store.stored[1] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: modificationDate
+        )
 
-        // 调用：memory miss -> disk hit -> currentModDate 非 nil -> cachedModDate nil -> 比较 live
         let result = sut.icon(forItemId: 1, path: path)
         #expect(result.size.width > 0)
+        #expect(provider.fetchCallCount == 0)
+        #expect(store.saveCallCount == 0)
     }
 
     // MARK: - storeToDisk PNG 编码失败分支
@@ -272,6 +397,7 @@ struct IconCacheTests {
         let image = makeTestImage()
         let path = "/app"
         provider.icons[path] = image
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 8_000)
 
         _ = sut.icon(forItemId: 1, path: path)
 
@@ -293,6 +419,7 @@ struct IconCacheTests {
         let image = makeTestImage()
         let path = "/app"
         provider.icons[path] = image
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 9_000)
 
         _ = sut.icon(forItemId: 1, path: path)
 
@@ -334,21 +461,24 @@ struct IconCacheTests {
         provider.icons[path] = image
         provider.modificationDates[path] = fixedDate
         // 预设 disk 数据
-        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+        store.stored[1] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: fixedDate
+        )
 
-        // 1. 首次调用：disk hit + cachedModDate nil -> 比较 live -> isStillValid false -> live -> 存 modCache(path)
+        // 1. 首次调用：持久化时间匹配，disk hit 并写入 memory cache。
         _ = sut.icon(forItemId: 1, path: path)
         // 2. 清空 memory cache（modCache 保留）
         sut.clearMemoryCache()
-        // 3. 再次调用：memory miss -> disk hit -> modCache 命中 -> current==cached -> isStillValid true
+        // 3. 再次调用：memory miss，持久化时间仍匹配，disk hit。
         let result = sut.icon(forItemId: 1, path: path)
         #expect(result.size.width > 0)
     }
 
-    // MARK: - P2-5: PNG vs TIFF 比较
+    // MARK: - Persisted source metadata
 
-    @Test("diskHit_modCacheMiss_sameIcon_noReextract — disk PNG 和 live TIFF 正确比较")
-    func diskHit_modCacheMiss_comparesTIFF() {
+    @Test("diskHit_modCacheMiss_sameDate_noReextract")
+    func diskHit_modCacheMiss_matchesPersistedDate() {
         let provider = MockIconProvider()
         let store = MockImageStore()
         let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
@@ -368,17 +498,72 @@ struct IconCacheTests {
         let pngData = makePNGData(renderedImage)
         let path = "/app"
         provider.icons[path] = renderedImage
-        provider.modificationDates[path] = Date()
+        let modificationDate = Date(timeIntervalSince1970: 10_000)
+        provider.modificationDates[path] = modificationDate
 
-        store.stored[1] = (icon1x: pngData, icon2x: pngData)
+        store.stored[1] = makeRecord(
+            icon1x: pngData,
+            sourceModificationDate: modificationDate
+        )
 
         let callsBefore = provider.fetchCallCount
         _ = sut.icon(forItemId: 1, path: path)
         let callsAfter = provider.fetchCallCount
 
-        // GREEN: 仅用于比较的一次调用（无 re-extraction），而非之前的 PNG/TIFF 误判导致的两次
-        #expect(callsAfter == callsBefore + 1,
-            "仅用于比较，不应重复提取")
+        #expect(callsAfter == callsBefore)
+    }
+
+    @Test("磁盘读取失败 -> 实时提取并用当前元数据回写")
+    func diskReadFailure_extractsLiveIcon() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let liveImage = makeTestImage()
+        let path = "/Applications/ReadFailure.app"
+        let modificationDate = Date(timeIntervalSince1970: 11_000)
+        store.fetchError = TestError.generic
+        provider.icons[path] = liveImage
+        provider.modificationDates[path] = modificationDate
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            pngEncoder: { _, _ in Data([0x01]) }
+        )
+
+        let result = sut.icon(forItemId: 3, path: path)
+
+        #expect(result === liveImage)
+        #expect(provider.fetchCallCount == 1)
+        #expect(store.fetchCallCount == 1)
+        #expect(store.saveCallCount == 1)
+        #expect(store.stored[3]?.sourceModificationDate == modificationDate)
+    }
+
+    @Test("磁盘保存失败 -> 返回实时图标并记录稳定错误类别")
+    func diskSaveFailure_returnsLiveIconAndLogsStableCategory() {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let liveImage = makeTestImage()
+        let path = "/Applications/SaveFailure.app"
+        let loggedExpectedCategory = DispatchSemaphore(value: 0)
+        store.saveError = TestError.generic
+        provider.icons[path] = liveImage
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 12_000)
+        let sut = IconCache(
+            iconProvider: provider,
+            imageStore: store,
+            pngEncoder: { _, _ in Data([0x01]) },
+            errorLogger: { category in
+                if category == "icon-cache-disk-save-failed" {
+                    loggedExpectedCategory.signal()
+                }
+            }
+        )
+
+        let result = sut.icon(forItemId: 4, path: path)
+
+        #expect(result === liveImage)
+        #expect(store.saveCallCount == 1)
+        #expect(loggedExpectedCategory.wait(timeout: .now()) == .success)
     }
 }
 #endif

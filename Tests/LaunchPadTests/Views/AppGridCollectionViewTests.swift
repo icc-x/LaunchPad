@@ -927,7 +927,8 @@ struct AppGridCollectionViewTests {
 
 // MARK: - Mock IconCaching
 
-private final class MockIconCaching: IconCaching, @unchecked Sendable {
+@MainActor
+private final class MockIconCaching: IconCaching {
     var iconResult = NSImage(size: NSSize(width: 64, height: 64))
 
     func icon(forItemId itemId: Int64, path: String) -> NSImage {
@@ -950,8 +951,8 @@ private final class MockDataStoring: DataStoring, @unchecked Sendable {
     func updateItem(_ item: PageItem) throws {}
     func deleteItem(id: Int64) throws {}
     func reorderItems(parentId: Int64, orderedIds: [Int64]) throws {}
-    func saveImage(itemId: Int64, icon1x: Data, icon2x: Data) throws {}
-    func fetchImage(itemId: Int64) throws -> (Data, Data)? { return nil }
+    func saveImage(itemId: Int64, record: CachedImageRecord) throws {}
+    func fetchImage(itemId: Int64) throws -> CachedImageRecord? { return nil }
 }
 
 // MARK: - Branch coverage: .app type with nil app data
