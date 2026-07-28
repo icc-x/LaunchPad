@@ -54,6 +54,47 @@ struct IconCacheTests {
         func snapshot() -> State { state.withLock { $0 } }
     }
 
+    private final class ThreadRecordingIconProvider: IconProviding {
+        struct State {
+            var modificationDateMainThreadFlags: [Bool] = []
+            var iconMainThreadFlags: [Bool] = []
+        }
+
+        private let state = OSAllocatedUnfairLock(initialState: State())
+        private let date = Date(timeIntervalSince1970: 8_000)
+
+        func icon(forPath path: String) -> NSImage {
+            state.withLock { $0.iconMainThreadFlags.append(Thread.isMainThread) }
+            guard let representation = NSBitmapImageRep(
+                bitmapDataPlanes: nil,
+                pixelsWide: 16,
+                pixelsHigh: 16,
+                bitsPerSample: 8,
+                samplesPerPixel: 4,
+                hasAlpha: true,
+                isPlanar: false,
+                colorSpaceName: .deviceRGB,
+                bytesPerRow: 16 * 4,
+                bitsPerPixel: 32
+            ), let cgImage = representation.cgImage else {
+                return NSImage(size: NSSize(width: 16, height: 16))
+            }
+            return NSImage(
+                cgImage: cgImage,
+                size: NSSize(width: 16, height: 16)
+            )
+        }
+
+        func modificationDate(forPath path: String) -> Date? {
+            state.withLock {
+                $0.modificationDateMainThreadFlags.append(Thread.isMainThread)
+            }
+            return date
+        }
+
+        func snapshot() -> State { state.withLock { $0 } }
+    }
+
     private final class BlockingImageStore: ImageStoring {
         struct State {
             var fetchStarted = false
@@ -195,15 +236,13 @@ struct IconCacheTests {
 
     @Test("磁盘 fetch/save 与 PNG encode 均离开 MainActor")
     func diskAndEncodingWorkRunsOffMainActor() async {
-        let provider = MockIconProvider()
+        let provider = ThreadRecordingIconProvider()
         let store = ThreadRecordingImageStore()
         let encodeFlags = OSAllocatedUnfairLock(initialState: [Bool]())
         let encoder = IconRasterEncoder { isMainThread in
             encodeFlags.withLock { $0.append(isMainThread) }
         }
         let path = "/Applications/Background.app"
-        provider.icons[path] = makeTestImage()
-        provider.modificationDates[path] = Date(timeIntervalSince1970: 8_000)
         let sut = IconCache(
             iconProvider: provider,
             imageStore: store,
@@ -218,6 +257,9 @@ struct IconCacheTests {
         await task.value
 
         let observed = store.snapshot()
+        let providerThreads = provider.snapshot()
+        #expect(providerThreads.modificationDateMainThreadFlags == [false])
+        #expect(providerThreads.iconMainThreadFlags == [true])
         #expect(observed.fetchMainThreadFlags == [false])
         #expect(observed.saveMainThreadFlags == [false])
         #expect(observed.savedRecords.count == 1)

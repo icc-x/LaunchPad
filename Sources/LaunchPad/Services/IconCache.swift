@@ -67,9 +67,13 @@ public final class IconCache: IconCaching {
         Task { @MainActor [weak self] in
             guard let self, !Task.isCancelled else { return }
             let cacheKey = NSString(string: path)
-            let currentModificationDate = iconProvider.modificationDate(
-                forPath: path
-            )
+            let iconProvider = self.iconProvider
+            let currentModificationDate = await Task.detached(
+                priority: .userInitiated
+            ) {
+                iconProvider.modificationDate(forPath: path)
+            }.value
+            guard !Task.isCancelled else { return }
 
             if let cachedImage = memoryCache.object(forKey: cacheKey) {
                 if let currentModificationDate,
