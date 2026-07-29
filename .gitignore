@@ -5,3 +5,5 @@
 .workbuddy
 .derivedData/
 .superpowers/
+.derivedData
+.swiftpm

@@ -35,17 +35,17 @@ LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、A
 
 | 维度 | 状态 |
 |------|------|
-| 编译（debug） | ✅ 0 errors, 0 warnings |
-| 编译（release） | ✅ 0 errors, 0 warnings |
-| 测试 | ✅ 1086 tests，0 失败 |
-| 行覆盖率 | 97.91%（2026-07-24 重新测量，42 个源文件，8144 行 / 170 行未覆盖） |
-| 区域覆盖率 | 94.11%（2026-07-24 重新测量，2664 区域 / 157 区域未覆盖） |
-| 函数覆盖率 | 93.62%（2026-07-24 重新测量，1098 函数 / 70 函数未覆盖） |
+| 编译（debug） | 普通构建可完成；warning 清理尚未完成 |
+| 编译（release） | 普通构建可完成；warnings-as-errors 未通过 |
+| 测试 | ✅ 1109 tests，0 失败（2026-07-29） |
+| 行覆盖率 | 97.91%（2026-07-24 历史测量，42 个源文件，8144 行 / 170 行未覆盖） |
+| 区域覆盖率 | 94.11%（2026-07-24 历史测量，2664 区域 / 157 区域未覆盖） |
+| 函数覆盖率 | 93.62%（2026-07-24 历史测量，1098 函数 / 70 函数未覆盖） |
 | 100% 行覆盖文件 | 23 / 42 个源文件 |
 | 代码签名 | ⏳ adhoc 签名，未公证 |
 | 手动功能验证 | ⏳ 0/13 执行 |
 
-> 覆盖率于 2026-07-24 通过 `llvm-cov report` 重新测量。此前于 2026-07-10 在 34 个源文件时曾达成全部文件真实 100%（`llvm-cov show` 逐文件验证）。当前因新增 8 个源文件（交互协调器、布局域状态、SQLite 事务、拖放会话等），覆盖率有待重新收敛。
+> 覆盖率数字仅保留为 2026-07-24 的历史测量。当前覆盖脚本存在失败退出码未传播、工具错误可被误判为满覆盖和本机路径硬编码问题，不能作为可信发布证据；整改状态见发布待办。
 
 ---
 
@@ -217,7 +217,7 @@ BIN=$(find .build -name LaunchPadPackageTests -type f -path "*MacOS*" | grep -v 
 xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-regex=".*Tests.*"
 ```
 
-**判据**：`llvm-cov report` 的行覆盖率数字存在噪声（swiftc/llvm-cov 的函数入口段计数器未递增误报），**以 `llvm-cov show` 输出中每个源文件段内"计数列为 0 的执行行数量 = 0"为准**。
+**当前限制**：以下命令只用于人工诊断。现有覆盖脚本尚未可靠传播构建、测试和 `llvm-cov` 失败，修复前不得把输出用作发布门禁或满覆盖证明。
 
 #### 关键陷阱与规避
 
@@ -229,7 +229,7 @@ xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-reg
 
 **陷阱二：按套件过滤运行**
 
-全量 `swift test --disable-sandbox --no-parallel` 可完整退出并产生 Swift Testing summary，零残留进程。P0 release gate 由 `scripts/test-release.sh` 统一编排。
+全量 `swift test` 可完整退出并产生 Swift Testing summary。`scripts/test-release.sh` 当前因性能测试清单过时而失败，修复前不能作为发布门禁。
 
 **规避**：全量测试可完整退出，但覆盖率收集仍建议按套件过滤运行（`--filter "<Suite名子串>"`），确保每个 profraw 正确落盘后由 `llvm-profdata merge` 合并。
 
@@ -267,7 +267,7 @@ xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-reg
 # Debug 构建
 swift build
 
-# Release 构建（0 warnings）
+# Release 构建（当前仍有 warning，warnings-as-errors 未通过）
 swift build -c release --product LaunchPadApp
 
 # 打包为 .app Bundle
@@ -282,7 +282,7 @@ swift build -c release --product LaunchPadApp
 # 全量测试（串行，禁用 sandbox）
 swift test --disable-sandbox --no-parallel
 
-# P0 release gate（完整门禁：编排上述命令 + 性能基准 + release build）
+# P0 release gate（当前因性能测试清单过时而失败）
 ./scripts/test-release.sh
 
 # 带覆盖率（按套件过滤运行，规避 AppKit 监视器卡死）
@@ -319,7 +319,7 @@ LaunchPad/
 │   │   └── Utilities/             # AnimationRunner / GridLayoutCalculator / ErrorRecovery
 │   └── LaunchPadApp/              # 可执行入口（main.swift）
 ├── Tests/
-│   └── LaunchPadTests/            # 44 个测试文件，1086 tests
+│   └── LaunchPadTests/            # 44 个测试文件，1109 tests
 │       ├── TestHelpers/           # MockProtocols / TestDataFactory
 │       ├── App/                   # AppDelegate / WindowController 测试
 │       ├── Controllers/           # 各 Controller 测试
@@ -341,10 +341,9 @@ LaunchPad/
 
 | 文档 | 内容 |
 |------|------|
+| [`docs/architecture.md`](docs/architecture.md) | LaunchPad 产品架构、核心交互与技术设计 |
+| [`docs/release-readiness-todo.md`](docs/release-readiness-todo.md) | 当前发布阻断与非阻断治理事项的唯一状态清单 |
 | [`docs/原始app技术实现参考.md`](docs/原始app技术实现参考.md) | 对系统 Dock 二进制的逆向分析，12 个技术维度的真实行为还原 |
-| [`docs/coverage-progress.md`](docs/coverage-progress.md) | 测试覆盖率提升全程记录，含方法论与陷阱复盘 |
-| [`docs/superpowers/findings/P1-P2-findings.md`](docs/superpowers/findings/P1-P2-findings.md) | P0 readiness gate review 遗留发现（P1/P2 级别） |
-| [`docs/superpowers/plans/2026-07-21-p0-release-blockers.md`](docs/superpowers/plans/2026-07-21-p0-release-blockers.md) | P0 release blockers 完整执行计划（24 个 task，已完成） |
 
 ---
 
