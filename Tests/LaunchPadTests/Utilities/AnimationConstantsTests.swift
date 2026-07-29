@@ -134,25 +134,34 @@ struct AnimationConstantsTests {
 
     // MARK: - Reduce Motion fallback verification
 
-    @Test("All animations have Reduce Motion fallback defined")
-    func allAnimations_haveReduceMotionFallback() {
-        let allAnimations: [(String, AnimationConstants.Animation)] = [
-            ("windowExpand", AnimationConstants.windowExpand),
-            ("windowCollapse", AnimationConstants.windowCollapse),
-            ("appLaunch", AnimationConstants.appLaunch),
-            ("pageScroll", AnimationConstants.pageScroll),
-            ("iconEntrance", AnimationConstants.iconEntrance),
-            ("jiggle", AnimationConstants.jiggle),
-            ("folderExpand", AnimationConstants.folderExpand),
-            ("folderCollapse", AnimationConstants.folderCollapse),
-            ("delete", AnimationConstants.delete),
-            ("dragDisplace", AnimationConstants.dragDisplace),
+    @Test("All animations use their declared Reduce Motion fallback")
+    func allAnimations_useDeclaredReduceMotionFallback() {
+        let animations = [
+            AnimationConstants.windowExpand,
+            AnimationConstants.windowCollapse,
+            AnimationConstants.appLaunch,
+            AnimationConstants.pageScroll,
+            AnimationConstants.iconEntrance,
+            AnimationConstants.jiggle,
+            AnimationConstants.folderExpand,
+            AnimationConstants.folderCollapse,
+            AnimationConstants.delete,
+            AnimationConstants.dragDisplace,
+        ]
+        let expected: [AnimationConstants.ReduceMotionFallback] = [
+            .fade(duration: 0.2),
+            .fade(duration: 0.2),
+            .instant,
+            .instant,
+            .instant,
+            .scalePulse,
+            .fade(duration: 0.15),
+            .fade(duration: 0.15),
+            .instant,
+            .instant,
         ]
 
-        for (name, animation) in allAnimations {
-            #expect(animation.reduceMotionFallback != nil,
-                    "\(name) missing Reduce Motion fallback definition")
-        }
+        #expect(animations.map(\.reduceMotionFallback) == expected)
     }
 
     @Test("Reduce Motion fallback durations all > 0 (except instant)")

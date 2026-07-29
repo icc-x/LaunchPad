@@ -11,7 +11,9 @@ public class SearchBar: NSSearchField {
     private var isShown = false
 
     /// 测试注入：驱动 hide 动画完成回调（同 EmptyStateView.hideCompletionRunner）。
-    internal var hideCompletionRunner: (@escaping () -> Void) -> Void = { $0() }
+    internal var hideCompletionRunner: (
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { $0() }
 
     // MARK: - Init
 
@@ -41,7 +43,9 @@ public class SearchBar: NSSearchField {
             NSAnimationContext.runAnimationGroup({ context in
                 context.duration = AnimationConstants.windowExpand.duration
                 self?.animator().alphaValue = 0
-            }, completionHandler: { completion() })
+            }, completionHandler: {
+                MainActor.assumeIsolated { completion() }
+            })
         }
     }
 

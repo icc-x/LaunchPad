@@ -41,7 +41,7 @@ class PageScrollView: NSScrollView {
     // MARK: - 核心分页逻辑
 
     override func scrollWheel(with event: NSEvent) {
-        processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
+        _ = processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
     }
 
     /// 处理单个滚动阶段的逻辑（从 scrollWheel 抽出，便于单元测试，避免依赖 NSEvent.phase 的构造）。

@@ -95,7 +95,10 @@ public class LaunchPadViewController: NSViewController {
     var launchCellResolver: ((PageItem) -> NSView?)?
 
     /// 启动动画调度器（默认走 DispatchQueue.main.asyncAfter，测试可注入为同步执行）
-    var launchAnimationScheduler: (TimeInterval, @escaping () -> Void) -> Void = { delay, block in
+    var launchAnimationScheduler: (
+        TimeInterval,
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { delay, block in
         DispatchQueue.main.asyncAfter(deadline: .now() + delay, execute: block)
     }
 

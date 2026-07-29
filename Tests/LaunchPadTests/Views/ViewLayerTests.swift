@@ -245,9 +245,9 @@ import AppKit
 
     @Test func emptyStateView_initCoder_producesValidInstance() throws {
         let original = EmptyStateView(frame: NSRect(x: 0, y: 0, width: 100, height: 100))
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
@@ -341,9 +341,9 @@ import AppKit
 
     @Test func searchBar_initCoder_producesValidInstance() throws {
         let original = SearchBar(frame: NSRect(x: 0, y: 0, width: 200, height: 30))
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
@@ -583,7 +583,9 @@ private func expectRowMajor(
         #expect(abs(fixture.scrollView.contentView.documentRect.width - 600) <= 0.5)
     }
 
-    @Test func compatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
+    @Test
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
+    func compatibilityMetricsStayBoundToClipViewportAcrossPrepares() {
         let viewportSize = CGSize(width: 300, height: 248)
         let fixture = makeGridFixture(
             itemCounts: [1, 1, 1], viewportSize: viewportSize
@@ -807,9 +809,9 @@ private func expectRowMajor(
 
     @Test func pageControlView_initCoder_producesValidInstance() throws {
         let original = PageControlView(viewModel: PageControlViewModel())
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)

@@ -2148,8 +2148,11 @@ struct LaunchPadViewControllerTests {
     // MARK: - init(coder:)
 
     @Test("init(coder:) 返回 nil（不支持 NSCoding）")
-    func init_coder_returnsNil() {
-        let unarchiver = NSKeyedUnarchiver(forReadingWith: Data())
+    func init_coder_returnsNil() throws {
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+        archiver.finishEncoding()
+        let unarchiver = try NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+        unarchiver.requiresSecureCoding = false
         let vc = LaunchPadViewController(coder: unarchiver)
         #expect(vc == nil)
     }
@@ -2369,14 +2372,17 @@ struct LaunchPadViewControllerTests {
         #expect(sut.pagingPageCount == 1)
     }
 
-    @Test("selectedIndex 兼容适配器从稳定 ID 投影展平索引")
-    func selectedIndexCompatibilityAdapterProjectsFlattenedIndex() async {
+    @Test("稳定 ID 选择和 selectedIndex 兼容适配器投影相同位置")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
+    func stableSelectionAndCompatibilityAdapterProjectSamePosition() async {
         let (sut, _, storage) = makeSUT()
         let apps = TestDataFactory.makeAppItems(count: 30)
         sut.viewportSizeProvider = { CGSize(width: 1440, height: 496) }
         await loadViewWithData(sut, storage: storage, apps: apps)
         sut.viewDidLayout()
 
+        #expect(sut.selectedItemID == nil)
+        #expect(sut.selectedItemIndexPath == nil)
         #expect(sut.selectedIndex == nil)
         _ = sut.selectItem(id: apps[29].id)
 

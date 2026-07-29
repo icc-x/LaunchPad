@@ -14,15 +14,23 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
 
     /// 测试注入：驱动「动画 + 完成回调」。生产环境使用真实 NSAnimationContext；
     /// 测试环境注入为同步立即触发完成回调，确定性覆盖 lifecycle.xxxDidFinish()。
-    internal var runAnimated: (_ duration: TimeInterval, _ animations: () -> Void, _ completion: @escaping () -> Void) -> Void = { duration, animations, completion in
+    internal var runAnimated: (
+        _ duration: TimeInterval,
+        _ animations: () -> Void,
+        _ completion: @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { duration, animations, completion in
         NSAnimationContext.runAnimationGroup({ ctx in
             ctx.duration = duration
             animations()
-        }, completionHandler: { completion() })
+        }, completionHandler: {
+            MainActor.assumeIsolated { completion() }
+        })
     }
 
     /// 测试注入：替代动画完成回调内的 DispatchQueue.main.async，使 lifecycle 状态推进可同步驱动。
-    internal var mainAsyncRunner: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+    internal var mainAsyncRunner: (
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { DispatchQueue.main.async(execute: $0) }
 
     internal nonisolated(unsafe) var mainActorDispatcher:
         (@escaping @MainActor @Sendable () -> Void) -> Void = { operation in

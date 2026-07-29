@@ -158,7 +158,9 @@ struct AppGridCollectionViewTests {
             ordering: 0,
             app: TestDataFactory.makeAppInfo(id: 1, title: "Layout")
         )
-        collectionView.updateLayout(screenWidth: 1280)
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1280, height: 620)
+        ))
         collectionView.reload(
             pages: [[item]],
             searchResults: nil,
@@ -188,17 +190,21 @@ struct AppGridCollectionViewTests {
     @Test func updateLayout_mediumScreen_9Columns() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        collectionView.updateLayout(screenWidth: 1600)
-        let params = GridLayoutCalculator.calculate(screenWidth: 1600)
-        #expect((params.columns) == (9))
+        let metrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1600, height: 620)
+        )
+        collectionView.applyGridMetrics(metrics)
+        #expect(collectionView.gridMetrics?.columns == 9)
     }
 
     @Test func updateLayout_largeScreen_10Columns() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
-        collectionView.updateLayout(screenWidth: 1920)
-        let params = GridLayoutCalculator.calculate(screenWidth: 1920)
-        #expect((params.columns) == (10))
+        let metrics = GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1920, height: 620)
+        )
+        collectionView.applyGridMetrics(metrics)
+        #expect(collectionView.gridMetrics?.columns == 10)
     }
 
     // MARK: - Cell Configuration
@@ -246,7 +252,9 @@ struct AppGridCollectionViewTests {
         let collectionView = fixture.collectionView
         let items = TestDataFactory.makeAppItems(count: 7)
         collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
-        collectionView.updateLayout(screenWidth: 1440)
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 620)
+        ))
 
         let rows = collectionView.accessibilityRows()
         #expect((rows) != nil)
@@ -354,7 +362,9 @@ struct AppGridCollectionViewTests {
         let collectionView = fixture.collectionView
         // 有数据时触发入场动画不应崩溃
         let items = TestDataFactory.makeAppItems(count: 10)
-        collectionView.updateLayout(screenWidth: 1440)
+        collectionView.applyGridMetrics(GridLayoutCalculator.calculate(
+            viewportSize: CGSize(width: 1440, height: 620)
+        ))
         collectionView.reload(pages: [items], searchResults: nil, searchQuery: nil)
         collectionView.layoutSubtreeIfNeeded()
     }
@@ -419,9 +429,12 @@ struct AppGridCollectionViewTests {
 
     // MARK: - Init(coder:)
 
-    @Test func init_coder_returnsNil() {
+    @Test func init_coder_returnsNil() throws {
         // NSCoding 不支持，init?(coder:) 应返回 nil（可测且不崩溃）
-        let coder = NSKeyedUnarchiver(forReadingWith: Data())
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
+        archiver.finishEncoding()
+        let coder = try NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
+        coder.requiresSecureCoding = false
         let view = AppGridCollectionView(coder: coder)
         #expect((view) == nil)
     }
@@ -639,6 +652,7 @@ struct AppGridCollectionViewTests {
     }
 
     @Test("legacy updateLayout 同时读取 clip view 两个有效轴")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
     func legacyUpdateLayoutUsesBothClipAxes() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView
@@ -661,6 +675,7 @@ struct AppGridCollectionViewTests {
     }
 
     @Test("legacy updateLayout 仅对每个无效 clip 轴独立回退")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
     func legacyUpdateLayoutFallsBackOnlyForInvalidClipAxes() {
         let fixture = makeSUT()
         let collectionView = fixture.collectionView

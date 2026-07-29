@@ -38,7 +38,10 @@ public class AppGridCollectionView: NSCollectionView {
     var cellViewProvider: ((IndexPath) -> NSView?)?
 
     /// 入场动画调度器（测试可注入为同步执行；默认走 DispatchQueue.main.asyncAfter）
-    var animationScheduler: ((TimeInterval, @escaping () -> Void) -> Void)?
+    var animationScheduler: ((
+        TimeInterval,
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void)?
 
     /// 可见 indexPath 提供器（测试可注入以驱动入场动画循环体；默认回退到 indexPathsForVisibleItems()）
     var visibleIndexPathsProvider: (() -> [IndexPath])?
@@ -169,7 +172,7 @@ public class AppGridCollectionView: NSCollectionView {
 
     /// 单个 cell 的入场动画（延迟后执行，抽出便于同步测试闭包体）
     func animateCellAppear(cellView: NSView, delay: TimeInterval) {
-        let block: () -> Void = { [weak self, weak cellView] in
+        let block: @MainActor @Sendable () -> Void = { [weak self, weak cellView] in
             self?.applyCellAppearAnimation(cellView: cellView)
         }
         if let scheduler = animationScheduler {
@@ -191,7 +194,7 @@ public class AppGridCollectionView: NSCollectionView {
             cellView.animator().alphaValue = 1
         }
         // 动画结束后重置 transform：经调度器触发（未注入时回退到 DispatchQueue.main.asyncAfter）
-        let block: () -> Void = { [weak self] in
+        let block: @MainActor @Sendable () -> Void = { [weak self] in
             self?.finalizeCellAppear(cellView: cellView)
         }
         if let scheduler = animationScheduler {

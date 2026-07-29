@@ -85,7 +85,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 主线程异步派发（默认 DispatchQueue.main.async，测试注入为同步执行以覆盖告警分支）
-    var mainAsyncRunner: (@escaping () -> Void) -> Void = { DispatchQueue.main.async(execute: $0) }
+    var mainAsyncRunner: (@escaping @MainActor @Sendable () -> Void) -> Void = {
+        DispatchQueue.main.async(execute: $0)
+    }
 
     /// 登录项状态读取（默认 SMAppService.mainApp.status，测试注入）
     var loginItemStatusProvider: () -> SMAppService.Status = { SMAppService.mainApp.status }
@@ -370,7 +372,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                 alert.messageText = "Option+Space 快捷键已被占用"
                 alert.informativeText = "另一个应用正在使用 Option+Space 快捷键。请关闭冲突应用或在 LaunchPad 设置中选择其他快捷键。"
                 alert.addButton(withTitle: "OK")
-                self.alertRunner(alert)
+                _ = self.alertRunner(alert)
             }
         } else if !registered {
             // 无 Input Monitoring 权限，引导用户授权

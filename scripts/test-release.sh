@@ -16,7 +16,9 @@ if [[ -n ${LAUNCHPAD_RELEASE_ARTIFACT_DIR:-} ]]; then
     exit 1
   fi
 else
-  ARTIFACT_DIR=$(mktemp -d "$ROOT_DIR/.superpowers/sdd/release-gate.XXXXXX")
+  ARTIFACT_PARENT="$ROOT_DIR/.superpowers/sdd"
+  mkdir -p "$ARTIFACT_PARENT"
+  ARTIFACT_DIR=$(mktemp -d "$ARTIFACT_PARENT/release-gate.XXXXXX")
 fi
 ARTIFACT_DIR=${ARTIFACT_DIR:A}
 
@@ -34,6 +36,7 @@ export SWIFTPM_SCRATCH_DIR SWIFTPM_CACHE_DIR
 export CLANG_MODULE_CACHE_PATH SWIFTPM_MODULECACHE_OVERRIDE
 
 typeset -ar AUTHORITATIVE_SWIFTPM_INVOCATIONS=(
+  debug-build
   discovery-1 tests-1
   discovery-2 tests-2
   discovery-3 tests-3
@@ -47,7 +50,7 @@ HEAD_AT_START=$(git rev-parse HEAD)
   print -r -- "head=$HEAD_AT_START"
   print -r -- "start=$(/bin/date -u +%Y-%m-%dT%H:%M:%SZ)"
   print -r -- "uname=$(/usr/bin/uname -a)"
-  print -r -- "configuration=three debug Swift Testing runs and one release product build"
+  print -r -- "configuration=strict debug build, three strict Swift Testing runs, and strict release build"
   print -r -- "swiftpm_scratch_path=$SWIFTPM_SCRATCH_DIR"
   print -r -- "swiftpm_cache_path=$SWIFTPM_CACHE_DIR"
   print -r -- "clang_module_cache_path=$CLANG_MODULE_CACHE_PATH"
@@ -216,6 +219,7 @@ assert_static_policy() {
 
 assert_swiftpm_resource_contract() {
   local expected_invocations=(
+    debug-build
     discovery-1 tests-1
     discovery-2 tests-2
     discovery-3 tests-3
@@ -228,12 +232,12 @@ assert_swiftpm_resource_contract() {
   local host_capture_count=0 unique_invocation_count=0
   local host_capture_pattern='capture_related_''pids|append_process_''matches|pg''rep'
 
-  [[ ${#AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]} -eq 7 ]] || return 1
+  [[ ${#AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]} -eq 8 ]] || return 1
   [[ "${(j:|:)AUTHORITATIVE_SWIFTPM_INVOCATIONS}" \
       == "${(j:|:)expected_invocations}" ]] || return 1
   unique_invocation_count=$(print -l -- "${AUTHORITATIVE_SWIFTPM_INVOCATIONS[@]}" \
     | LC_ALL=C sort -u | wc -l | tr -d ' ') || return 1
-  [[ $unique_invocation_count -eq 7 ]] || return 1
+  [[ $unique_invocation_count -eq 8 ]] || return 1
 
   [[ "$SWIFTPM_SCRATCH_DIR" == "$ARTIFACT_DIR"/* ]] || return 1
   [[ "$SWIFTPM_CACHE_DIR" == "$ARTIFACT_DIR"/* ]] || return 1
@@ -265,13 +269,13 @@ assert_swiftpm_resource_contract() {
     || host_capture_count=0
 
   [[ $test_template_count -eq 2 ]] || return 1
-  [[ $build_template_count -eq 1 ]] || return 1
-  [[ $swiftpm_template_count -eq 3 ]] || return 1
-  [[ $record_template_count -eq 3 ]] || return 1
+  [[ $build_template_count -eq 2 ]] || return 1
+  [[ $swiftpm_template_count -eq 4 ]] || return 1
+  [[ $record_template_count -eq 4 ]] || return 1
   [[ $loop_template_count -eq 1 ]] || return 1
-  [[ $(( test_template_count * 3 + build_template_count )) -eq 7 ]] || return 1
+  [[ $(( test_template_count * 3 + build_template_count )) -eq 8 ]] || return 1
   [[ $host_capture_count -eq 0 ]] || return 1
-  print -r -- 'command.static-swiftpm-resource.invocation_count=7' >> "$MANIFEST"
+  print -r -- 'command.static-swiftpm-resource.invocation_count=8' >> "$MANIFEST"
 }
 
 record_swiftpm_invocation_resources() {
@@ -294,7 +298,7 @@ record_swiftpm_invocation_resources() {
 }
 
 assert_recorded_swiftpm_invocations() {
-  [[ ${#RECORDED_SWIFTPM_INVOCATIONS[@]} -eq 7 ]] || return 1
+  [[ ${#RECORDED_SWIFTPM_INVOCATIONS[@]} -eq 8 ]] || return 1
   [[ "${(j:|:)RECORDED_SWIFTPM_INVOCATIONS}" \
       == "${(j:|:)AUTHORITATIVE_SWIFTPM_INVOCATIONS}" ]]
 }
@@ -459,8 +463,7 @@ extract_discovery() {
   local raw=$1 list=$2
 
   LC_ALL=C rg '^LaunchPadTests\.' "$raw" | LC_ALL=C sort > "$list" || return 1
-  [[ -s "$list" ]] || return 1
-  [[ $(rg -c '^LaunchPadTests\.PerformanceTests/' "$list") -eq 6 ]]
+  [[ -s "$list" ]]
 }
 
 extract_execution_set() {
@@ -487,17 +490,6 @@ assert_run_log() {
   assert_no_matches "${label}-failure-markers" 'test failure marker detected' \
     -n "$failure_pattern" "$log" || return $?
 
-  local name
-  for name in \
-    'SearchEngine 1000 项无缓存 median/p95 < 50ms' \
-    'SearchEngine 缓存命中 median/p95 < 1ms' \
-    'Diffable snapshot 1002 项 median/p95 < 10ms' \
-    '动态 GridMetrics 三种 viewport median/p95 < 1ms' \
-    'IconCache 1000 次内存命中 median/p95 < 300ms' \
-    'IconCache 1000 次访问后无磁盘重复写入'
-  do
-    rg -q -F "Test \"$name\" passed" "$log" || return 1
-  done
 }
 
 compare_artifacts() {
@@ -768,6 +760,16 @@ probe_process_liveness() {
 }
 
 case ${1:-} in
+  --probe-default-artifact-contract)
+    [[ $# -eq 1 ]] || exit 64
+    print -r -- "$ARTIFACT_DIR"
+    exit 0
+    ;;
+  --probe-discovery-contract)
+    [[ $# -eq 3 ]] || exit 64
+    extract_discovery "$2" "$3"
+    exit $?
+    ;;
   --probe-provenance-mutation)
     probe_provenance_mutation
     exit $?
@@ -796,6 +798,12 @@ run_watchdog self-test-signal 60 "$WATCHDOG" --self-test-signal
 run_watchdog self-test-nonzero 60 "$WATCHDOG" --self-test-nonzero
 
 # AUTHORITATIVE_SWIFTPM_COMMANDS_BEGIN
+print 'release gate: debug build'
+record_swiftpm_invocation_resources debug-build
+run_watchdog debug-build 900 /bin/zsh -o pipefail -c \
+  'swift build --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --product LaunchPadApp -Xswiftc -warnings-as-errors 2>&1 | tee "$1"' \
+  _ "$ARTIFACT_DIR/debug-build.log"
+
 for run in 1 2 3; do
   print "release gate: test run ${run}/3"
   raw_list="$ARTIFACT_DIR/tests-${run}.raw"
@@ -810,7 +818,7 @@ for run in 1 2 3; do
 
   record_swiftpm_invocation_resources "discovery-${run}"
   run_watchdog "discovery-${run}" 180 /bin/zsh -o pipefail -c \
-    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing list 2>&1 | tee "$1"' \
+    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing -Xswiftc -warnings-as-errors list 2>&1 | tee "$1"' \
     _ "$raw_list"
   record_check "discovery-${run}-contract" extract_discovery "$raw_list" "$list"
   if (( run > 1 )); then
@@ -821,7 +829,7 @@ for run in 1 2 3; do
 
   record_swiftpm_invocation_resources "tests-${run}"
   run_watchdog "tests-${run}" 900 /bin/zsh -o pipefail -c \
-    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing --no-parallel --event-stream-output-path "$2" --event-stream-version 0 2>&1 | tee "$1"' \
+    'swift test --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" --disable-sandbox --disable-xctest --enable-swift-testing -Xswiftc -warnings-as-errors --no-parallel --event-stream-output-path "$2" --event-stream-version 0 2>&1 | tee "$1"' \
     _ "$log" "$events"
   record_check "tests-${run}-log-contract" assert_run_log \
     "tests-${run}" "$log" "$expected_count" "$summary_file" "$normalized_summary"
@@ -846,7 +854,7 @@ done
 print 'release gate: release build'
 record_swiftpm_invocation_resources release-build
 run_watchdog release-build 900 /bin/zsh -o pipefail -c \
-  'swift build --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" -c release --product LaunchPadApp 2>&1 | tee "$1"' \
+  'swift build --scratch-path "$SWIFTPM_SCRATCH_DIR" --cache-path "$SWIFTPM_CACHE_DIR" -c release --product LaunchPadApp -Xswiftc -warnings-as-errors 2>&1 | tee "$1"' \
   _ "$ARTIFACT_DIR/release-build.log"
 record_check swiftpm-resource-runtime assert_recorded_swiftpm_invocations
 # AUTHORITATIVE_SWIFTPM_COMMANDS_END

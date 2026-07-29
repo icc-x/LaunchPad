@@ -19,9 +19,9 @@ struct TransientMessageViewTests {
     @Test("coder 初始化配置初始隐藏状态")
     func coderInitializerConfiguresInitialState() throws {
         let original = TransientMessageView(frame: NSRect(x: 0, y: 0, width: 100, height: 40))
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: archiver.encodedData)
         unarchiver.requiresSecureCoding = false

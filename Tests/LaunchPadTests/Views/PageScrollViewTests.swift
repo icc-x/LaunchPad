@@ -226,7 +226,9 @@ struct PageScrollViewTests {
         let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
         let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
         scrollView.documentView = documentView
-        scrollView.scrollToPage(1)
+        scrollView.configurePaging(pageWidth: 1440, pageCount: 3)
+        scrollView.scrollToPage(1, animated: false)
+        #expect(scrollView.contentView.bounds.origin.x == 1440)
     }
 
     @Test("scrollToPage with page 0 does not crash")
@@ -234,21 +236,33 @@ struct PageScrollViewTests {
         let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
         let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
         scrollView.documentView = documentView
-        scrollView.scrollToPage(0)
+        scrollView.configurePaging(pageWidth: 1440, pageCount: 3)
+        scrollView.scrollToPage(0, animated: false)
+        #expect(scrollView.contentView.bounds.origin.x == 0)
     }
 
     @Test("scrollToPage with custom pageWidth does not crash")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
     func scrollToPage_customPageWidth_noCrash() {
         let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
         let documentView = NSView(frame: NSRect(x: 0, y: 0, width: 1440 * 3, height: 900))
         scrollView.documentView = documentView
+        var pages: [Int] = []
+        scrollView.onPageChanged = { pages.append($0) }
+
         scrollView.scrollToPage(2, pageWidth: 720)
+
+        #expect(scrollView.pagingPageWidth == 720)
+        #expect(scrollView.pagingPageCount == 6)
+        #expect(pages == [2])
     }
 
     @Test("scrollToPage with zero pageWidth does not crash")
     func scrollToPage_zeroPageWidth_noCrash() {
         let scrollView = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        scrollView.scrollToPage(0, pageWidth: 0)
+        scrollView.configurePaging(pageWidth: 0, pageCount: 1)
+        scrollView.scrollToPage(0, animated: false)
+        #expect(scrollView.contentView.bounds.origin.x == 0)
     }
 
     @Test("configurePaging 后 scrollToPage 同步夹紧并通知")
@@ -298,6 +312,7 @@ struct PageScrollViewTests {
     }
 
     @Test("兼容 scrollToPage 在未显式配置时按文档宽度推导页数")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
     func legacyScrollToPageInfersPageCount() {
         let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
         sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
@@ -312,6 +327,7 @@ struct PageScrollViewTests {
     }
 
     @Test("显式单页配置不被兼容页数推导覆盖")
+    @available(*, deprecated, message: "Covers the deprecated compatibility API")
     func explicitSinglePageDoesNotUseLegacyInference() {
         let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
         sut.documentView = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
@@ -337,9 +353,9 @@ struct PageScrollViewTests {
     @Test("init?(coder:) produces valid instance")
     func initCoder_producesValidInstance() throws {
         let original = PageScrollView(frame: NSRect(x: 0, y: 0, width: 1440, height: 900))
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)

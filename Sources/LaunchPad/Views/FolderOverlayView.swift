@@ -99,7 +99,9 @@ public class FolderOverlayView: NSView {
     /// 测试注入：覆盖 AccessibilitySettings.current()，用于触发 reduced 动画分支
     internal var accessibilitySettingsProvider: () -> AccessibilitySettings = { .current() }
     /// 测试注入：驱动 closeFolder 动画完成回调，确定性覆盖 isHidden/onClosed 分支。
-    internal var closeFolderCompletionRunner: (@escaping () -> Void) -> Void = { $0() }
+    internal var closeFolderCompletionRunner: (
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { $0() }
     private var backgroundWidthConstraint: NSLayoutConstraint?
     private var backgroundHeightConstraint: NSLayoutConstraint?
 
@@ -264,7 +266,9 @@ public class FolderOverlayView: NSView {
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = AnimationConstants.folderCollapse.duration
                 self?.animator().alphaValue = 0
-            }, completionHandler: { completion() })
+            }, completionHandler: {
+                MainActor.assumeIsolated { completion() }
+            })
         }
     }
 

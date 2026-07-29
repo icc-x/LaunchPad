@@ -24,7 +24,7 @@
 
 | Task | 范围 | 状态 | 提交 | 验收证据 |
 |---|---|---|---|---|
-| 1 | 严格编译与发布门禁 | 待处理 | - | - |
+| 1 | 严格编译与发布门禁 | 已完成 | 本提交 | 三轮均发现并执行 1109 项/62 suites；严格 Debug、Release 与完整门禁通过 |
 | 2 | 可信覆盖率工具 | 待处理 | - | - |
 | 3 | 发布打包、签名与公证流程 | 待处理 | - | - |
 | 4 | 布局事务与 PageItem 不变量 | 待处理 | - | - |
@@ -38,7 +38,7 @@
 
 ### Task 1: Strict Builds And Deterministic Release Gate
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P0-6、P2-13
 
@@ -51,6 +51,13 @@
 - Modify: `Sources/LaunchPad/Views/FolderOverlayView.swift`
 - Modify: `Sources/LaunchPad/Views/PageScrollView.swift`
 - Modify: `Sources/LaunchPad/Views/SearchBar.swift`
+- Modify: `Tests/LaunchPadTests/Controllers/LaunchPadViewControllerTests.swift`
+- Modify: `Tests/LaunchPadTests/Utilities/AnimationConstantsTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/AppGridCollectionViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/FolderOverlayViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/PageScrollViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/TransientMessageViewTests.swift`
+- Modify: `Tests/LaunchPadTests/Views/ViewLayerTests.swift`
 - Modify: `scripts/test-release.sh`
 - Create: `scripts/tests/test-release-discovery.sh`
 
@@ -58,11 +65,11 @@
 - Consumes: Swift Testing discovery output and event-stream identity.
 - Produces: strict Sendable scheduling boundaries and a release gate whose discovered set is authoritative.
 
-- [ ] **Step 1: Mark Task 1 in progress**
+- [x] **Step 1: Mark Task 1 in progress**
 
 Change the table and this section to `进行中`; do not change Task 2.
 
-- [ ] **Step 2: Write a failing discovery-contract test**
+- [x] **Step 2: Write a failing discovery-contract test**
 
 Create a shell test with a five-entry `LaunchPadTests.PerformanceTests/...` fixture and an empty fixture. Invoke:
 
@@ -73,7 +80,7 @@ LAUNCHPAD_RELEASE_ARTIFACT_DIR="$tmp/artifacts" \
 
 The five-entry fixture must pass and compare byte-for-byte after sorting; the empty fixture must fail. First run must fail because the probe is absent and the production function requires six performance tests.
 
-- [ ] **Step 3: Make discovery data-driven**
+- [x] **Step 3: Make discovery data-driven**
 
 Replace the fixed count and fixed-name loop with:
 
@@ -87,7 +94,7 @@ extract_discovery() {
 
 Expose `--probe-discovery-contract` before normal execution. Keep `extract_execution_set` as the exhaustive discovery-versus-execution comparison.
 
-- [ ] **Step 4: Fix all 11 strict compiler diagnostics**
+- [x] **Step 4: Fix all 11 strict compiler diagnostics**
 
 Use `@MainActor @Sendable` for UI scheduling operations and `@Sendable` for completion closures in the eight listed Swift files. Preserve existing weak captures and closure bodies. Explicitly discard the two intentional return values:
 
@@ -96,11 +103,19 @@ _ = self.alertRunner(alert)
 _ = processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
 ```
 
-- [ ] **Step 5: Make the authoritative commands strict**
+- [x] **Step 5: Make the authoritative commands strict**
 
 Add `-Xswiftc -warnings-as-errors` to discovery, test and Release commands. Add one explicit Debug build using the same scratch/cache paths, then update `assert_swiftpm_resource_contract` for the extra authoritative invocation.
 
-- [ ] **Step 6: Verify Task 1**
+- [x] **Step 6: Verify Task 1**
+
+已解除阻塞（2026-07-29）：首次 `./scripts/test-release.sh` 在进入 SwiftPM 前退出 1，
+`mktemp` 报告默认父目录 `.superpowers/sdd` 不存在。新增默认目录回归测试先复现失败，
+脚本改为自行建立忽略的运行时父目录后，回归测试退出 0。
+
+提交闭环证据（2026-07-29）：修复后在未提交工作树重跑门禁时，manifest 记录
+`command.provenance-start.status=1`，证明门禁只接受干净 HEAD。形成可 amend 的 Task 提交后，
+门禁首尾 HEAD 与受控文件摘要完全一致。
 
 ```bash
 zsh scripts/tests/test-release-discovery.sh
@@ -111,12 +126,19 @@ swift test
 git diff --check
 ```
 
-- [ ] **Step 7: Complete and commit Task 1**
+- [x] **Step 7: Complete and commit Task 1**
+
+验收证据（2026-07-29）：`zsh scripts/tests/test-release-discovery.sh`、完整 `swift test`、
+`swift build --product LaunchPadApp -Xswiftc -warnings-as-errors`、严格 Release 构建和
+`git diff --check` 均退出 0。`./scripts/test-release.sh` 三轮发现集和执行集均为 1109 项，
+三轮摘要均为 1109 tests / 62 suites passed；8 次权威 SwiftPM 调用、静态策略、watchdog
+自测、残留进程检查、严格 Debug/Release 和首尾 provenance 状态全部为 0，最终
+`result.status=passed`。
 
 Write exact counts/results into the table, mark Task 1 `已完成`, and commit code, tests and plan together:
 
 ```bash
-git add Sources scripts docs/release-readiness-plan.md
+git add Sources Tests scripts docs/release-readiness-plan.md
 git commit -m "fix: enforce deterministic release builds"
 ```
 

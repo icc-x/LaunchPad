@@ -93,7 +93,7 @@ struct FolderOverlayViewTests {
     @Test
     func init_doesNotCrash() {
         let overlay = makeOverlay()
-        #expect(overlay != nil)
+        #expect(overlay.frame.size == CGSize(width: 800, height: 700))
     }
 
     @Test
@@ -396,9 +396,9 @@ struct FolderOverlayViewTests {
     func initCoder_producesValidInstance() throws {
         _ = makeOverlay()
         let original = FolderOverlayView(frame: NSRect(x: 0, y: 0, width: 800, height: 600))
-        let archiver = NSKeyedArchiver()
-        archiver.requiresSecureCoding = false
+        let archiver = NSKeyedArchiver(requiringSecureCoding: false)
         archiver.encode(original, forKey: "root")
+        archiver.finishEncoding()
         let data = archiver.encodedData
 
         let unarchiver = try NSKeyedUnarchiver(forReadingFrom: data)
@@ -465,7 +465,7 @@ struct FolderOverlayViewTests {
         let collectionView = NSCollectionView()
         let cell = overlay.collectionView(collectionView,
                                           itemForRepresentedObjectAt: IndexPath(item: 99, section: 99))
-        #expect(cell != nil)
+        #expect(type(of: cell) == NSCollectionViewItem.self)
     }
 
     // MARK: - Delegate

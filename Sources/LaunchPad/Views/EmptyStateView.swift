@@ -38,7 +38,9 @@ public class EmptyStateView: NSView {
             NSAnimationContext.runAnimationGroup({ ctx in
                 ctx.duration = 0.2
                 self?.animator().alphaValue = 0
-            }, completionHandler: { completion() })
+            }, completionHandler: {
+                MainActor.assumeIsolated { completion() }
+            })
         }
     }
 
@@ -56,7 +58,9 @@ public class EmptyStateView: NSView {
 
     /// 测试注入：驱动 hide 动画的完成回调。生产环境为真实 NSAnimationContext，
     /// 测试环境可注入为同步立即触发，确定性覆盖 `isHidden = true` 分支。
-    internal var hideCompletionRunner: (@escaping () -> Void) -> Void = { $0() }
+    internal var hideCompletionRunner: (
+        @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { $0() }
 
     public func hide(animated: Bool = true) {
         if animated {
