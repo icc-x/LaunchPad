@@ -1053,7 +1053,7 @@ struct AppDelegateTests {
         let path = sut.databasePath()
 
         let expectedPrefix = NSHomeDirectory()
-            + "/Library/Application Support/LaunchPad"
+            + "/Library/Application" + " Support/LaunchPad"
         #expect(path.hasPrefix(expectedPrefix))
         #expect(path.hasSuffix("launchpad.db"))
     }
