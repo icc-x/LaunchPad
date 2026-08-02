@@ -3585,10 +3585,12 @@ struct LaunchPadViewControllerTests {
         let (sut, _, _) = makeSUT()
 
         #expect(!sut.isViewLoaded)
-        #expect(sut.searchBar !== nil)
-        #expect(sut.pageControl !== nil)
-        #expect(sut.folderOverlay !== nil)
-        #expect(sut.transientMessageView !== nil)
+        // 访问即惰性创建；view 未加载时访问不崩溃且返回可用实例
+        #expect(sut.searchBar.stringValue == "")
+        #expect(sut.pageControl.accessibilityValue() as? Int == 1)
+        #expect(sut.folderOverlay.isHidden == true)
+        #expect(sut.transientMessageView.message == nil)
+        #expect(!sut.isViewLoaded)
     }
 }
 #endif
