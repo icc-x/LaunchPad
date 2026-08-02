@@ -175,6 +175,7 @@ assert_static_policy() {
   local performance_skip_pattern='--ski''p(=|[[:space:]]+)[^[:space:]]*PerformanceTests'
   local performance_switch_pattern='retr''y|threshold[ _-]*multiplier'
   local own_supervisor_pattern='run_with_timeou''t\(\)|se''tpgrp|se''tpgid|(^|[[:space:];])tr''ap[[:space:]]+'
+  local dead_layout_pattern='LayoutPersistence\.|saveLayout\('
 
   assert_no_matches legacy-xctest 'legacy test framework residue detected' \
     -n --glob '*.swift' "$legacy_pattern" Tests || return $?
@@ -214,6 +215,8 @@ assert_static_policy() {
     || return $?
   assert_no_matches second-supervisor 'second timeout supervisor detected' \
     -n --pcre2 "$own_supervisor_pattern" scripts/test-release.sh || return $?
+  assert_no_matches dead-layout-entrypoint 'dead layout persistence entrypoint detected' \
+    -n -U --pcre2 "$dead_layout_pattern" Sources Tests || return $?
   assert_swiftpm_resource_contract || return $?
 }
 

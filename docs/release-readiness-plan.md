@@ -294,7 +294,9 @@ git commit -m "feat: add release signing workflow"
 
 ### Task 4: Atomic Layout Boundary And Valid PageItem States
 
-**状态：待处理**
+**状态：已完成（P1-9、P3-3；P3-1 不变量不在本次范围，计划保留）**
+
+**验收证据（2026-08-02）：** 删除 `LayoutPersistence.swift` 与 ViewLayerTests 中 `LayoutPersistenceTests` 套件（5 个测试）；`rg 'LayoutPersistence\.|saveLayout\(' Sources Tests` 无命中；在 `scripts/test-release.sh` `assert_static_policy` 新增 `dead-layout-entrypoint` 静态策略（先加策略确认当前代码命中后删除，验证无残留）。全量 `swift test` 1104 tests / 61 suites 通过（1109 - 5）；严格 Debug/Release 构建退出 0；`git diff --check` 通过。`StorageManagerLayoutMutationTests` 的逐故障注入回滚测试与 `LayoutRepositoryTests` 的 rename 事务/错误传播测试维持全绿，满足 P1-9 与 P3-3 验收。
 
 **Covers:** P1-9、P3-1、P3-3
 
