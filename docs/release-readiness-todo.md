@@ -5,10 +5,10 @@
 
 ## 当前结论
 
-- 已修复：29 项
-- 部分修复：6 项
+- 已修复：35 项
+- 部分修复：0 项
 - 未修复：6 项
-- 待处理：12 项
+- 待处理：6 项
 - 发布结论：**当前不可正式发布**。六项发布阻断中 P0-6、P2-13 已清零，剩余 P1-11、P1-12、P1-13、P2-16 全部验收通过后，才能重新评估发布结论。
 
 状态定义：
@@ -69,35 +69,31 @@
 
 ### P1-9 布局写入仍未全部事务化
 
-- **状态**：部分修复
-- **现状**：拖放布局变更已通过领域 intent 和存储层事务执行，但遗留批量保存入口仍逐项写入。
-- **代码证据**：`Sources/LaunchPad/Services/LayoutRepository.swift:30-32` 将 `LayoutDropIntent` 交给存储层原子变更；`Sources/LaunchPad/Services/LayoutPersistence.swift:8-13` 明确注明无 batch/事务支持，并在循环中逐项 `updateItem`。
-- **剩余工作**：删除无生产调用的遗留保存入口，或为其提供原子 `saveLayoutBatch`；同时确认文件夹重命名与未来批量布局操作都遵守同一事务边界。
-- **验收标准**：对每类多步布局操作注入中间写失败，数据库快照与操作前完全一致；生产代码中不存在逐项提交的批量布局写入。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：无生产调用的遗留逐项写入入口已删除，生产布局写入只走 `LayoutDropIntent -> LayoutRepository -> StorageManager` 原子事务；文件夹重命名经 `updateItem` 单条事务并保留错误传播。
+- **代码证据**：`Sources/LaunchPad/Services/LayoutPersistence.swift` 已删除（含 `saveLayout` 与 `loadLayout`，均无生产调用）；`Sources/LaunchPad/Services/LayoutRepository.swift:30-32` 布局变更走存储层原子事务，`:34-46` `renameFolder` 单条事务写入。`Tests/LaunchPadTests/Storage/StorageManagerLayoutMutationTests.swift` 逐故障注入回滚测试与 `Tests/LaunchPadTests/Integration/IntegrationTests.swift` 回滚重开测试保持全绿。`scripts/test-release.sh` 静态策略新增 `dead-layout-entrypoint`（拒绝 `LayoutPersistence\.|saveLayout\()` 于 Sources/Tests）。
+- **验收结果**：2026-08-02 删除后 `rg 'LayoutPersistence\.|saveLayout\(' Sources Tests` 无命中；逐故障注入（BEGIN/read/item/page/insert/delete/COMMIT）回滚后 `persistedLayoutSnapshot() == before` 全部通过；全量 `swift test` 1104 tests / 61 suites 通过。
 
 ### P2-12 无障碍分页控件仍不完整
 
-- **状态**：部分修复
-- **现状**：主网格的分页与 section 映射问题已有重构，但页码控件仍只暴露角色和标签，VoiceOver 无法读取当前值或执行增减页操作。
-- **代码证据**：`Sources/LaunchPad/Views/PageControl.swift:86-94` 仅实现 `accessibilityRole()` 和 `accessibilityLabel()`，没有 value、increment 或 decrement action。
-- **剩余工作**：为页码控件提供当前页/总页数值、可调节角色及增减动作，并验证焦点、搜索态和文件夹分页状态。
-- **验收标准**：自动化测试覆盖 value、increment、decrement 和边界页；VoiceOver 可播报“当前页/总页数”并能切换页面。
+- **状态**：已修复（验收通过 2026-08-02；VoiceOver 真实播报留待外部验收）
+- **现状**：页码控件已改为可调节 slider 无障碍元素，暴露当前页/总页数值与增减页动作，动作复用现有 `selectDot → onDotSelected → update` 数据流并在越界时拒绝。
+- **代码证据**：`Sources/LaunchPad/Views/PageControl.swift:86-141` 实现 `accessibilityRole() == .slider`、`accessibilityValue()`（1 基当前页）、min/max、`accessibilityValueDescription()`（`Page N of M` / `No pages`）、`accessibilityIncrement`/`accessibilityDecrement`（`stepPage(by:)` 边界拒绝）。
+- **验收结果**：2026-08-02 新增 11 个测试（`PageControlAccessibilityTests`）覆盖零页、单页、中间页 increment/decrement、首页递减、末页递增及 value/min/max/描述/回调序列，全部通过；旧 `.group` 角色断言更新为 `.slider`。
 
 ### P2-14 视图与拖拽协调仍存在共享状态耦合
 
-- **状态**：部分修复
-- **现状**：SwiftPM target 依赖方向清晰，主网格委托已收敛到 `AppGridInteractionCoordinator`；但控制器、协调器和文件夹视图仍直接共享 `DragController`。
-- **代码证据**：`Package.swift:14-34` 的依赖方向为 `LaunchPadProtocols <- LaunchPad <- LaunchPadApp`；`Sources/LaunchPad/Controllers/LaunchPadViewController.swift:82,255`、`Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift:34,48` 和 `Sources/LaunchPad/Views/FolderOverlayView.swift:72` 都持有或接收 `DragController`。
-- **剩余工作**：定义由消费者拥有的窄事件/状态接口，明确编辑模式、拖拽会话和预览状态的唯一所有者，减少跨视图共享可变状态。
-- **验收标准**：依赖关系测试证明 View 不直接依赖上层控制器实现；拖拽开始、取消、跨页、入文件夹和结束各分支均只有一个状态写入者。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：消费者只依赖各自所需的窄拖拽协议，具体 `DragController` 仅由 AppDelegate 构造，View 层不再出现控制器实现标识符。
+- **代码证据**：`Sources/LaunchPad/Controllers/LaunchPadViewController.swift:6-18` 定义 `LaunchPadDragControlling`，`Sources/LaunchPad/Views/AppGridInteractionCoordinator.swift:9-21` 定义 `GridDragControlling`，`Sources/LaunchPad/Views/FolderOverlayView.swift:51-60` 定义 `FolderDragControlling`；`Sources/LaunchPad/Controllers/DragController.swift:257-268` 通过 extension 遵守三个协议（状态机 38 分支未改动）。`scripts/test-release.sh` 静态策略新增 `drag-controller-leak`（Views 目录不得出现 `DragController` 标识符）。
+- **验收结果**：2026-08-02 新增 8 个协议 fake 测试（begin/hover/结束/取消/预览回调注入）全部通过；`rg 'DragController' Sources/LaunchPad/Views` 无命中；拖拽全量测试（`DragController|AppGridInteractionCoordinator|FolderOverlayView` 等 295 项）通过。
 
 ### P2-15 测试有效性治理未完成
 
-- **状态**：部分修复
-- **现状**：明显的 `#expect(true)` 和真实 sleep 已清理，性能测试改为预热后 11 次采样并检查 median/p95；但尚无持续的弱断言审计和稳定基准环境。
-- **代码证据**：`Tests/LaunchPadTests/Performance/PerformanceTests.swift:9-35` 定义 11 次采样与预热，`:58-67` 计算 median/p95；仓库搜索 `rg '#expect\(true\)|Thread\.sleep|RunLoop\.current\.run' Tests/LaunchPadTests` 当前无命中。
-- **剩余工作**：建立弱断言/仅构造对象测试的审计规则；将对机器负载敏感的绝对耗时阈值放入受控性能环境，并区分功能门禁与趋势监控。
-- **验收标准**：静态审计规则进入 CI；关键失败、回滚与边界分支具备行为断言；性能基准在固定 runner 连续运行无偶发失败并保留趋势记录。
+- **状态**：已修复（验收通过 2026-08-02；GitHub 托管 runner 结果留待外部验收）
+- **现状**：弱断言与固定等待已有静态审计入口并进入 CI，功能门禁与性能趋势工作流分离；关键失败/回滚/边界分支的行为断言已由既有测试维持。
+- **代码证据**：`scripts/check-test-quality.sh` 拒绝 `#expect(true)`/`Thread.sleep`/`RunLoop.current.run`（默认扫描 Tests）；`scripts/tests/test-test-quality.sh` 自测验证坏 fixture 被拒、好 fixture 通过（TDD 先写自测后实现）。`.github/workflows/quality.yml` 在 push/PR 于 `macos-14` 与 `macos-14-xlarge` 双 runner 跑脚本自测、质量扫描、全量测试与严格 Debug/Release 构建；`.github/workflows/performance.yml` 仅手动/每周在固定 runner 采集 `--filter PerformanceTests --no-parallel` 日志并以 artifact 归档趋势。
+- **验收结果**：2026-08-02 `zsh scripts/tests/test-test-quality.sh` 通过；`./scripts/check-test-quality.sh` 对 Tests 扫描 clean；性能测试（预热后 11 次采样 median/p95）在门禁三轮运行中全部通过。
 
 ### P3-1 `PageItem` 仍可表达非法状态
 
@@ -109,11 +105,10 @@
 
 ### P3-3 遗留无生产调用入口尚未收敛
 
-- **状态**：部分修复
-- **现状**：旧评审中的多个死代码候选已接入生产链或删除，但 `LayoutPersistence.saveLayout` 仍只有测试调用。
-- **代码证据**：`Sources/LaunchPad/Controllers/LaunchPadViewController.swift:813` 已在生产路径调用 `WindowLifecycle.handleAppClick`，`Sources/LaunchPad/Storage/StorageManager.swift` 已实际抛出 `StorageError.queryFailed`；`rg 'LayoutPersistence\.saveLayout'` 仅命中 `Tests/LaunchPadTests/Views/ViewLayerTests.swift:160,168,178`。
-- **剩余工作**：逐项记录公共 API 的生产调用者和需求所有者；删除确认无需求的覆盖率驱动入口，或恢复真实调用链并补行为测试。
-- **验收标准**：死代码扫描和人工调用链审计无未解释项；保留的公开入口至少有一个生产调用者及对应行为测试。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：无生产调用的 `LayoutPersistence` 整个文件（含 `saveLayout` 与 `loadLayout`）已删除，门禁新增死代码扫描防回归。
+- **代码证据**：`Sources/LaunchPad/Services/LayoutPersistence.swift` 已删除；`Tests/LaunchPadTests/Views/ViewLayerTests.swift` 中 `LayoutPersistenceTests` 套件（5 个测试）已删除。`scripts/test-release.sh` 静态策略 `dead-layout-entrypoint` 拒绝 `LayoutPersistence\.|saveLayout\(` 于 Sources/Tests。
+- **验收结果**：2026-08-02 `rg 'LayoutPersistence\.|saveLayout\(' Sources Tests` 无命中；`MockItemWriter` 仍被 `ProtocolTests` 使用予以保留；全量 `swift test` 1104 tests / 61 suites 通过。
 
 ### P3-4 键码魔法数字仍散落
 
@@ -125,11 +120,10 @@
 
 ### P3-5 IUO 与强制解包仍有生命周期风险
 
-- **状态**：部分修复
-- **现状**：部分历史强制解包已改为可选访问，但关键 UI 与服务属性仍广泛使用隐式解包可选值，窗口初始化仍存在强制解包。
-- **代码证据**：`Sources/LaunchPad/Controllers/LaunchPadViewController.swift:68-74,176`、`Sources/LaunchPad/App/AppDelegate.swift:23-39` 使用多个 IUO；`Sources/LaunchPad/App/LaunchPadWindowController.swift:79` 强制解包 `panel.contentView`。`PageScrollView` 的 `documentView!` 已改为 `documentView?`（`:87`）。
-- **剩余工作**：按对象生命周期把必需依赖改为初始化注入，把延迟 UI 状态封装为明确状态或受控可选值，并在失败初始化/headless 测试中覆盖守卫分支。
-- **验收标准**：生产代码无未经证明的 IUO/强制解包；初始化失败和 view 未加载场景不崩溃，相关测试通过。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：生产代码 IUO 声明与强制解包已清零：必需依赖改为构造注入或 guard 消费，延迟 UI 状态改为惰性存储/计算属性（view 未加载访问安全，loadView 重建时重置为新实例），数据库路径与面板 contentView 提供确定性回退。
+- **代码证据**：`Sources/LaunchPad/App/AppDelegate.swift:23-41` 服务与控制器属性全部转可选并在消费点 guard（`setupHotkey`/`statusItemClicked`/本地事件监视器），`:497-507` `databasePath` 使用 `applicationSupportURLProvider`/`databaseDirectoryCreator` 注入点与 home 目录回退；`Sources/LaunchPad/Controllers/LaunchPadViewController.swift:66-140` 子视图改为惰性存储+`makeSubView` 计算属性，`loadView` 开头重置存储；`Sources/LaunchPad/Views/FolderOverlayView.swift` 子视图 lazy 化；`Sources/LaunchPad/Views/AppGridCollectionView.swift` dataSource lazy、cell 转换 `as?` guard；`Sources/LaunchPad/Views/AppGridFlowLayout.swift:88-94` `compactMap`；`Sources/LaunchPad/App/LaunchPadWindowController.swift:86-92` `contentView?.bounds ?? contentRect`。
+- **验收结果**：2026-08-02 新增 3 个测试（databasePath 回退/系统 URL 分支、view 未加载访问子视图）；`rg ':\s*[A-Za-z<>\[\](), .]+!\s*$' Sources --glob '*.swift'` 与强制解包扫描均无命中；全量 `swift test` 1126 tests / 64 suites 通过。
 
 ## 更新规则
 
