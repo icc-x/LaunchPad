@@ -5,11 +5,11 @@
 
 ## 当前结论
 
-- 已修复：27 项
-- 部分修复：7 项
-- 未修复：7 项
-- 待处理：14 项
-- 发布结论：**当前不可正式发布**。六项发布阻断全部验收通过后，才能重新评估发布结论。
+- 已修复：29 项
+- 部分修复：6 项
+- 未修复：6 项
+- 待处理：12 项
+- 发布结论：**当前不可正式发布**。六项发布阻断中 P0-6、P2-13 已清零，剩余 P1-11、P1-12、P1-13、P2-16 全部验收通过后，才能重新评估发布结论。
 
 状态定义：
 
@@ -21,11 +21,10 @@
 
 ### P0-6 发布测试门禁不可用
 
-- **状态**：部分修复
-- **现状**：`swift test` 已可稳定完成；但统一发布门禁仍在测试发现阶段失败，不能作为可信发布判据。
-- **代码证据**：`scripts/test-release.sh:463` 硬编码要求 `PerformanceTests` 恰好有 6 项；`Tests/LaunchPadTests/Performance/PerformanceTests.swift` 当前只有 5 个 `@Test`。`scripts/test-release.sh:492-497` 仍要求已经不存在的“SearchEngine 缓存命中”性能测试。
-- **剩余工作**：让门禁从实际测试发现结果生成执行集合，移除过时测试名称，并保持超时、残留进程和退出码校验。
-- **验收标准**：连续两次执行 `./scripts/test-release.sh` 均退出 0，发现集与执行集完全一致，无跳过、超时、残留进程或失败标记。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：门禁已改为从实际测试发现结果生成执行集合，三轮运行均要求发现集与执行集完全一致，过时测试名称硬编码已移除。
+- **代码证据**：`scripts/test-release.sh:462-467` `extract_discovery` 从 `swift test ... list` 提取发现集，`:469-478` `extract_execution_set` 校验执行集数量、事件版本与发现集 `cmp` 一致，`:480-493` `assert_run_log` 校验汇总行与失败标记；`:817-849` 三轮 `discovery-N`/`tests-N` 均通过 `run_watchdog` 执行并对比轮间稳定性。脚本中已无“恰好 6 项”或“SearchEngine 缓存命中”硬编码。
+- **验收结果**：2026-08-02 连续两次执行 `./scripts/test-release.sh` 均退出 0；两次 manifest 共 40 项 `command.*.status`/`check.*.status` 全部为 0；三轮均为 `✔ Test run with 1109 tests in 62 suites passed`，无跳过、超时、残留进程或失败标记。
 
 ### P1-11 缺少正式发布签名、公证和权限链
 
@@ -53,11 +52,10 @@
 
 ### P2-13 Release 严格告警门禁未通过
 
-- **状态**：未修复
-- **现状**：普通 Release 构建可完成，但将 warning 视为 error 后仍失败，Swift 6 并发与普通编译告警尚未清零。
-- **代码证据**：`Package.swift:1` 使用 Swift tools 6.0；`scripts/test-release.sh:846-850` 的 Release 构建没有启用 warnings-as-errors。2026-07-29 复核命令 `swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors` 至少产生 11 个错误。
-- **剩余工作**：逐项消除 actor 隔离、Sendable 捕获和未使用值等告警，再把 warnings-as-errors 加入统一发布门禁。
-- **验收标准**：Debug 与 Release 的 `swift build ... -Xswiftc -warnings-as-errors` 均退出 0，随后 `./scripts/test-release.sh` 也以相同严格度通过。
+- **状态**：已修复（验收通过 2026-08-02）
+- **现状**：actor 隔离、Sendable 捕获与未使用值等告警已清零，warnings-as-errors 已纳入统一发布门禁的 Debug 构建、测试发现、测试执行与 Release 构建全部环节。
+- **代码证据**：`scripts/test-release.sh:802-806` debug-build、`:819-823` discovery、`:830-834` tests、`:851-856` release-build 均带 `-Xswiftc -warnings-as-errors`；修复提交 `88f6e25 fix: enforce deterministic release builds`（2026-07-29）清理了 App/Views/Controllers 与测试中的告警来源。
+- **验收结果**：2026-08-02 复核 `swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors` 与 Debug 同参数构建均退出 0；随后 `./scripts/test-release.sh` 以相同严格度连续两次退出 0（见 P0-6 验收结果）。
 
 ### P2-16 发布与覆盖工具不可移植
 
