@@ -444,7 +444,9 @@ git commit -m "feat: make page control accessible"
 
 ### Task 6: Narrow Drag Ownership And Named Key Codes
 
-**状态：待处理**
+**状态：已完成（P2-14；P3-4 键码常量不在本次范围，计划保留）**
+
+**验收证据（2026-08-02）：** 新增三个窄协议 `LaunchPadDragControlling`（LaunchPadViewController.swift 旁）、`GridDragControlling`（AppGridInteractionCoordinator.swift 旁）、`FolderDragControlling`（FolderOverlayView.swift 旁），只声明各消费者实际使用的状态与命令；`DragController` 通过 extension 遵守（状态机分支未改动），仅 AppDelegate 构造具体控制器。`FolderOverlayView.dragController` 由 `public` 降为 internal 协议类型。新增 8 个协议 fake 测试（先写失败测试：协议不存在编译失败），覆盖 begin/hover/结束/取消/预览回调注入；既有 `state == .idle` 断言改为 `isIdle`。`scripts/test-release.sh` 新增 `drag-controller-leak` 静态策略：Views 目录不得出现 `DragController` 标识符。全量 `swift test` 1123 tests / 64 suites 通过；严格 Debug/Release 构建退出 0；`git diff --check` 通过。
 
 **Covers:** P2-14、P3-4
 

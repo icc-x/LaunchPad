@@ -1647,4 +1647,160 @@ struct FolderOverlayViewTests {
         #expect(weakOverlay == nil)
     }
 }
+
+// MARK: - Narrow drag protocol coupling
+
+@MainActor
+private final class FolderDragFake: FolderDragControlling {
+    var session: DragSession?
+    var begunSessions: [DragSession] = []
+    var hoverUpdates: [DragHoverDestination] = []
+    var cancelCount = 0
+    var finishCount = 0
+
+    func beginDrag(_ session: DragSession) {
+        begunSessions.append(session)
+        self.session = session
+    }
+
+    func updateDragHover(_ destination: DragHoverDestination) {
+        hoverUpdates.append(destination)
+    }
+
+    func cancelDrag() {
+        cancelCount += 1
+        session = nil
+    }
+
+    func finishDrag() {
+        finishCount += 1
+        session = nil
+    }
+}
+
+@MainActor
+@Suite("FolderOverlayView narrow drag protocol")
+struct FolderOverlayNarrowProtocolTests {
+
+    private func makeOverlay() -> FolderOverlayView {
+        let overlay = FolderOverlayView(
+            frame: NSRect(x: 0, y: 0, width: 800, height: 700)
+        )
+        overlay.folderViewportSizeProvider = {
+            CGSize(width: 800, height: 624)
+        }
+        overlay.closeFolderCompletionRunner = { $0() }
+        return overlay
+    }
+
+    private func makeFolderChildSession(
+        itemID: Int64 = 10,
+        folderID: Int64 = 50
+    ) -> DragSession {
+        DragSession(
+            itemID: itemID,
+            itemUUID: "00000000-0000-0000-0000-\(String(format: "%012lld", itemID))",
+            itemType: .app,
+            sourceKind: .folderChild,
+            sourceParentID: folderID,
+            sourceVisualIndex: 0
+        )
+    }
+
+    @Test("folder child 拖拽通过窄协议启动")
+    func folderChildDrag_goesThroughProtocol() {
+        let overlay = makeOverlay()
+        let fake = FolderDragFake()
+        overlay.dragController = fake
+        let folder = TestDataFactory.makePageItem(
+            id: 50,
+            uuid: "10000000-0000-0000-0000-000000000050",
+            type: .group,
+            ordering: 0,
+            parentId: 1,
+            group: TestDataFactory.makeGroupInfo(id: 50, title: "Folder")
+        )
+        let child = TestDataFactory.makePageItem(
+            id: 10,
+            uuid: "00000000-0000-0000-0000-000000000010",
+            type: .app,
+            ordering: 0,
+            parentId: 50,
+            app: TestDataFactory.makeAppInfo(id: 10, title: "A10")
+        )
+        overlay.openFolder(item: folder, childItems: [child], iconCache: nil)
+
+        let path = IndexPath(item: 0, section: 0)
+        let writer = overlay.folderCollectionView.delegate?
+            .collectionView?(overlay.folderCollectionView, pasteboardWriterForItemAt: path)
+
+        #expect(writer != nil)
+        #expect(fake.begunSessions.count == 1)
+        #expect(fake.begunSessions.first?.itemID == child.id)
+        #expect(fake.session?.itemID == child.id)
+    }
+
+    @Test("拒绝的 folder drop 通过窄协议取消")
+    func rejectedDrop_cancelsThroughProtocol() {
+        let overlay = makeOverlay()
+        let fake = FolderDragFake()
+        overlay.dragController = fake
+        let folder = TestDataFactory.makePageItem(
+            id: 50,
+            uuid: "10000000-0000-0000-0000-000000000050",
+            type: .group,
+            ordering: 0,
+            parentId: 1,
+            group: TestDataFactory.makeGroupInfo(id: 50, title: "Folder")
+        )
+        overlay.openFolder(item: folder, childItems: [], iconCache: nil)
+        let session = makeFolderChildSession()
+        fake.beginDrag(session)
+        overlay.pasteboardUUIDReader = { _ in session.itemUUID }
+
+        let info = MockDraggingInfo(
+            pasteboard: NSPasteboard(name: .init("folder-protocol-\(UUID().uuidString)")),
+            location: NSPoint(x: 0, y: 0)
+        )
+        let accepted = overlay.folderCollectionView.delegate?
+            .collectionView?(
+                overlay.folderCollectionView,
+                acceptDrop: info,
+                indexPath: IndexPath(item: 0, section: 0),
+                dropOperation: .before
+            )
+
+        #expect(accepted == false)
+        #expect(fake.cancelCount == 1)
+        #expect(fake.session == nil)
+    }
+
+    @Test("folder 拖拽结束通过窄协议收尾")
+    func dragEnded_goesThroughProtocol() {
+        let overlay = makeOverlay()
+        let fake = FolderDragFake()
+        overlay.dragController = fake
+        let folder = TestDataFactory.makePageItem(
+            id: 50,
+            uuid: "10000000-0000-0000-0000-000000000050",
+            type: .group,
+            ordering: 0,
+            parentId: 1,
+            group: TestDataFactory.makeGroupInfo(id: 50, title: "Folder")
+        )
+        overlay.openFolder(item: folder, childItems: [], iconCache: nil)
+        fake.beginDrag(makeFolderChildSession())
+
+        overlay.folderCollectionView.delegate?
+            .collectionView?(
+                overlay.folderCollectionView,
+                draggingSession: NSDraggingSession(),
+                endedAt: .zero,
+                dragOperation: .move
+            )
+
+        #expect(fake.finishCount == 1)
+        #expect(fake.session == nil)
+    }
+}
 #endif

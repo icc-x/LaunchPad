@@ -469,7 +469,7 @@ struct LaunchPadWindowControllerTests {
         sut.controller.lifecycle(sut.lifecycle, didTransitionTo: .closing)
 
         #expect(sut.viewController.dragController.session == nil)
-        #expect(sut.viewController.dragController.state == .idle)
+        #expect(sut.viewController.dragController.isIdle)
         #expect(sut.scheduler.scheduledActions.isEmpty)
         #expect(previewChanges.last == .some(nil))
     }
@@ -496,7 +496,7 @@ struct LaunchPadWindowControllerTests {
         sut.controller.lifecycle(sut.lifecycle, didTransitionTo: .hidden)
 
         #expect(sut.viewController.dragController.session == nil)
-        #expect(sut.viewController.dragController.state == .idle)
+        #expect(sut.viewController.dragController.isIdle)
         #expect(sut.scheduler.scheduledActions.isEmpty)
         #expect(previewChanges.last == .some(nil))
         #expect(sut.controller.window?.isVisible == false)

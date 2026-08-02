@@ -253,6 +253,18 @@ public final class DragController {
     static let iconHoverDuration: TimeInterval = 0.8
 }
 
+// MARK: - 窄协议遵守（消费者只依赖各自所需的接口）
+
+extension DragController: LaunchPadDragControlling {
+    var isIdle: Bool { state == .idle }
+    var isJiggling: Bool { state == .jiggling }
+    var isDragging: Bool { state == .dragging }
+}
+
+extension DragController: GridDragControlling {}
+
+extension DragController: FolderDragControlling {}
+
 /// 生产环境调度器
 @MainActor
 public final class DispatchQueueScheduler: Scheduler {

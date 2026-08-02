@@ -3,6 +3,22 @@ import Foundation
 import AppKit
 import LaunchPadProtocols
 
+/// 主视图控制器拖拽消费方所需的窄接口（由 `DragController` 遵守）。
+@MainActor
+protocol LaunchPadDragControlling: AnyObject {
+    var isIdle: Bool { get }
+    var isJiggling: Bool { get }
+    var isDragging: Bool { get }
+    var session: DragSession? { get }
+    var onPageChange: ((DragPageDirection) -> Void)? { get set }
+    func handlePressBegan(at point: CGPoint)
+    func handleDragMoved(to point: CGPoint)
+    func handlePressEnded()
+    func handleCancel()
+    func cancelDrag()
+    func finishDrag()
+}
+
 struct LayoutDropFailureEvent: Sendable, Equatable {
     let kind: String
     let sourceID: Int64
@@ -79,7 +95,7 @@ public class LaunchPadViewController: NSViewController {
     private let layoutRepository: any LayoutRepositoryProtocol
     private let iconCache: any IconCaching
     let keyboardNavigator: KeyboardNavigator
-    let dragController: DragController
+    let dragController: any LaunchPadDragControlling & GridDragControlling & FolderDragControlling
     private let applicationOpener: (URL) -> Void
     /// 窗口生命周期状态机（nil 时回退到 applicationOpener）
     public var lifecycle: WindowLifecycle?
@@ -222,7 +238,7 @@ public class LaunchPadViewController: NSViewController {
         layoutRepository: any LayoutRepositoryProtocol,
         iconCache: any IconCaching,
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
-        dragController: DragController,
+        dragController: any LaunchPadDragControlling & GridDragControlling & FolderDragControlling,
         applicationOpener: @escaping (URL) -> Void,
         searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {
@@ -548,10 +564,10 @@ public class LaunchPadViewController: NSViewController {
         case .changed:
             dragController.handleDragMoved(to: location)
         case .ended, .cancelled, .failed:
-            if dragController.state == .jiggling {
+            if dragController.isJiggling {
                 // 长按结束时已在抖动状态 → 保持抖动（编辑模式）
                 updateJiggleState()
-            } else if dragController.state == .dragging {
+            } else if dragController.isDragging {
                 // Native drag 由 AppKit 的 draggingSession ended 回调统一清理。
                 if dragController.session == nil {
                     dragController.finishDrag()
@@ -568,7 +584,7 @@ public class LaunchPadViewController: NSViewController {
     /// 根据 DragController 状态更新所有可见 cell 的抖动
     func updateJiggleState() {
         // 同步键盘导航器模式（不依赖视图加载状态）
-        let jiggling = dragController.state == .jiggling
+        let jiggling = dragController.isJiggling
         keyboardNavigator.mode = jiggling ? .edit : .idle
         guard isViewLoaded else { return }
         for indexPath in visibleJiggleIndexPathsProvider?() ?? Array(collectionView.indexPathsForVisibleItems()) {

@@ -46,6 +46,16 @@ private final class ScrollObservationOwner: @unchecked Sendable {
     }
 }
 
+/// 文件夹浮层拖拽消费方所需的窄接口（由具体拖拽状态机遵守）。
+@MainActor
+protocol FolderDragControlling: AnyObject {
+    var session: DragSession? { get }
+    func beginDrag(_ session: DragSession)
+    func updateDragHover(_ destination: DragHoverDestination)
+    func cancelDrag()
+    func finishDrag()
+}
+
 /// 文件夹展开浮动面板
 /// 当用户点击文件夹时弹出，显示文件夹内的应用
 /// 本视图覆盖整个父视图，backgroundView 为实际面板，
@@ -69,7 +79,8 @@ public class FolderOverlayView: NSView {
     /// 文件夹浮层内的拖放交互当前是否可用。
     public var isDragEnabled = true
 
-    public var dragController: DragController?
+    /// 拖拽会话提供者（由具体拖拽状态机遵守的窄协议）
+    var dragController: (any FolderDragControlling)?
     public var onDropRequested: ((DragSession, FolderDropDestination) -> Bool)?
     public var topLevelPlacementResolver: ((NSPoint) -> ItemPlacement?)?
     public private(set) var currentFolderID: Int64?

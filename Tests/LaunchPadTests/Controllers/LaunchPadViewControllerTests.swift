@@ -1993,7 +1993,7 @@ struct LaunchPadViewControllerTests {
         #expect(mutator.appliedIntents == [.deleteApp(itemID: 10)])
         #expect(storage.deletedIds.isEmpty)
         // handleItemDelete → dragController.handleCancel → idle
-        #expect(sut.dragController.state == .idle)
+        #expect(sut.dragController.isIdle)
     }
 
     @Test("普通 app 删除通过布局事务压密同页 ordering")

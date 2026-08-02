@@ -907,3 +907,170 @@ struct AppGridInteractionCoordinatorTests {
     }
 }
 #endif
+
+// MARK: - Narrow drag protocol coupling
+
+@MainActor
+private final class GridDragFake: GridDragControlling {
+    var session: DragSession?
+    var onFolderCreationPreviewChanged: ((Int64?) -> Void)?
+    var begunSessions: [DragSession] = []
+    var hoverUpdates: [DragHoverDestination] = []
+    var cancelCount = 0
+    var finishCount = 0
+    var handleCancelCount = 0
+
+    func beginDrag(_ session: DragSession) {
+        begunSessions.append(session)
+        self.session = session
+    }
+
+    func updateDragHover(_ destination: DragHoverDestination) {
+        hoverUpdates.append(destination)
+    }
+
+    func cancelDrag() {
+        cancelCount += 1
+        session = nil
+    }
+
+    func finishDrag() {
+        finishCount += 1
+        session = nil
+    }
+
+    func handleCancel() {
+        handleCancelCount += 1
+        session = nil
+    }
+}
+
+@MainActor
+@Suite("AppGridInteractionCoordinator narrow drag protocol")
+struct GridCoordinatorNarrowProtocolTests {
+
+    private func makeSUT() -> (
+        host: InteractionHost,
+        coordinator: AppGridInteractionCoordinator,
+        fake: GridDragFake
+    ) {
+        let host = InteractionHost()
+        host.collectionViewForDelegateInstallation.frame =
+            NSRect(x: 0, y: 0, width: 800, height: 620)
+        let fake = GridDragFake()
+        let coordinator = AppGridInteractionCoordinator(
+            dragController: fake,
+            pasteboardUUIDReader: { _ in nil }
+        )
+        coordinator.attach(to: host)
+        return (host, coordinator, fake)
+    }
+
+    private func makeAppItem(id: Int64) -> PageItem {
+        TestDataFactory.makePageItem(
+            id: id,
+            uuid: "00000000-0000-0000-0000-\(String(format: "%012lld", id))",
+            type: .app,
+            ordering: 0,
+            parentId: 100,
+            app: TestDataFactory.makeAppInfo(id: id, title: "A\(id)")
+        )
+    }
+
+    private func makeSession(for item: PageItem) -> DragSession {
+        DragSession(
+            itemID: item.id,
+            itemUUID: item.uuid,
+            itemType: item.type,
+            sourceKind: .topLevel,
+            sourceParentID: 100,
+            sourceVisualIndex: 0
+        )
+    }
+
+    @Test("pasteboardWriterForItemAt 通过窄协议启动拖拽")
+    func beginDrag_goesThroughProtocol() {
+        let (host, coordinator, fake) = makeSUT()
+        let item = makeAppItem(id: 1)
+        let path = IndexPath(item: 0, section: 0)
+        host.install(item, at: path)
+        coordinator.pasteboardUUIDReader = { _ in item.uuid }
+
+        let writer = coordinator.collectionView(
+            host.collectionViewForDelegateInstallation,
+            pasteboardWriterForItemAt: path
+        )
+
+        #expect(writer != nil)
+        #expect(fake.begunSessions.count == 1)
+        #expect(fake.begunSessions.first?.itemID == item.id)
+        #expect(fake.session?.itemID == item.id)
+    }
+
+    @Test("validateDrop 通过窄协议更新 hover")
+    func validateDrop_goesThroughProtocol() {
+        let (host, coordinator, fake) = makeSUT()
+        let item = makeAppItem(id: 1)
+        let path = IndexPath(item: 0, section: 0)
+        host.install(item, at: path)
+        host.resolvedPath = path
+        host.frames[path] = NSRect(x: 0, y: 0, width: 100, height: 100)
+        host.emptyPlacementResult = .beforeItem(itemID: item.id)
+        coordinator.pasteboardUUIDReader = { _ in item.uuid }
+        fake.beginDrag(makeSession(for: item))
+
+        let info = MockDraggingInfo(
+            pasteboard: NSPasteboard(name: .init("grid-protocol-\(UUID().uuidString)")),
+            location: NSPoint(x: 400, y: 300)
+        )
+        var operation = NSCollectionView.DropOperation.before
+        var proposed = NSIndexPath(index: 0)
+        let pointer = AutoreleasingUnsafeMutablePointer<NSIndexPath>(&proposed)
+        _ = coordinator.collectionView(
+            host.collectionViewForDelegateInstallation,
+            validateDrop: info,
+            proposedIndexPath: pointer,
+            dropOperation: &operation
+        )
+
+        #expect(!fake.hoverUpdates.isEmpty)
+    }
+
+    @Test("draggingSession ended 通过窄协议收尾")
+    func dragEnded_goesThroughProtocol() {
+        let (host, coordinator, fake) = makeSUT()
+        let item = makeAppItem(id: 1)
+        fake.beginDrag(makeSession(for: item))
+
+        coordinator.collectionView(
+            host.collectionViewForDelegateInstallation,
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: .move
+        )
+
+        #expect(fake.finishCount == 1)
+        #expect(fake.session == nil)
+    }
+
+    @Test("attach 把预览回调接入窄协议")
+    func attach_wiresPreviewCallbackThroughProtocol() {
+        // 显式持有 coordinator：collectionView.delegate 是弱引用，丢弃即释放
+        let (host, coordinator, fake) = makeSUT()
+
+        #expect(fake.onFolderCreationPreviewChanged != nil)
+        fake.onFolderCreationPreviewChanged?(7)
+        #expect(coordinator !== nil)
+        #expect(host.previewCalls == [7])
+    }
+
+    @Test("禁用拖拽通过窄协议取消会话")
+    func disableDrag_cancelsThroughProtocol() {
+        let (_, coordinator, fake) = makeSUT()
+
+        coordinator.isDragEnabled = false
+
+        #expect(fake.handleCancelCount == 1)
+        #expect(fake.session == nil)
+    }
+}

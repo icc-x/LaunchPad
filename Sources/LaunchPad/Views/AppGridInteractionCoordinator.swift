@@ -1,6 +1,18 @@
 import AppKit
 import LaunchPadProtocols
 
+/// 主网格拖拽消费方所需的窄接口（由具体拖拽状态机遵守）。
+@MainActor
+protocol GridDragControlling: AnyObject {
+    var session: DragSession? { get }
+    var onFolderCreationPreviewChanged: ((Int64?) -> Void)? { get set }
+    func beginDrag(_ session: DragSession)
+    func updateDragHover(_ destination: DragHoverDestination)
+    func cancelDrag()
+    func finishDrag()
+    func handleCancel()
+}
+
 public enum GridDropDestination: Sendable, Equatable {
     case placement(ItemPlacement)
     case onItem(itemID: Int64, itemType: ItemType)
@@ -31,7 +43,7 @@ protocol AppGridInteractionHosting: AnyObject {
 final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     private(set) weak var host: (any AppGridInteractionHosting)?
     private weak var collectionView: NSCollectionView?
-    let dragController: DragController
+    let dragController: any GridDragControlling
 
     var isDragEnabled = true {
         didSet {
@@ -45,7 +57,7 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     var pasteboardUUIDReader: (NSPasteboard) -> String?
 
     init(
-        dragController: DragController,
+        dragController: any GridDragControlling,
         pasteboardUUIDReader: @escaping (NSPasteboard) -> String?
     ) {
         self.dragController = dragController
