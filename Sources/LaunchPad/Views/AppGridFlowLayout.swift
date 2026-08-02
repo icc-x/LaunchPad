@@ -90,7 +90,7 @@ public final class AppGridFlowLayout: NSCollectionViewLayout {
     ) -> [NSCollectionViewLayoutAttributes] {
         attributesByIndexPath.values
             .filter { $0.frame.intersects(rect) }
-            .map { $0.copy() as! NSCollectionViewLayoutAttributes }
+            .compactMap { $0.copy() as? NSCollectionViewLayoutAttributes }
     }
 
     public override func layoutAttributesForItem(

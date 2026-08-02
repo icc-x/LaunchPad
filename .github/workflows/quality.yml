@@ -1,0 +1,35 @@
+name: quality
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+jobs:
+  quality-gate:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-14, macos-14-xlarge]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Shell self-tests
+        run: |
+          zsh scripts/tests/test-event-parser.sh
+          zsh scripts/tests/test-provenance-contract.sh
+          zsh scripts/tests/test-release-discovery.sh
+          zsh scripts/tests/test-test-quality.sh
+
+      - name: Test quality static audit
+        run: ./scripts/check-test-quality.sh
+
+      - name: Full test suite
+        run: swift test
+
+      - name: Strict debug build
+        run: swift build --product LaunchPadApp -Xswiftc -warnings-as-errors
+
+      - name: Strict release build
+        run: swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors

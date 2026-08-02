@@ -1441,16 +1441,16 @@ struct LaunchPadViewControllerTests {
     /// 通过反射访问私有 collectionView，用于直接触发其回调（覆盖私有方法路径）
     private func extractCollectionView(from sut: LaunchPadViewController) -> AppGridCollectionView? {
         let mirror = Mirror(reflecting: sut)
-        for child in mirror.children where child.label == "collectionView" {
-            return child.value as? AppGridCollectionView
+        for child in mirror.children {
+            if let view = child.value as? AppGridCollectionView { return view }
         }
         return nil
     }
 
     private func extractScrollView(from sut: LaunchPadViewController) -> PageScrollView? {
         let mirror = Mirror(reflecting: sut)
-        for child in mirror.children where child.label == "scrollView" {
-            return child.value as? PageScrollView
+        for child in mirror.children {
+            if let view = child.value as? PageScrollView { return view }
         }
         return nil
     }
@@ -3576,6 +3576,19 @@ struct LaunchPadViewControllerTests {
         #expect(viewport.height == 0)
         #expect(viewport.width.isFinite)
         #expect(viewport.height.isFinite)
+    }
+
+    // MARK: - Unloaded view safety (P3-5)
+
+    @Test("view 未加载时访问子视图不崩溃且可构造")
+    func accessingSubviewsBeforeViewLoadDoesNotCrash() {
+        let (sut, _, _) = makeSUT()
+
+        #expect(!sut.isViewLoaded)
+        #expect(sut.searchBar !== nil)
+        #expect(sut.pageControl !== nil)
+        #expect(sut.folderOverlay !== nil)
+        #expect(sut.transientMessageView !== nil)
     }
 }
 #endif

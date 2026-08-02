@@ -20,23 +20,23 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services
 
-    var storage: (any DataStoring)!
-    var layoutRepository: (any LayoutRepositoryProtocol)!
-    var scanBatchWriter: (any ScanBatchWriting)! {
+    var storage: (any DataStoring)?
+    var layoutRepository: (any LayoutRepositoryProtocol)?
+    var scanBatchWriter: (any ScanBatchWriting)? {
         didSet { scanCoordinator = nil }
     }
-    var iconCache: IconCache!
-    var appScanner: (any AppScanning)! {
+    var iconCache: IconCache?
+    var appScanner: (any AppScanning)? {
         didSet { scanCoordinator = nil }
     }
-    var hotkeyManager: HotkeyManager!
+    var hotkeyManager: HotkeyManager?
     var fileWatcher: FileWatcher?
     var appBootstrapper: AppBootstrapper?
 
     // MARK: - Controllers
 
-    var lifecycle: WindowLifecycle!
-    var windowController: LaunchPadWindowController!
+    var lifecycle: WindowLifecycle?
+    var windowController: LaunchPadWindowController?
     var viewController: LaunchPadViewController?
 
     // MARK: - Menu Bar
@@ -56,6 +56,16 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 数据库删除器（默认删除生产数据库，测试注入以隔离文件系统副作用）
     var databaseRemover: AppBootstrapper.DatabaseRemover = {
         try FileManager.default.removeItem(atPath: $0)
+    }
+
+    /// Application Support URL 提供器（默认走 FileManager，测试注入 nil 触发 home 目录回退）
+    var applicationSupportURLProvider: () -> URL? = {
+        FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first
+    }
+
+    /// 数据库目录创建器（默认真实创建，测试注入 no-op 避免文件系统副作用）
+    var databaseDirectoryCreator: (URL) -> Void = { dir in
+        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
     }
 
     /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
@@ -268,7 +278,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Icon cache
         let iconProvider = SystemIconProvider()
-        iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
+        iconCache = IconCache(iconProvider: iconProvider, imageStore: manager)
 
         // Scanner
         let fileSystemService = SystemFileSystemService()
@@ -294,7 +304,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         viewController = vc
 
         // Lifecycle
-        lifecycle = WindowLifecycle()
+        let lifecycle = WindowLifecycle()
+        self.lifecycle = lifecycle
         vc.lifecycle = lifecycle
 
         // Window controller
@@ -335,7 +346,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func statusItemClicked() {
-        windowController.toggle()
+        windowController?.toggle()
     }
 
     @objc func toggleLoginItem() {
@@ -358,9 +369,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hotkey
 
     func setupHotkey() {
+        guard let hotkeyManager else { return }
         let runner = hotkeyToggleRunner
         hotkeyManager.onToggle = { @Sendable [weak self] in
-            runner { [weak self] in self?.windowController.toggle() }
+            runner { [weak self] in self?.windowController?.toggle() }
         }
 
         let registered = hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
@@ -401,7 +413,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             let characters = event.characters
             // 本地事件监视器在主线程运行，此处通过 MainActor.assumeIsolated 安全访问 @MainActor 状态
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard self.lifecycle.state == .visible,
+                guard self.lifecycle?.state == .visible,
                       let viewController = self.viewController,
                       viewController.isViewLoaded else {
                     return false
@@ -495,9 +507,11 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Database Path
 
     func databasePath() -> String {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        let appSupport = applicationSupportURLProvider()
+            ?? URL(fileURLWithPath: NSHomeDirectory())
+                .appendingPathComponent("Library/Application Support")
         let dir = appSupport.appendingPathComponent("LaunchPad")
-        try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        databaseDirectoryCreator(dir)
         return dir.appendingPathComponent("launchpad.db").path
     }
 }

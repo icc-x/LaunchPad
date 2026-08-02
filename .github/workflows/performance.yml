@@ -1,0 +1,26 @@
+name: performance-trend
+
+on:
+  workflow_dispatch:
+  schedule:
+    # 每周一 02:00 UTC 在固定 runner 上采集性能趋势
+    - cron: "0 2 * * 1"
+
+jobs:
+  performance-trend:
+    runs-on: macos-14-xlarge
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run performance benchmarks with trend log
+        run: |
+          STAMP=$(date -u +%Y%m%dT%H%M%SZ)
+          swift test --filter PerformanceTests --no-parallel \
+            > "perf-${STAMP}.log" 2>&1
+
+      - name: Upload trend log
+        uses: actions/upload-artifact@v4
+        with:
+          name: performance-trend
+          path: perf-*.log
+          if-no-files-found: error

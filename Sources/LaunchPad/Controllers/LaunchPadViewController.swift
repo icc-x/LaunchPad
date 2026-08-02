@@ -79,15 +79,52 @@ struct LayoutDropFailureEvent: Sendable, Equatable {
 @MainActor
 public class LaunchPadViewController: NSViewController {
 
-    // MARK: - Sub-views
+    // MARK: - Sub-views（惰性创建；loadView 重建时重置为新实例）
 
-    private var scrollView: PageScrollView!
-    private var collectionView: AppGridCollectionView!
-    var searchBar: SearchBar!
-    var pageControl: PageControlView!
-    private var emptyStateView: EmptyStateView!
-    var folderOverlay: FolderOverlayView!
-    private(set) var transientMessageView: TransientMessageView!
+    private func makeSubView<T>(_ storage: inout T?, _ create: () -> T) -> T {
+        if let existing = storage { return existing }
+        let created = create()
+        storage = created
+        return created
+    }
+
+    private var scrollViewStorage: PageScrollView?
+    private var collectionViewStorage: AppGridCollectionView?
+    private var searchBarStorage: SearchBar?
+    private var pageControlStorage: PageControlView?
+    private var emptyStateViewStorage: EmptyStateView?
+    private var folderOverlayStorage: FolderOverlayView?
+    private var transientMessageViewStorage: TransientMessageView?
+
+    private var scrollView: PageScrollView {
+        makeSubView(&scrollViewStorage) { PageScrollView() }
+    }
+    private var collectionView: AppGridCollectionView {
+        makeSubView(&collectionViewStorage) {
+            let view = AppGridCollectionView(frame: .zero)
+            view.configure(iconCache: iconCache)
+            return view
+        }
+    }
+    var searchBar: SearchBar {
+        makeSubView(&searchBarStorage) { SearchBar() }
+    }
+    var pageControl: PageControlView {
+        makeSubView(&pageControlStorage) {
+            PageControlView(viewModel: pageControlViewModel)
+        }
+    }
+    private var emptyStateView: EmptyStateView {
+        makeSubView(&emptyStateViewStorage) { EmptyStateView() }
+    }
+    var folderOverlay: FolderOverlayView {
+        makeSubView(&folderOverlayStorage) { FolderOverlayView() }
+    }
+    var transientMessageView: TransientMessageView {
+        makeSubView(&transientMessageViewStorage) {
+            TransientMessageView(frame: .zero)
+        }
+    }
     let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
@@ -192,7 +229,9 @@ public class LaunchPadViewController: NSViewController {
     private(set) var currentSearchQuery: String = ""
     private(set) var searchRequestGeneration = 0
     private var pageControlViewModel = PageControlViewModel()
-    private var searchDebouncer: SearchDebouncer!
+    private lazy var searchDebouncer = SearchDebouncer(scheduler: searchScheduler) { [weak self] query in
+        self?.handleSearch(query: query)
+    }
     private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
 
     typealias SearchRunner = @MainActor @Sendable (
@@ -212,7 +251,7 @@ public class LaunchPadViewController: NSViewController {
     }
 
     var currentVisualPage: Int { pageControlViewModel.currentPage }
-    var pagingPageCount: Int { scrollView?.pagingPageCount ?? 1 }
+    var pagingPageCount: Int { scrollView.pagingPageCount }
     var gridSnapshot: AppGridCollectionView.Snapshot {
         collectionView.diffableDataSource.snapshot()
     }
@@ -260,17 +299,21 @@ public class LaunchPadViewController: NSViewController {
 
     override public func loadView() {
         gridInteractionCoordinator?.detach()
+        scrollViewStorage = nil
+        collectionViewStorage = nil
+        searchBarStorage = nil
+        pageControlStorage = nil
+        emptyStateViewStorage = nil
+        folderOverlayStorage = nil
+        transientMessageViewStorage = nil
         view = NSView()
         view.wantsLayer = true
 
         // Scroll view (contains collection view)
-        scrollView = PageScrollView()
         scrollView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(scrollView)
 
         // Collection view
-        collectionView = AppGridCollectionView(frame: .zero)
-        collectionView.configure(iconCache: iconCache)
         let coordinator = AppGridInteractionCoordinator(
             dragController: dragController,
             pasteboardUUIDReader: { $0.string(forType: .string) }
@@ -281,27 +324,22 @@ public class LaunchPadViewController: NSViewController {
         scrollView.documentView = collectionView
 
         // Search bar
-        searchBar = SearchBar()
         searchBar.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(searchBar)
 
         // Page control
-        pageControl = PageControlView(viewModel: pageControlViewModel)
         pageControl.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageControl)
 
         // Layout mutation feedback
-        transientMessageView = TransientMessageView(frame: .zero)
         transientMessageView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(transientMessageView)
 
         // Empty state
-        emptyStateView = EmptyStateView()
         emptyStateView.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(emptyStateView)
 
         // Folder overlay
-        folderOverlay = FolderOverlayView()
         folderOverlay.translatesAutoresizingMaskIntoConstraints = false
         folderOverlay.isHidden = true
         view.addSubview(folderOverlay)
@@ -380,10 +418,7 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Setup
 
     private func setupCallbacks() {
-        // 搜索防抖：100ms debounce，空查询和 Backspace 立即触发
-        searchDebouncer = SearchDebouncer(scheduler: searchScheduler) { [weak self] query in
-            self?.handleSearch(query: query)
-        }
+        // 搜索防抖：100ms debounce，空查询和 Backspace 立即触发（searchDebouncer 为 lazy 创建）
         searchBar.onQueryChanged = { [weak self] query in
             self?.searchDebouncer.search(query: query)
         }
@@ -544,14 +579,14 @@ public class LaunchPadViewController: NSViewController {
         let enabled = !isSearchActive
         if !enabled,
            gridInteractionCoordinator?.isDragEnabled == true
-            || folderOverlay?.isDragEnabled == true {
+            || folderOverlay.isDragEnabled == true {
             cancelActiveDrag()
         }
         if gridInteractionCoordinator?.isDragEnabled != enabled {
             gridInteractionCoordinator?.isDragEnabled = enabled
         }
-        if folderOverlay?.isDragEnabled != enabled {
-            folderOverlay?.isDragEnabled = enabled
+        if folderOverlay.isDragEnabled != enabled {
+            folderOverlay.isDragEnabled = enabled
         }
     }
 
@@ -886,11 +921,11 @@ public class LaunchPadViewController: NSViewController {
     }
 
     /// 解析启动动画所需的 cell 视图：launchCellResolver 优先（无需 collectionView 已就绪，便于无布局测试），
-    /// 默认从 collectionView 解析（可选链保证 collectionView 未加载时不崩溃）
+    /// 默认从 collectionView 解析（lazy 创建保证 view 未加载时安全）
     func resolveLaunchCellView(for item: PageItem) -> NSView? {
         if let resolved = launchCellResolver?(item) { return resolved }
-        guard let indexPath = collectionView?.diffableDataSource?.indexPath(for: item) else { return nil }
-        return collectionView?.item(at: indexPath)?.view
+        guard let indexPath = collectionView.diffableDataSource.indexPath(for: item) else { return nil }
+        return collectionView.item(at: indexPath)?.view
     }
 
     /// 阶段 1: 高亮反馈 scale 0.95→1.0 + alpha 0.8 (0.1s)

@@ -16,7 +16,11 @@ public class AppGridCollectionView: NSCollectionView {
     /// 文件夹重命名回调
     public var onFolderRenamed: ((PageItem, String) -> Void)?
 
-    private(set) var diffableDataSource: DataSource!
+    private(set) lazy var diffableDataSource: DataSource = {
+        DataSource(collectionView: self) { [weak self] collectionView, indexPath, item in
+            self?.configureCell(collectionView: collectionView, indexPath: indexPath, item: item)
+        }
+    }()
     private var iconCache: IconCaching?
     private var folderChildren: [Int64: [PageItem]] = [:]
     private(set) var gridMetrics: GridMetrics?
@@ -81,11 +85,6 @@ public class AppGridCollectionView: NSCollectionView {
         // Register cells
         register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
         register(FolderCell.self, forItemWithIdentifier: FolderCell.identifier)
-
-        // Configure data source
-        diffableDataSource = DataSource(collectionView: self) { [weak self] collectionView, indexPath, item in
-            self?.configureCell(collectionView: collectionView, indexPath: indexPath, item: item)
-        }
 
         // Enable drag source
         registerForDraggedTypes([.string])
@@ -265,18 +264,27 @@ public class AppGridCollectionView: NSCollectionView {
     private func configureCell(collectionView: NSCollectionView, indexPath: IndexPath, item: PageItem) -> NSCollectionViewItem {
         switch item.type {
         case .app:
-            let cell = collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath) as! AppIconCell
+            guard let cell = collectionView.makeItem(
+                withIdentifier: AppIconCell.identifier,
+                for: indexPath
+            ) as? AppIconCell else { return NSCollectionViewItem() }
             configureAppCell(cell, item: item)
             return cell
 
         case .group:
-            let cell = collectionView.makeItem(withIdentifier: FolderCell.identifier, for: indexPath) as! FolderCell
+            guard let cell = collectionView.makeItem(
+                withIdentifier: FolderCell.identifier,
+                for: indexPath
+            ) as? FolderCell else { return NSCollectionViewItem() }
             configureFolderCell(cell, item: item)
             return cell
 
         case .page:
             // Pages shouldn't appear as items in the grid
-            let cell = collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath) as! AppIconCell
+            guard let cell = collectionView.makeItem(
+                withIdentifier: AppIconCell.identifier,
+                for: indexPath
+            ) as? AppIconCell else { return NSCollectionViewItem() }
             cell.configure(item: item, icon: nil)
             return cell
         }

@@ -516,7 +516,9 @@ git commit -m "refactor: isolate drag state ownership"
 
 ### Task 7: Lifecycle Safety CI And Final Gate
 
-**状态：待处理**
+**状态：进行中（P2-15 静态审计与 P3-5 IUO 治理代码已完成，等待发布门禁最终验证）**
+
+**已完成证据（2026-08-02）：** P3-5：AppDelegate 全部服务 IUO 转可选并 guard 消费点，`databasePath` 新增 `applicationSupportURLProvider`/`databaseDirectoryCreator` 注入点与 home 目录回退；LaunchPadViewController 子视图改为惰性存储+计算属性（loadView 重建时重置为新实例，view 未加载访问安全），`searchDebouncer` lazy；FolderOverlayView 子视图 lazy；AppGridCollectionView dataSource lazy、cell 转换 `as?` guard；AppGridFlowLayout 改 `compactMap`；WindowController 用 `contentView?.bounds ?? contentRect`。全量 `swift test` 1126 tests 通过；`rg ':\s*[A-Za-z<>\[\](), .]+!\s*$'` 与强制解包扫描均无命中。P2-15：新建 `scripts/check-test-quality.sh`（拒绝 `#expect(true)`/`Thread.sleep`/`RunLoop.current.run`，默认扫描 Tests）与 `scripts/tests/test-test-quality.sh` 自测（TDD：先写自测确认脚本缺失失败，后实现）；新建 `.github/workflows/quality.yml`（双 runner 跑脚本自测+质量扫描+全量测试+严格构建）与 `performance.yml`（手动/每周固定 runner 采集性能趋势日志并归档）。
 
 **Covers:** P2-15、P3-5，以及总体发布结论
 

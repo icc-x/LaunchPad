@@ -767,7 +767,7 @@ struct AppDelegateTests {
 
         #expect(alertCount == 0)
         #expect(openedURLs.isEmpty)
-        sut.hotkeyManager.unregisterGlobalHotkey()
+        sut.hotkeyManager?.unregisterGlobalHotkey()
     }
 
     // MARK: - onToggle / onKeyDown 回调
@@ -781,7 +781,7 @@ struct AppDelegateTests {
         sut.windowController = LaunchPadWindowController(lifecycle: lifecycle, viewController: try makeViewController())
         sut.setupHotkey()
 
-        sut.hotkeyManager.onToggle?()
+        sut.hotkeyManager?.onToggle?()
         #expect(lifecycle.state == .opening)
     }
 
@@ -1042,6 +1042,34 @@ struct AppDelegateTests {
 
         #expect(providerCalls == 1)
         #expect(sut.storage != nil)
+    }
+
+    @Test("applicationSupport 缺失时 databasePath 回退到确定性的 home 路径")
+    func databasePath_fallsBackWhenApplicationSupportMissing() {
+        let sut = makeDelegate()
+        sut.applicationSupportURLProvider = { nil }
+        sut.databaseDirectoryCreator = { _ in }
+
+        let path = sut.databasePath()
+
+        let expectedPrefix = NSHomeDirectory()
+            + "/Library/Application Support/LaunchPad"
+        #expect(path.hasPrefix(expectedPrefix))
+        #expect(path.hasSuffix("launchpad.db"))
+    }
+
+    @Test("applicationSupport 存在时 databasePath 使用系统 URL")
+    func databasePath_usesSystemURLWhenAvailable() {
+        let sut = makeDelegate()
+        let custom = URL(fileURLWithPath: "/tmp/custom-app-support")
+        var createdDirectories: [URL] = []
+        sut.applicationSupportURLProvider = { custom }
+        sut.databaseDirectoryCreator = { createdDirectories.append($0) }
+
+        let path = sut.databasePath()
+
+        #expect(path == "/tmp/custom-app-support/LaunchPad/launchpad.db")
+        #expect(createdDirectories == [custom.appendingPathComponent("LaunchPad")])
     }
 
     @Test("setupFileWatcher：文件变更触发一次批量增量扫描")
