@@ -637,3 +637,111 @@ struct PageControlTests {
 
     // scrollWheel phase 测试见 PageScrollView 的 handleScrollPhase 重构（暂未启用，coverage 导出阻塞）
 }
+
+// MARK: - PageControl accessibility
+
+@Suite("PageControlView accessibility")
+@MainActor
+struct PageControlAccessibilityTests {
+
+    private final class SelectionRecorder {
+        var pages: [Int] = []
+    }
+
+    private func makeControl(
+        totalPages: Int,
+        currentPage: Int = 0
+    ) -> (control: PageControlView, recorder: SelectionRecorder) {
+        let vm = PageControlViewModel()
+        vm.configure(totalPages: totalPages)
+        vm.currentPage = currentPage
+        let control = PageControlView(viewModel: vm)
+        let recorder = SelectionRecorder()
+        control.onDotSelected = { recorder.pages.append($0) }
+        return (control, recorder)
+    }
+
+    @Test("role 是可调节 slider")
+    func role_isSlider() {
+        let (control, _) = makeControl(totalPages: 3)
+        #expect(control.accessibilityRole() == .slider)
+    }
+
+    @Test("value 以 1 为基准报告当前页")
+    func value_reportsOneBasedCurrentPage() {
+        let (control, _) = makeControl(totalPages: 3, currentPage: 2)
+        #expect(control.accessibilityValue() as? Int == 3)
+    }
+
+    @Test("min/max 报告 1 与总页数，零页时 min 为 0")
+    func minMax_reportBounds() {
+        let (control, _) = makeControl(totalPages: 4)
+        #expect(control.accessibilityMinValue() as? Int == 1)
+        #expect(control.accessibilityMaxValue() as? Int == 4)
+
+        let (zeroControl, _) = makeControl(totalPages: 0)
+        #expect(zeroControl.accessibilityMinValue() as? Int == 0)
+        #expect(zeroControl.accessibilityMaxValue() as? Int == 0)
+    }
+
+    @Test("多页时 valueDescription 播报 Page N of M")
+    func valueDescription_reportsPageCount() {
+        let (control, _) = makeControl(totalPages: 5, currentPage: 2)
+        #expect(control.accessibilityValueDescription() == "Page 3 of 5")
+    }
+
+    @Test("零页时 valueDescription 播报 No pages")
+    func valueDescription_zeroPages_reportsNoPages() {
+        let (control, _) = makeControl(totalPages: 0)
+        #expect(control.accessibilityValueDescription() == "No pages")
+    }
+
+    @Test("单页时 increment 不动作且无回调")
+    func singlePage_increment_isNoOp() {
+        let (control, recorder) = makeControl(totalPages: 1)
+        control.accessibilityIncrement()
+        #expect(control.accessibilityValue() as? Int == 1)
+        #expect(recorder.pages.isEmpty)
+    }
+
+    @Test("零页时 increment/decrement 均不动作且无回调")
+    func zeroPages_incrementDecrement_areNoOps() {
+        let (control, recorder) = makeControl(totalPages: 0)
+        control.accessibilityIncrement()
+        control.accessibilityDecrement()
+        #expect(recorder.pages.isEmpty)
+    }
+
+    @Test("中间页 increment 前进一页并通知")
+    func middlePage_increment_advancesAndNotifies() {
+        let (control, recorder) = makeControl(totalPages: 5, currentPage: 2)
+        control.accessibilityIncrement()
+        #expect(control.accessibilityValue() as? Int == 4)
+        #expect(control.accessibilityValueDescription() == "Page 4 of 5")
+        #expect(recorder.pages == [3])
+    }
+
+    @Test("中间页 decrement 后退一页并通知")
+    func middlePage_decrement_goesBackAndNotifies() {
+        let (control, recorder) = makeControl(totalPages: 5, currentPage: 2)
+        control.accessibilityDecrement()
+        #expect(control.accessibilityValue() as? Int == 2)
+        #expect(recorder.pages == [1])
+    }
+
+    @Test("末页 increment 被边界拒绝且无回调")
+    func lastPage_increment_isClampedNoOp() {
+        let (control, recorder) = makeControl(totalPages: 5, currentPage: 4)
+        control.accessibilityIncrement()
+        #expect(control.accessibilityValue() as? Int == 5)
+        #expect(recorder.pages.isEmpty)
+    }
+
+    @Test("首页 decrement 被边界拒绝且无回调")
+    func firstPage_decrement_isClampedNoOp() {
+        let (control, recorder) = makeControl(totalPages: 5, currentPage: 0)
+        control.accessibilityDecrement()
+        #expect(control.accessibilityValue() as? Int == 1)
+        #expect(recorder.pages.isEmpty)
+    }
+}

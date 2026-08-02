@@ -381,7 +381,9 @@ git commit -m "refactor: enforce valid page item states"
 
 ### Task 5: Adjustable Accessible Page Control
 
-**状态：待处理**
+**状态：已完成（VoiceOver 真实播报留待外部验收）**
+
+**验收证据（2026-08-02）：** `PageControlView` 改为 `.slider` 角色，新增 `accessibilityValue`（1 基当前页）、min/max、`Page N of M`/`No pages` 描述、`accessibilityIncrement`/`accessibilityDecrement`（经 `stepPage` 走 `selectDot → onDotSelected → update`，越界拒绝）。新增 11 个测试覆盖零页/单页/中间/首页递减/末页递增/成功动作及 value/min/max/描述/回调序列；旧 `accessibilityRole_isGroup` 断言更新为 `.slider`。全量 `swift test` 1115 tests / 62 suites 通过；严格 Debug/Release 构建退出 0；`git diff --check` 通过。
 
 **Covers:** P2-12
 

@@ -703,10 +703,10 @@ private func expectRowMajor(
 
     // MARK: - Accessibility
 
-    @Test func pageControlView_accessibilityRole_isGroup() {
+    @Test func pageControlView_accessibilityRole_isSlider() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
-        #expect(view.accessibilityRole() == .group)
+        #expect(view.accessibilityRole() == .slider)
     }
 
     @Test func pageControlView_accessibilityLabel_isPageIndicator() {
