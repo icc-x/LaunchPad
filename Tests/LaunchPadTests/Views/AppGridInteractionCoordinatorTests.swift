@@ -1025,13 +1025,16 @@ struct GridCoordinatorNarrowProtocolTests {
         )
         var operation = NSCollectionView.DropOperation.before
         var proposed = NSIndexPath(index: 0)
-        let pointer = AutoreleasingUnsafeMutablePointer<NSIndexPath>(&proposed)
-        _ = coordinator.collectionView(
-            host.collectionViewForDelegateInstallation,
-            validateDrop: info,
-            proposedIndexPath: pointer,
-            dropOperation: &operation
-        )
+        _ = withUnsafeMutablePointer(to: &operation) { operationPointer in
+            withUnsafeMutablePointer(to: &proposed) { proposedPointer in
+                coordinator.collectionView(
+                    host.collectionViewForDelegateInstallation,
+                    validateDrop: info,
+                    proposedIndexPath: AutoreleasingUnsafeMutablePointer(proposedPointer),
+                    dropOperation: operationPointer
+                )
+            }
+        }
 
         #expect(!fake.hoverUpdates.isEmpty)
     }
@@ -1060,7 +1063,7 @@ struct GridCoordinatorNarrowProtocolTests {
 
         #expect(fake.onFolderCreationPreviewChanged != nil)
         fake.onFolderCreationPreviewChanged?(7)
-        #expect(coordinator !== nil)
+        _ = coordinator
         #expect(host.previewCalls == [7])
     }
 
