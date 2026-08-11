@@ -84,7 +84,9 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         super.init(window: panel)
 
         // Setup visual effect background
-        let visualEffect = NSVisualEffectView(frame: panel.contentView!.bounds)
+        let contentBounds = panel.contentView?.bounds
+            ?? panel.contentRect(forFrameRect: panel.frame)
+        let visualEffect = NSVisualEffectView(frame: contentBounds)
         visualEffect.autoresizingMask = [.width, .height]
         visualEffect.blendingMode = .behindWindow
         visualEffect.material = .hudWindow

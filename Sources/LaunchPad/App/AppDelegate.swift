@@ -20,23 +20,25 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
     // MARK: - Services
 
-    var storage: (any DataStoring)!
-    var layoutRepository: (any LayoutRepositoryProtocol)!
-    var scanBatchWriter: (any ScanBatchWriting)! {
+    /// 已安装服务（applicationDidFinishLaunching 后可用）；消费方必须 guard。
+    var storage: (any DataStoring)?
+    var layoutRepository: (any LayoutRepositoryProtocol)?
+    var scanBatchWriter: (any ScanBatchWriting)? {
         didSet { scanCoordinator = nil }
     }
-    var iconCache: IconCache!
-    var appScanner: (any AppScanning)! {
+    var iconCache: IconCache?
+    var appScanner: (any AppScanning)? {
         didSet { scanCoordinator = nil }
     }
-    var hotkeyManager: HotkeyManager!
+    var hotkeyManager: HotkeyManager?
     var fileWatcher: FileWatcher?
     var appBootstrapper: AppBootstrapper?
 
     // MARK: - Controllers
 
-    var lifecycle: WindowLifecycle!
-    var windowController: LaunchPadWindowController!
+    /// 已安装控制器；windowController 与 lifecycle 由 applicationDidFinishLaunching 建立。
+    var lifecycle: WindowLifecycle?
+    var windowController: LaunchPadWindowController?
     var viewController: LaunchPadViewController?
 
     // MARK: - Menu Bar
@@ -268,7 +270,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
 
         // Icon cache
         let iconProvider = SystemIconProvider()
-        iconCache = IconCache(iconProvider: iconProvider, imageStore: storage)
+        iconCache = IconCache(iconProvider: iconProvider, imageStore: manager)
 
         // Scanner
         let fileSystemService = SystemFileSystemService()
@@ -294,7 +296,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         viewController = vc
 
         // Lifecycle
-        lifecycle = WindowLifecycle()
+        let lifecycle = WindowLifecycle()
+        self.lifecycle = lifecycle
         vc.lifecycle = lifecycle
 
         // Window controller
@@ -335,6 +338,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     @objc func statusItemClicked() {
+        guard let windowController else { return }
         windowController.toggle()
     }
 
@@ -358,9 +362,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Hotkey
 
     func setupHotkey() {
+        guard let hotkeyManager else { return }
         let runner = hotkeyToggleRunner
         hotkeyManager.onToggle = { @Sendable [weak self] in
-            runner { [weak self] in self?.windowController.toggle() }
+            runner { [weak self] in self?.windowController?.toggle() }
         }
 
         let registered = hotkeyManager.registerGlobalHotkey(
@@ -404,7 +409,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             let characters = event.characters
             // 本地事件监视器在主线程运行，此处通过 MainActor.assumeIsolated 安全访问 @MainActor 状态
             let handled = MainActor.assumeIsolated { () -> Bool in
-                guard self.lifecycle.state == .visible,
+                guard let lifecycle = self.lifecycle,
+                      lifecycle.state == .visible,
                       let viewController = self.viewController,
                       viewController.isViewLoaded else {
                     return false
@@ -488,7 +494,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     // MARK: - Database Path
 
     func databasePath() -> String {
-        let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
+        // 优先使用系统 Application Support 目录；不可用时回退到主目录下的确定路径。
+        let appSupport = FileManager.default.urls(
+            for: .applicationSupportDirectory,
+            in: .userDomainMask
+        ).first ?? FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent("Library/Application Support")
         let dir = appSupport.appendingPathComponent("LaunchPad")
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         return dir.appendingPathComponent("launchpad.db").path

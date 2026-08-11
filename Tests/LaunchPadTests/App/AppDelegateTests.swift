@@ -759,7 +759,7 @@ struct AppDelegateTests {
 
         #expect(alertCount == 0)
         #expect(openedURLs.isEmpty)
-        sut.hotkeyManager.unregisterGlobalHotkey()
+        sut.hotkeyManager?.unregisterGlobalHotkey()
     }
 
     // MARK: - onToggle / onKeyDown 回调
@@ -773,7 +773,7 @@ struct AppDelegateTests {
         sut.windowController = LaunchPadWindowController(lifecycle: lifecycle, viewController: try makeViewController())
         sut.setupHotkey()
 
-        sut.hotkeyManager.onToggle?()
+        sut.hotkeyManager?.onToggle?()
         #expect(lifecycle.state == .opening)
     }
 

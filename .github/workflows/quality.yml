@@ -1,0 +1,36 @@
+name: quality
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  quality:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, macos-14-xlarge]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Run script self-tests
+        run: |
+          zsh scripts/tests/test-event-parser.sh
+          zsh scripts/tests/test-provenance-contract.sh
+          zsh scripts/tests/test-release-discovery.sh
+          zsh scripts/tests/test-coverage.sh
+          zsh scripts/tests/test-release-app.sh
+          zsh scripts/tests/test-test-quality.sh
+
+      - name: Static test quality scan
+        run: ./scripts/check-test-quality.sh
+
+      - name: Full test suite
+        run: swift test --disable-sandbox --no-parallel
+
+      - name: Strict debug build
+        run: swift build --product LaunchPadApp -Xswiftc -warnings-as-errors
+
+      - name: Strict release build
+        run: swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors

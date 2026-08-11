@@ -86,9 +86,40 @@ public class FolderOverlayView: NSView {
 
     private let titleLabel = NSTextField(labelWithString: "")
     private let backgroundView = NSVisualEffectView()
-    private var collectionView: NSCollectionView!
-    private var scrollView: NSScrollView!
-    private var pageControlView: PageControlView!
+    private lazy var collectionView: NSCollectionView = {
+        let layout = NSCollectionViewFlowLayout()
+        layout.itemSize = NSSize(width: 72, height: 80)
+        layout.minimumInteritemSpacing = 8
+        layout.minimumLineSpacing = 8
+        layout.scrollDirection = .horizontal
+        // 每个 section 代表一页，section 间距为 0 实现连续翻页
+        layout.sectionInset = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
+        let collectionView = NSCollectionView()
+        collectionView.collectionViewLayout = layout
+        collectionView.backgroundColors = [.clear]
+        collectionView.isSelectable = true
+        collectionView.registerForDraggedTypes([.string])
+        collectionView.register(
+            AppIconCell.self,
+            forItemWithIdentifier: AppIconCell.identifier
+        )
+        return collectionView
+    }()
+    private lazy var scrollView: NSScrollView = {
+        let scrollView = NSScrollView()
+        scrollView.documentView = collectionView
+        scrollView.hasHorizontalScroller = false
+        scrollView.horizontalScrollElasticity = .allowed
+        scrollView.drawsBackground = false
+        return scrollView
+    }()
+    private lazy var pageControlView: PageControlView = {
+        let pageControlView = PageControlView(viewModel: pageControlViewModel)
+        pageControlView.onDotSelected = { [weak self] pageIndex in
+            self?.navigateToPage(pageIndex)
+        }
+        return pageControlView
+    }()
     private let pageControlViewModel = PageControlViewModel()
     private var childItems: [PageItem] = []
     private var pages: [[PageItem]] = []
@@ -215,35 +246,9 @@ public class FolderOverlayView: NSView {
         ])
 
         // Collection view for folder contents — horizontal paging layout
-        let layout = NSCollectionViewFlowLayout()
-        layout.itemSize = NSSize(width: 72, height: 80)
-        layout.minimumInteritemSpacing = 8
-        layout.minimumLineSpacing = 8
-        layout.scrollDirection = .horizontal
-        // 每个 section 代表一页，section 间距为 0 实现连续翻页
-        layout.sectionInset = NSEdgeInsets(top: 8, left: 12, bottom: 8, right: 12)
-
-        collectionView = NSCollectionView()
-        collectionView.collectionViewLayout = layout
-        collectionView.backgroundColors = [.clear]
-        collectionView.isSelectable = true
-        collectionView.registerForDraggedTypes([.string])
+        //（collectionView/scrollView/pageControlView 为 lazy 属性，首次访问时创建）
         registerForDraggedTypes([.string])
-
-        scrollView = NSScrollView()
-        scrollView.documentView = collectionView
-        scrollView.hasHorizontalScroller = false
-        scrollView.horizontalScrollElasticity = .allowed
-        scrollView.drawsBackground = false
         backgroundView.addSubview(scrollView)
-
-        collectionView.register(AppIconCell.self, forItemWithIdentifier: AppIconCell.identifier)
-
-        // Page control dots — 底部居中
-        pageControlView = PageControlView(viewModel: pageControlViewModel)
-        pageControlView.onDotSelected = { [weak self] pageIndex in
-            self?.navigateToPage(pageIndex)
-        }
         backgroundView.addSubview(pageControlView)
 
         scrollView.translatesAutoresizingMaskIntoConstraints = false
@@ -563,7 +568,12 @@ extension FolderOverlayView: NSCollectionViewDataSource {
             return NSCollectionViewItem()
         }
         let item = pages[page][index]
-        let cell = collectionView.makeItem(withIdentifier: AppIconCell.identifier, for: indexPath) as! AppIconCell
+        guard let cell = collectionView.makeItem(
+            withIdentifier: AppIconCell.identifier,
+            for: indexPath
+        ) as? AppIconCell else {
+            return NSCollectionViewItem()
+        }
 
         cell.configure(item: item, icon: nil)
         if let app = item.app, let iconCache {

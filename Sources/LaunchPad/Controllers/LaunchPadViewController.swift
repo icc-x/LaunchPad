@@ -65,13 +65,13 @@ public class LaunchPadViewController: NSViewController {
 
     // MARK: - Sub-views
 
-    private var scrollView: PageScrollView!
-    private var collectionView: AppGridCollectionView!
-    var searchBar: SearchBar!
-    var pageControl: PageControlView!
-    private var emptyStateView: EmptyStateView!
-    var folderOverlay: FolderOverlayView!
-    private(set) var transientMessageView: TransientMessageView!
+    var scrollView = PageScrollView()
+    var collectionView = AppGridCollectionView(frame: .zero)
+    var searchBar = SearchBar()
+    lazy var pageControl = PageControlView(viewModel: pageControlViewModel)
+    private var emptyStateView = EmptyStateView()
+    var folderOverlay = FolderOverlayView()
+    private(set) var transientMessageView = TransientMessageView(frame: .zero)
     let resultCountLabel = NSTextField(labelWithString: "")
 
     // MARK: - Dependencies
@@ -176,7 +176,12 @@ public class LaunchPadViewController: NSViewController {
     private(set) var currentSearchQuery: String = ""
     private(set) var searchRequestGeneration = 0
     private var pageControlViewModel = PageControlViewModel()
-    private var searchDebouncer: SearchDebouncer!
+    /// 搜索防抖：100ms debounce，空查询和 Backspace 立即触发
+    private lazy var searchDebouncer: SearchDebouncer = SearchDebouncer(
+        scheduler: searchScheduler
+    ) { [weak self] query in
+        self?.handleSearch(query: query)
+    }
     private let searchQueue = DispatchQueue(label: "com.launchpad.search", qos: .userInitiated)
 
     typealias SearchRunner = @MainActor @Sendable (
@@ -196,7 +201,7 @@ public class LaunchPadViewController: NSViewController {
     }
 
     var currentVisualPage: Int { pageControlViewModel.currentPage }
-    var pagingPageCount: Int { scrollView?.pagingPageCount ?? 1 }
+    var pagingPageCount: Int { scrollView.pagingPageCount }
     var gridSnapshot: AppGridCollectionView.Snapshot {
         collectionView.diffableDataSource.snapshot()
     }
@@ -270,7 +275,6 @@ public class LaunchPadViewController: NSViewController {
         view.addSubview(searchBar)
 
         // Page control
-        pageControl = PageControlView(viewModel: pageControlViewModel)
         pageControl.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(pageControl)
 
@@ -364,10 +368,6 @@ public class LaunchPadViewController: NSViewController {
     // MARK: - Setup
 
     private func setupCallbacks() {
-        // 搜索防抖：100ms debounce，空查询和 Backspace 立即触发
-        searchDebouncer = SearchDebouncer(scheduler: searchScheduler) { [weak self] query in
-            self?.handleSearch(query: query)
-        }
         searchBar.onQueryChanged = { [weak self] query in
             self?.searchDebouncer.search(query: query)
         }
@@ -528,14 +528,14 @@ public class LaunchPadViewController: NSViewController {
         let enabled = !isSearchActive
         if !enabled,
            gridInteractionCoordinator?.isDragEnabled == true
-            || folderOverlay?.isDragEnabled == true {
+            || folderOverlay.isDragEnabled == true {
             cancelActiveDrag()
         }
         if gridInteractionCoordinator?.isDragEnabled != enabled {
             gridInteractionCoordinator?.isDragEnabled = enabled
         }
-        if folderOverlay?.isDragEnabled != enabled {
-            folderOverlay?.isDragEnabled = enabled
+        if folderOverlay.isDragEnabled != enabled {
+            folderOverlay.isDragEnabled = enabled
         }
     }
 
@@ -870,11 +870,11 @@ public class LaunchPadViewController: NSViewController {
     }
 
     /// 解析启动动画所需的 cell 视图：launchCellResolver 优先（无需 collectionView 已就绪，便于无布局测试），
-    /// 默认从 collectionView 解析（可选链保证 collectionView 未加载时不崩溃）
+    /// 默认从 collectionView 解析（lazy 属性在首次访问时创建，未加载时不崩溃）
     func resolveLaunchCellView(for item: PageItem) -> NSView? {
         if let resolved = launchCellResolver?(item) { return resolved }
-        guard let indexPath = collectionView?.diffableDataSource?.indexPath(for: item) else { return nil }
-        return collectionView?.item(at: indexPath)?.view
+        guard let indexPath = collectionView.diffableDataSource.indexPath(for: item) else { return nil }
+        return collectionView.item(at: indexPath)?.view
     }
 
     /// 阶段 1: 高亮反馈 scale 0.95→1.0 + alpha 0.8 (0.1s)

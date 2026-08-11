@@ -297,7 +297,18 @@ swift test --disable-sandbox --no-parallel
 # 覆盖率（一次完整运行，输出 .build/coverage/）
 ./scripts/coverage.sh
 # 产物：.build/coverage/coverage.profdata、coverage-summary.txt、coverage-show.txt
+
+# 测试质量静态审计（拒绝 #expect(true) / Thread.sleep / RunLoop.current.run）
+./scripts/check-test-quality.sh
+# 脚本自测：zsh scripts/tests/test-test-quality.sh
+
+# 全部脚本自测（CI quality 工作流与本地一致）
+for t in scripts/tests/test-*.sh; do zsh "$t"; done
 ```
+
+CI 工作流（`.github/workflows/`）：
+- `quality.yml`：push/PR 在 `macos-14` 与 `macos-14-xlarge` 双 runner 上运行全部脚本自测、质量扫描、完整测试与严格 Debug/Release 构建，任一失败即红。
+- `performance.yml`：仅手动或每周定时在固定 `macos-14-xlarge` runner 上运行性能基准，日志上传为 artifact 保留趋势；不阻塞普通功能提交。
 
 ### 首次运行
 

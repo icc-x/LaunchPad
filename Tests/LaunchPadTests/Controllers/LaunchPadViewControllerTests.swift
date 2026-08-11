@@ -1447,19 +1447,11 @@ struct LaunchPadViewControllerTests {
 
     /// 通过反射访问私有 collectionView，用于直接触发其回调（覆盖私有方法路径）
     private func extractCollectionView(from sut: LaunchPadViewController) -> AppGridCollectionView? {
-        let mirror = Mirror(reflecting: sut)
-        for child in mirror.children where child.label == "collectionView" {
-            return child.value as? AppGridCollectionView
-        }
-        return nil
+        sut.collectionView
     }
 
     private func extractScrollView(from sut: LaunchPadViewController) -> PageScrollView? {
-        let mirror = Mirror(reflecting: sut)
-        for child in mirror.children where child.label == "scrollView" {
-            return child.value as? PageScrollView
-        }
-        return nil
+        sut.scrollView
     }
 
     private func expectThreePagePresentation(
