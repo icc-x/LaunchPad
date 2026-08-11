@@ -72,13 +72,16 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
             backing: .buffered,
             defer: true
         )
+        // isFloatingPanel 会把 level 重置为 .floating，因此必须先设置它，
+        // 再设置 .screenSaver 覆盖；顺序颠倒会导致窗口层级盖不住 Dock
+        // （分页按钮被 Dock 遮挡且点击被 Dock 拦截）。
+        panel.isFloatingPanel = true
         // Use .screenSaver so the overlay covers full-screen apps and the screen saver layer.
         panel.level = .screenSaver
         panel.isOpaque = false
         panel.backgroundColor = .clear
         panel.hasShadow = false
         panel.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary]
-        panel.isFloatingPanel = true
         panel.hidesOnDeactivate = false
 
         super.init(window: panel)
