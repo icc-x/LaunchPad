@@ -510,6 +510,16 @@ struct LaunchPadWindowControllerTests {
         #expect(sut.controller.window?.level == .screenSaver)
     }
 
+    @Test("窗口可成为 key window（无边框面板默认不能，ESC 等键盘事件依赖此行为）")
+    func window_canBecomeKey() {
+        let sut = makeSUT()
+        // 回归锁定：borderless NSPanel 默认 canBecomeKey=false，键盘事件
+        // （ESC 关闭等）不会到达窗口；LaunchPadPanel 重写为 true。
+        #expect(sut.controller.window?.canBecomeKey == true)
+        // 保持不成为 main window（应用始终不激活）
+        #expect(sut.controller.window?.canBecomeMain == false)
+    }
+
     @Test("窗口内容在显示动画后 transform 保持 identity（不残留缩放）")
     func showAnimation_transformIsIdentity() {
         let sut = makeSynchronousWindowSUT()
