@@ -200,7 +200,9 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
         activationPolicySetter(.accessory)
 
         bootstrapServices()
+
     }
+
 
     private func finishLaunch() {
         setupControllers()

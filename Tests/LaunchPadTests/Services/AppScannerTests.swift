@@ -65,7 +65,7 @@ struct AppScannerTests {
         #expect(result.failedBundlePaths.isEmpty)
     }
 
-    @Test("只有明确的 UIElement 与 excluded 正常过滤，所有 malformed identity 都报告失败")
+    @Test("只有明确的 UIElement 与 excluded 正常过滤；缺失/非字符串 name 回退，空 name 与 malformed identity 报告失败")
     func malformedIdentityFailsWhileExplicitFiltersAreSkipped() {
         let fileSystem = MockFileSystemService()
         let nonApp = firstDirectory.appendingPathComponent("Readme.txt")
@@ -125,12 +125,14 @@ struct AppScannerTests {
         fileSystem.bundleInfos[valid] = info("Valid", "com.test.valid")
         let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: ["com.test.excluded"])
             .scanDirectories([root(firstDirectory)])
-        #expect(result.apps.map(\.bundleId) == ["com.test.valid"])
+        #expect(result.apps.map(\.bundleId) == [
+            "com.test.missing-name",
+            "com.test.non-string-name",
+            "com.test.valid",
+        ])
         #expect(result.failedRootPaths.isEmpty)
         #expect(result.failedBundlePaths == [
             missingPlist.path,
-            missingName.path,
-            nonStringName.path,
             emptyName.path,
             whitespaceName.path,
             missingID.path,

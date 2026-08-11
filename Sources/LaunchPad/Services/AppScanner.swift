@@ -117,12 +117,16 @@ final class AppScanner: AppScanning {
 
         if excludedBundleIds.contains(bundleId) { return nil }
 
-        guard let name = plist["CFBundleName"] as? String,
-              !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
+        // 系统应用常缺 CFBundleName（仅提供本地化 DisplayName）：缺失时回退到
+        // CFBundleDisplayName，再回退到 .app 文件名，避免单个应用元数据缺失拖垮整次扫描。
+        let rawName = (plist["CFBundleName"] as? String)
+            ?? (plist["CFBundleDisplayName"] as? String)
+            ?? url.deletingPathExtension().lastPathComponent
+        guard !rawName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
             throw BundleMetadataError.invalidName
         }
 
-        return ScannedApp(name: name, bundleId: bundleId, path: url.path)
+        return ScannedApp(name: rawName, bundleId: bundleId, path: url.path)
     }
 
     /// 按 bundle ID 去重；较早的发现根及根内较早的枚举项拥有更高优先级。
