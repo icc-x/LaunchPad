@@ -65,6 +65,35 @@ struct AppScannerTests {
         #expect(result.failedBundlePaths.isEmpty)
     }
 
+    @Test("缺失 CFBundleName 时回退 CFBundleDisplayName（系统应用常见）")
+    func scan_displayNameFallback() {
+        let fileSystem = MockFileSystemService()
+        let displayOnly = app("DisplayOnly")
+        fileSystem.directoryContentsMap[firstDirectory] = [displayOnly]
+        fileSystem.bundleInfos[displayOnly] = [
+            "CFBundleDisplayName": "显示名",
+            "CFBundleIdentifier": "com.test.display-only",
+        ]
+        let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+            .scanDirectories([root(firstDirectory)])
+        #expect(result.apps.first?.name == "显示名")
+        #expect(result.failedBundlePaths.isEmpty)
+    }
+
+    @Test("CFBundleName 与 CFBundleDisplayName 均缺失时回退 .app 文件名")
+    func scan_fileNameFallback() {
+        let fileSystem = MockFileSystemService()
+        let nameLess = app("NameLess")
+        fileSystem.directoryContentsMap[firstDirectory] = [nameLess]
+        fileSystem.bundleInfos[nameLess] = [
+            "CFBundleIdentifier": "com.test.nameless",
+        ]
+        let result = AppScanner(fileSystemService: fileSystem, excludedBundleIds: [])
+            .scanDirectories([root(firstDirectory)])
+        #expect(result.apps.first?.name == "NameLess")
+        #expect(result.failedBundlePaths.isEmpty)
+    }
+
     @Test("只有明确的 UIElement 与 excluded 正常过滤；缺失/非字符串 name 回退，空 name 与 malformed identity 报告失败")
     func malformedIdentityFailsWhileExplicitFiltersAreSkipped() {
         let fileSystem = MockFileSystemService()

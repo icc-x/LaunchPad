@@ -501,5 +501,29 @@ struct LaunchPadWindowControllerTests {
         #expect(previewChanges.last == .some(nil))
         #expect(sut.controller.window?.isVisible == false)
     }
+
+    @Test("窗口 level 为 screenSaver，盖住 Dock 与菜单栏")
+    func windowLevel_isScreenSaver() {
+        let sut = makeSUT()
+        // 回归锁定：isFloatingPanel 会重置 level 为 .floating，必须在它之后
+        // 设置 .screenSaver（否则窗口盖不住 Dock，分页按钮被遮挡且点击无效）。
+        #expect(sut.controller.window?.level == .screenSaver)
+    }
+
+    @Test("窗口内容在显示动画后 transform 保持 identity（不残留缩放）")
+    func showAnimation_transformIsIdentity() {
+        let sut = makeSynchronousWindowSUT()
+        let contentView = sut.controller.window?.contentView
+        contentView?.wantsLayer = true
+        // 触发 opening → showWindowAnimated（normal 分支）
+        sut.lifecycle.handleToggle()
+        // 回归锁定：历史上持久设置 scale 0.8 后 spring 动画移除导致
+        // transform 永远停在 0.8（窗口小于全屏且偏角），修复后应保持 identity。
+        if let transform = contentView?.layer?.transform {
+            #expect(CATransform3DIsIdentity(transform))
+        } else {
+            Issue.record("contentView.layer 不可用（测试环境未创建 layer）")
+        }
+    }
 }
 #endif
