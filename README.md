@@ -45,7 +45,7 @@ LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、A
 | 代码签名 | ⏳ adhoc 签名，未公证 |
 | 手动功能验证 | ⏳ 0/13 执行 |
 
-> 覆盖率数字仅保留为 2026-07-24 的历史测量。当前覆盖脚本存在失败退出码未传播、工具错误可被误判为满覆盖和本机路径硬编码问题，不能作为可信发布证据；整改状态见发布待办。
+> 覆盖率数字仅保留为 2026-07-24 的历史测量。可信覆盖率入口为 `./scripts/coverage.sh`：构建、测试、测试发现、profraw 合并与 `llvm-cov` 任一阶段失败都会返回非零状态，空输出或损坏数据不会被当作成功结论。历史测量不能作为发布证据，最新结果以新入口输出为准。
 
 ---
 
@@ -203,21 +203,19 @@ sut.runAnimated = { _, action in action() }  // 测试中动画完成回调被�
 
 #### 测量工具链
 
-覆盖率测量使用 LLVM 工具链：
+覆盖率测量使用仓库唯一入口 `./scripts/coverage.sh`（zsh，严格模式）：
 
 ```bash
-# 全量编译运行 + 收集覆盖率（Task 21 后全量测试可完整退出）
-swift test --enable-code-coverage --disable-sandbox --no-parallel
-
-# 合并所有 profraw
-xcrun llvm-profdata merge -sparse <profraw目录>/*.profraw -o default.profdata
-
-# 逐文件验证 0 计数执行行（真实 100% 判据）
-BIN=$(find .build -name LaunchPadPackageTests -type f -path "*MacOS*" | grep -v dSYM | head -1)
-xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-regex=".*Tests.*"
+# 一次完整测试构建并收集覆盖率，输出 .build/coverage/ 下三个产物
+./scripts/coverage.sh
+#   .build/coverage/coverage.profdata    合并后的 profile
+#   .build/coverage/coverage-summary.txt llvm-cov report 摘要
+#   .build/coverage/coverage-show.txt    llvm-cov show 明细
 ```
 
-**当前限制**：以下命令只用于人工诊断。现有覆盖脚本尚未可靠传播构建、测试和 `llvm-cov` 失败，修复前不得把输出用作发布门禁或满覆盖证明。
+脚本从自身位置解析仓库根，用 `swift build --show-bin-path` 与 `xcrun --find` 发现产物和工具，不依赖用户目录、固定架构或固定 Xcode 路径。覆盖数据来自一次完整 `swift test --disable-sandbox --no-parallel --enable-code-coverage`，任何阶段失败（构建、测试、测试二进制缺失、无 profraw、合并失败、空报告）都以非零状态退出且不输出 `coverage_status=passed`。
+
+**脚本自测**：`zsh scripts/tests/test-coverage.sh` 用临时 PATH shim 注入六类故障（swift test 失败、空 profraw、合并失败、报告失败、空 show 输出、缺失 LLVM 工具），断言均非零退出且无成功结论，并检查脚本不含硬编码开发机路径。
 
 #### 关键陷阱与规避
 
@@ -229,9 +227,9 @@ xcrun llvm-cov show "$BIN" -instr-profile=default.profdata --ignore-filename-reg
 
 **陷阱二：按套件过滤运行**
 
-全量 `swift test` 可完整退出并产生 Swift Testing summary。`scripts/test-release.sh` 当前因性能测试清单过时而失败，修复前不能作为发布门禁。
+全量 `swift test` 可完整退出并产生 Swift Testing summary。`scripts/test-release.sh` 的发现集已改为数据驱动（以 Swift Testing 实际发现为准），可直接作为发布门禁。
 
-**规避**：全量测试可完整退出，但覆盖率收集仍建议按套件过滤运行（`--filter "<Suite名子串>"`），确保每个 profraw 正确落盘后由 `llvm-profdata merge` 合并。
+**规避**：覆盖率收集使用 `./scripts/coverage.sh` 一次完整运行（`--no-parallel` 规避 AppKit 监视器卡死），不再逐套件拼接 profraw。
 
 **陷阱三：测试自身导致覆盖率数据丢失**
 
@@ -282,16 +280,12 @@ swift build -c release --product LaunchPadApp
 # 全量测试（串行，禁用 sandbox）
 swift test --disable-sandbox --no-parallel
 
-# P0 release gate（当前因性能测试清单过时而失败）
+# P0 release gate（发现集以 Swift Testing 实际发现为准）
 ./scripts/test-release.sh
 
-# 带覆盖率（按套件过滤运行，规避 AppKit 监视器卡死）
-swift test --enable-code-coverage --disable-sandbox --filter "<Suite名子串>"
-
-# 覆盖率报告
-xcrun llvm-profdata merge -sparse .build/*/codecov/*.profraw -o default.profdata
-BIN=$(find .build -name LaunchPadPackageTests -type f -path "*MacOS*" | grep -v dSYM | head -1)
-xcrun llvm-cov report "$BIN" -instr-profile=default.profdata Sources/
+# 覆盖率（一次完整运行，输出 .build/coverage/）
+./scripts/coverage.sh
+# 产物：.build/coverage/coverage.profdata、coverage-summary.txt、coverage-show.txt
 ```
 
 ### 首次运行

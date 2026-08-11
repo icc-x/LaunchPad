@@ -25,7 +25,7 @@
 | Task | 范围 | 状态 | 提交 | 验收证据 |
 |---|---|---|---|---|
 | 1 | 严格编译与发布门禁 | 已完成 | 本提交 | 三轮均发现并执行 1109 项/62 suites；严格 Debug、Release 与完整门禁通过 |
-| 2 | 可信覆盖率工具 | 待处理 | - | - |
+| 2 | 可信覆盖率工具 | 已完成 | 本提交 | 六类故障注入与非空产物验证；真实运行 1109 项/62 suites，coverage_status=passed |
 | 3 | 发布打包、签名与公证流程 | 待处理 | - | - |
 | 4 | 布局事务与 PageItem 不变量 | 待处理 | - | - |
 | 5 | 分页无障碍 | 待处理 | - | - |
@@ -146,7 +146,7 @@ git commit -m "fix: enforce deterministic release builds"
 
 ### Task 2: Trustworthy Portable Coverage Tooling
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P1-12、P1-13、P2-16（覆盖率部分）
 
@@ -162,15 +162,15 @@ git commit -m "fix: enforce deterministic release builds"
 - Consumes: `swift test --enable-code-coverage`, `swift build --show-bin-path`, and `xcrun --find`.
 - Produces: `.build/coverage/coverage.profdata`, `coverage-summary.txt`, and `coverage-show.txt` with trustworthy exit status.
 
-- [ ] **Step 1: Mark Task 2 in progress**
+- [x] **Step 1: Mark Task 2 in progress**
 
 Update only Task 2 to `进行中`.
 
-- [ ] **Step 2: Write failure-injection tests**
+- [x] **Step 2: Write failure-injection tests**
 
 Use temporary PATH shims for `swift`, `xcrun`, `llvm-profdata`, and `llvm-cov`. Assert nonzero exit and no `coverage_status=passed` for: Swift test failure, empty profraw, merge failure, report failure, and empty show output. Assert the script contains no `/Users/`, `arm64-apple-macosx`, or `/Applications/Xcode.app`.
 
-- [ ] **Step 3: Implement the strict entrypoint**
+- [x] **Step 3: Implement the strict entrypoint**
 
 The implementation must preserve this discovery/data flow:
 
@@ -192,11 +192,11 @@ LLVM_COV=$("$XCRUN_BIN" --find llvm-cov)
 
 Require an executable test binary, at least one profraw, successful merge/report/show, and nonempty report/show files before printing `coverage_status=passed`.
 
-- [ ] **Step 4: Remove old entrypoints and update README**
+- [x] **Step 4: Remove old entrypoints and update README**
 
 After failure tests pass, delete the three historical scripts. README must name only `./scripts/coverage.sh` and must not equate successful report generation with 100% coverage.
 
-- [ ] **Step 5: Verify Task 2**
+- [x] **Step 5: Verify Task 2**
 
 ```bash
 zsh -n scripts/coverage.sh scripts/tests/test-coverage.sh
@@ -211,9 +211,12 @@ swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
 git diff --check
 ```
 
-- [ ] **Step 6: Complete and commit Task 2**
+- [x] **Step 6: Complete and commit Task 2**
 
-Record normal and five injected results, mark Task 2 `已完成`, then commit:
+验收证据（2026-08-11）：
+- `zsh scripts/tests/test-coverage.sh` 通过：六类故障注入（swift test 失败、空 profraw、合并失败、报告失败、空 show 输出、缺失 LLVM 工具）均非零退出且无 `coverage_status=passed`；成功路径退出 0 并输出三个非空产物；静态断言无 `/Users/`、`arm64-apple-macosx`、`/Applications/Xcode.app`。
+- 真实 `./scripts/coverage.sh` 运行：1109 tests / 62 suites passed，`coverage_status=passed`；`coverage.profdata`（836 KB）、`coverage-summary.txt`（11 KB）、`coverage-show.txt`（519 KB）均为非空。
+- `swift test --disable-sandbox`（1109/62 通过）、严格 Debug/Release 构建、`git diff --check` 全部通过。
 
 ```bash
 git add README.md scripts docs/release-readiness-plan.md
