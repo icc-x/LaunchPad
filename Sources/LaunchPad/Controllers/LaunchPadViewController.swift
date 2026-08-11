@@ -79,7 +79,7 @@ public class LaunchPadViewController: NSViewController {
     private let layoutRepository: any LayoutRepositoryProtocol
     private let iconCache: any IconCaching
     let keyboardNavigator: KeyboardNavigator
-    let dragController: DragController
+    let dragController: any LaunchPadDragControlling & GridDragControlling & FolderDragControlling
     private let applicationOpener: (URL) -> Void
     /// 窗口生命周期状态机（nil 时回退到 applicationOpener）
     public var lifecycle: WindowLifecycle?
@@ -222,7 +222,7 @@ public class LaunchPadViewController: NSViewController {
         layoutRepository: any LayoutRepositoryProtocol,
         iconCache: any IconCaching,
         keyboardNavigator: KeyboardNavigator = KeyboardNavigator(),
-        dragController: DragController,
+        dragController: any LaunchPadDragControlling & GridDragControlling & FolderDragControlling,
         applicationOpener: @escaping (URL) -> Void,
         searchScheduler: Scheduler = DispatchQueueScheduler()
     ) {

@@ -69,7 +69,7 @@ public class FolderOverlayView: NSView {
     /// 文件夹浮层内的拖放交互当前是否可用。
     public var isDragEnabled = true
 
-    public var dragController: DragController?
+    var dragController: (any FolderDragControlling)?
     public var onDropRequested: ((DragSession, FolderDropDestination) -> Bool)?
     public var topLevelPlacementResolver: ((NSPoint) -> ItemPlacement?)?
     public private(set) var currentFolderID: Int64?

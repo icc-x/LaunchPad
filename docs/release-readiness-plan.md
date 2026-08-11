@@ -29,7 +29,7 @@
 | 3 | 发布打包、签名与公证流程 | 已完成 | 本提交 | 测试 7 类场景通过；dry-run 无副作用；真实签名公证留外部验收 |
 | 4 | 布局事务与 PageItem 不变量 | 已完成 | 本提交 | 工厂+验证器落地；1110/61 全量通过；直接构造点清零 |
 | 5 | 分页无障碍 | 已完成 | 本提交 | slider 角色+value+增减动作；六分支测试通过；1116/61 全量通过 |
-| 6 | 拖拽状态所有权与输入常量 | 待处理 | - | - |
+| 6 | 拖拽状态所有权与输入常量 | 已完成 | 本提交 | 窄协议+具名键码；字面量扫描零命中；1122/64 通过 |
 | 7 | 生命周期安全、CI 与最终验收 | 待处理 | - | - |
 
 状态只允许：`待处理`、`进行中`、`已完成`、`阻塞`。
@@ -455,7 +455,7 @@ git commit -m "feat: make page control accessible"
 
 ### Task 6: Narrow Drag Ownership And Named Key Codes
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P2-14、P3-4
 
@@ -468,19 +468,19 @@ git commit -m "feat: make page control accessible"
 - Consumes: the existing DragController state machine and Carbon virtual key values.
 - Produces: consumer-owned protocols and named KeyboardKeyCode values without duplicate drag state.
 
-- [ ] **Step 1: Mark Task 6 in progress**
+- [x] **Step 1: Mark Task 6 in progress**
 
 Update only Task 6 to `进行中`.
 
-- [ ] **Step 2: Write failing dependency and mapping tests**
+- [x] **Step 2: Write failing dependency and mapping tests**
 
 Use protocol fakes to exercise coordinator and folder begin/hover/cancel/finish without concrete DragController. Test escape, return, arrows, tab, delete, space, and unknown key codes.
 
-- [ ] **Step 3: Add narrow drag protocols**
+- [x] **Step 3: Add narrow drag protocols**
 
 Define `LaunchPadDragControlling` beside `LaunchPadViewController`, `GridDragControlling` beside `AppGridInteractionCoordinator`, and `FolderDragControlling` beside `FolderOverlayView`. Each protocol declares only the existing properties and commands used in that file. Make DragController conform through extensions without changing its 38 state branches; only AppDelegate constructs the concrete controller.
 
-- [ ] **Step 4: Centralize key codes**
+- [x] **Step 4: Centralize key codes**
 
 ```swift
 enum KeyboardKeyCode {
@@ -499,7 +499,7 @@ enum KeyboardKeyCode {
 
 Use `.space` in AppDelegate/HotkeyManager and the mapping method for navigation. Unknown raw values remain only in tests.
 
-- [ ] **Step 5: Verify all drag terminal branches and literal scans**
+- [x] **Step 5: Verify all drag terminal branches and literal scans**
 
 ```bash
 swift test --filter 'DragController|AppGridInteractionCoordinator|FolderOverlayView|HotkeyManager|AppDelegate'
@@ -512,9 +512,12 @@ git diff --check
 
 The literal scan must have no output outside KeyboardKeyCode.swift.
 
-- [ ] **Step 6: Complete and commit Task 6**
+- [x] **Step 6: Complete and commit Task 6**
 
-Record branch tests and scans, mark Task 6 `已完成`, then commit:
+验收证据（2026-08-11）：
+- 三个窄协议 `LaunchPadDragControlling` / `GridDragControlling` / `FolderDragControlling` 按消费者声明；`DragController` 通过 extension 符合，38 个状态分支零改动；`LaunchPadViewController` 用组合协议类型（内部转交 coordinator 与 folderOverlay），`FolderOverlayView` 属性为 `any FolderDragControlling`。
+- 新增 `KeyboardKeyCode` 具名键码与 `navigationKey(for:)` 映射；AppDelegate/HotkeyManager 改用具名常量；生产代码键码字面量扫描零命中。
+- 新增协议 fake 测试（coordinator finish/handleCancel、folder finish、键码映射 10 项）共 6 项全部通过；全量 `swift test --disable-sandbox` 1122 tests / 64 suites 通过；严格 Debug/Release 构建、`git diff --check` 通过。
 
 ```bash
 git add Sources Tests docs/release-readiness-plan.md

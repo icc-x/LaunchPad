@@ -2,6 +2,42 @@ import Foundation
 import CoreGraphics
 import LaunchPadProtocols
 
+/// LaunchPadViewController 消费的窄拖拽接口：只声明该控制器用到的状态与命令。
+@MainActor
+protocol LaunchPadDragControlling: AnyObject {
+    var state: DragController.DragState { get }
+    var session: DragSession? { get }
+    var onPageChange: ((DragPageDirection) -> Void)? { get set }
+    func handlePressBegan(at point: CGPoint)
+    func handleDragMoved(to point: CGPoint)
+    func handlePressEnded()
+    func finishDrag()
+    func cancelDrag()
+    func handleCancel()
+}
+
+/// AppGridInteractionCoordinator 消费的窄拖拽接口：原生拖拽与会话管理。
+@MainActor
+protocol GridDragControlling: AnyObject {
+    var session: DragSession? { get }
+    var onFolderCreationPreviewChanged: ((Int64?) -> Void)? { get set }
+    func beginDrag(_ session: DragSession)
+    func updateDragHover(_ destination: DragHoverDestination)
+    func cancelDrag()
+    func finishDrag()
+    func handleCancel()
+}
+
+/// FolderOverlayView 消费的窄拖拽接口：文件夹内拖拽会话管理。
+@MainActor
+protocol FolderDragControlling: AnyObject {
+    var session: DragSession? { get }
+    func beginDrag(_ session: DragSession)
+    func updateDragHover(_ destination: DragHoverDestination)
+    func cancelDrag()
+    func finishDrag()
+}
+
 /// 拖拽状态机，管理从 idle → jiggling → dragging → idle 的完整生命周期。
 @MainActor
 public final class DragController {
@@ -297,3 +333,5 @@ public final class DispatchQueueScheduler: Scheduler {
         pendingWork.cancel()
     }
 }
+
+extension DragController: LaunchPadDragControlling, GridDragControlling, FolderDragControlling {}

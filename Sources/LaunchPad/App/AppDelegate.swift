@@ -363,7 +363,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             runner { [weak self] in self?.windowController.toggle() }
         }
 
-        let registered = hotkeyManager.registerGlobalHotkey(keyCode: 49, modifiers: .option) // Option+Space
+        let registered = hotkeyManager.registerGlobalHotkey(
+            keyCode: UInt32(KeyboardKeyCode.space),
+            modifiers: .option
+        ) // Option+Space
 
         if !registered && hotkeyManager.hasConflict {
             // 快捷键被其他应用占用，提示用户
@@ -407,17 +410,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
                     return false
                 }
 
-                let key: KeyboardNavigator.Key? = switch keyCode {
-                case 53:  .escape
-                case 36:  .enter
-                case 126: .upArrow
-                case 125: .downArrow
-                case 123: .leftArrow
-                case 124: .rightArrow
-                case 48:  .tab
-                case 51:  .delete
-                default:  nil
-                }
+                let key = KeyboardKeyCode.navigationKey(for: keyCode)
 
                 if let key {
                     return viewController.handleKeyEvent(key) != .ignored

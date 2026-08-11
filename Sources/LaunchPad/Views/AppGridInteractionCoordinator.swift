@@ -31,7 +31,7 @@ protocol AppGridInteractionHosting: AnyObject {
 final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     private(set) weak var host: (any AppGridInteractionHosting)?
     private weak var collectionView: NSCollectionView?
-    let dragController: DragController
+    let dragController: any GridDragControlling
 
     var isDragEnabled = true {
         didSet {
@@ -45,7 +45,7 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     var pasteboardUUIDReader: (NSPasteboard) -> String?
 
     init(
-        dragController: DragController,
+        dragController: any GridDragControlling,
         pasteboardUUIDReader: @escaping (NSPasteboard) -> String?
     ) {
         self.dragController = dragController

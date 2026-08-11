@@ -183,7 +183,7 @@ public final class HotkeyManager: HotkeyManaging {
 
         case .keyDown:
             let keyCode = event.getIntegerValueField(.keyboardEventKeycode)
-            if isOptionHeld && keyCode == 49 { // 49 = Space
+            if isOptionHeld && keyCode == UInt32(KeyboardKeyCode.space) {
                 onToggle?()
             }
 
