@@ -364,15 +364,7 @@ struct AppDelegateTests {
     }
 
     private func pageItem() -> PageItem {
-        PageItem(
-            id: 1,
-            uuid: UUID().uuidString,
-            type: .page,
-            ordering: 0,
-            parentId: nil,
-            app: nil,
-            group: nil
-        )
+        PageItem.page(id: 1, uuid: UUID().uuidString, ordering: 0)
     }
 
     private func referencesSameObject(_ lhs: Any, _ rhs: Any) -> Bool {

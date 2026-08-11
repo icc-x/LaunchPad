@@ -394,8 +394,8 @@ struct StorageManagerAdvancedTests {
         #expect(titles == ["Calculator", "Terminal"])
     }
 
-    @Test("fetchAllItems 遇到无效 type 值时回退为 .app")
-    func fetchAllItems_invalidType_fallsBackToApp() throws {
+    @Test("fetchAllItems 遇到无效 type 值时拒绝并报 invalidItem")
+    func fetchAllItems_invalidType_rejects() throws {
         let sut = try StorageManager(dbPath: ":memory:", schemaSetup: { db in
             sqlite3_exec(db, Schema.createItemsTable, nil, nil, nil)
             sqlite3_exec(db, Schema.createAppsTable, nil, nil, nil)
@@ -407,10 +407,9 @@ struct StorageManagerAdvancedTests {
             sqlite3_exec(db, "INSERT INTO apps (item_id, title, bundle_id, path) VALUES (1, 'BadType', 'com.bad', '/p')", nil, nil, nil)
         })
 
-        let items = try sut.fetchAllItems(parentId: nil)
-        #expect(items.count == 1)
-        #expect(items.first?.type == .app)
-        #expect(items.first?.app?.title == "BadType")
+        #expect(throws: StorageError.invalidItem) {
+            _ = try sut.fetchAllItems(parentId: nil)
+        }
     }
 }
 
@@ -430,8 +429,8 @@ struct StorageManagerUpdateTests {
 
         let updatedApp = AppInfo(id: id, title: "NewName", bundleId: "com.update.app",
                                  path: "/new/path", storeId: nil, category: nil)
-        let updatedItem = PageItem(id: id, uuid: item.uuid, type: .app, ordering: 5,
-                                   parentId: nil, app: updatedApp, group: nil)
+        let updatedItem = PageItem.app(id: id, uuid: item.uuid, ordering: 5,
+                                       parentId: nil, app: updatedApp)
         try sut.updateItem(updatedItem)
 
         let fetched = try sut.fetchAllItems(parentId: nil).first
@@ -449,8 +448,8 @@ struct StorageManagerUpdateTests {
 
         let updatedApp = AppInfo(id: id, title: "App", bundleId: "com.sc.app",
                                  path: "/p2", storeId: "store123", category: "Games")
-        let updatedItem = PageItem(id: id, uuid: item.uuid, type: .app, ordering: 0,
-                                   parentId: nil, app: updatedApp, group: nil)
+        let updatedItem = PageItem.app(id: id, uuid: item.uuid, ordering: 0,
+                                       parentId: nil, app: updatedApp)
         try sut.updateItem(updatedItem)
 
         let fetched = try sut.fetchAllItems(parentId: nil).first
@@ -466,8 +465,8 @@ struct StorageManagerUpdateTests {
         let id = try sut.insertItem(item)
 
         let updatedGroup = GroupInfo(id: id, title: "NewFolder")
-        let updatedItem = PageItem(id: id, uuid: item.uuid, type: .group, ordering: 1,
-                                   parentId: nil, app: nil, group: updatedGroup)
+        let updatedItem = PageItem.group(id: id, uuid: item.uuid, ordering: 1,
+                                         parentId: nil, group: updatedGroup)
         try sut.updateItem(updatedItem)
 
         let fetched = try sut.fetchAllItems(parentId: nil).first
@@ -483,8 +482,8 @@ struct StorageManagerUpdateTests {
         let id = try sut.insertItem(item)
 
         // 移动到 page 下并改 ordering
-        let updatedItem = PageItem(id: id, uuid: item.uuid, type: .app, ordering: 9,
-                                   parentId: pageId, app: app, group: nil)
+        let updatedItem = PageItem.app(id: id, uuid: item.uuid, ordering: 9,
+                                       parentId: pageId, app: app)
         try sut.updateItem(updatedItem)
 
         let topItems = try sut.fetchAllItems(parentId: nil)
@@ -1016,13 +1015,11 @@ struct StorageManagerSQLiteBoundaryTests {
         let itemID = try updateSUT.insertItem(item)
         updateScript.failNext(.changes(.updateGroupMetadata), code: 0)
         #expect(throws: StorageError.updateFailed) {
-            try updateSUT.updateItem(PageItem(
+            try updateSUT.updateItem(PageItem.group(
                 id: itemID,
                 uuid: item.uuid,
-                type: .group,
                 ordering: 5,
                 parentId: nil,
-                app: nil,
                 group: GroupInfo(id: itemID, title: "After")
             ))
         }
@@ -1162,10 +1159,9 @@ struct StorageManagerSQLiteBoundaryTests {
         let removableID = try sut.insertItem(
             TestDataFactory.makePageItem(uuid: "queue-removable", type: .page)
         )
-        try sut.updateItem(PageItem(
+        try sut.updateItem(PageItem.app(
             id: appID,
             uuid: "queue-app",
-            type: .app,
             ordering: 0,
             parentId: pageID,
             app: AppInfo(
@@ -1175,8 +1171,7 @@ struct StorageManagerSQLiteBoundaryTests {
                 path: app.path,
                 storeId: nil,
                 category: nil
-            ),
-            group: nil
+            )
         ))
         try sut.deleteItem(id: removableID)
         _ = try sut.fetchAllItems(parentId: pageID)

@@ -10,10 +10,9 @@ struct SearchEngineTests {
         title: String,
         bundleId: String = "com.test.app"
     ) -> PageItem {
-        PageItem(
+        PageItem.app(
             id: Int64.random(in: 1...Int64.max),
             uuid: UUID().uuidString,
-            type: .app,
             ordering: 0,
             parentId: nil,
             app: AppInfo(
@@ -23,19 +22,16 @@ struct SearchEngineTests {
                 path: "/Applications/\(title).app",
                 storeId: nil,
                 category: nil
-            ),
-            group: nil
+            )
         )
     }
 
     private func makeGroupItem(title: String) -> PageItem {
-        PageItem(
+        PageItem.group(
             id: Int64.random(in: 1...Int64.max),
             uuid: UUID().uuidString,
-            type: .group,
             ordering: 0,
             parentId: nil,
-            app: nil,
             group: GroupInfo(
                 id: Int64.random(in: 1...Int64.max),
                 title: title
@@ -145,10 +141,9 @@ struct SearchEngineSearchTests {
         title: String,
         bundleId: String = "com.test.app"
     ) -> PageItem {
-        PageItem(
+        PageItem.app(
             id: Int64.random(in: 1...Int64.max),
             uuid: UUID().uuidString,
-            type: .app,
             ordering: 0,
             parentId: nil,
             app: AppInfo(
@@ -158,8 +153,7 @@ struct SearchEngineSearchTests {
                 path: "/Applications/\(title).app",
                 storeId: nil,
                 category: nil
-            ),
-            group: nil
+            )
         )
     }
 
@@ -222,17 +216,17 @@ struct SearchEngineSearchTests {
 @Suite("SearchEngine 分支覆盖")
 struct SearchEngineBranchTests {
 
-    @Test("match 在 app 与 group 均为空时返回 0")
+    @Test("match 在无元数据（page 类型）时返回 0")
     func match_appAndGroupNil_returnsZero() {
         let sut = SearchEngine()
-        let item = TestDataFactory.makePageItem(type: .app, app: nil, group: nil)
+        let item = TestDataFactory.makePageItem(type: .page)
         #expect(sut.match(item: item, query: "test") == 0)
     }
 
-    @Test("search 在 app 与 group 均为空时过滤该项")
+    @Test("search 在无元数据（page 类型）时过滤该项")
     func search_appAndGroupNil_returnsEmpty() {
         let sut = SearchEngine()
-        let item = TestDataFactory.makePageItem(type: .app, app: nil, group: nil)
+        let item = TestDataFactory.makePageItem(type: .page)
         #expect(sut.search(items: [item], query: "test").isEmpty)
     }
 

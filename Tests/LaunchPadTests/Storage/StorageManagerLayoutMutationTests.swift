@@ -247,6 +247,11 @@ struct StorageManagerLayoutMutationTests {
                         (2, 'corrupt-source', \(ItemType.app.rawValue), 1, 0),
                         (3, 'corrupt-anchor', \(ItemType.app.rawValue), 1, 1)
                     """,
+                    """
+                    INSERT INTO apps (item_id, title, bundle_id, path) VALUES
+                        (2, 'Source', 'com.source', '/s'),
+                        (3, 'Anchor', 'com.anchor', '/a')
+                    """,
                 ]
                 for statement in statements {
                     precondition(
@@ -260,7 +265,9 @@ struct StorageManagerLayoutMutationTests {
                 case .invalidRoot:
                     corruptionSQL = """
                         INSERT INTO items VALUES
-                            (90, 'invalid-root', \(ItemType.app.rawValue), NULL, 2)
+                            (90, 'invalid-root', \(ItemType.app.rawValue), NULL, 2);
+                        INSERT INTO apps (item_id, title, bundle_id, path) VALUES
+                            (90, 'Invalid Root', 'com.bad', '/p')
                         """
                 case .invalidPageChild:
                     corruptionSQL = """
@@ -268,35 +275,34 @@ struct StorageManagerLayoutMutationTests {
                             (90, 'invalid-page-child', \(ItemType.page.rawValue), 1, 2)
                         """
                 case .invalidFolderChild:
-                    precondition(sqlite3_exec(
-                        database,
-                        """
-                        INSERT INTO items VALUES
-                            (10, 'folder', \(ItemType.group.rawValue), 1, 2)
-                        """,
-                        nil,
-                        nil,
-                        nil
-                    ) == SQLITE_OK)
                     corruptionSQL = """
                         INSERT INTO items VALUES
-                            (90, 'invalid-folder-child', \(ItemType.group.rawValue), 10, 0)
+                            (10, 'folder', \(ItemType.group.rawValue), 1, 2),
+                            (90, 'invalid-folder-child', \(ItemType.group.rawValue), 10, 0);
+                        INSERT INTO groups (item_id, title) VALUES
+                            (10, 'Folder'), (90, 'Nested Group')
                         """
                 case .duplicateRelationship:
                     corruptionSQL = """
                         INSERT INTO items VALUES
                             (90, 'duplicate-a', \(ItemType.app.rawValue), 1, 2),
-                            (90, 'duplicate-b', \(ItemType.app.rawValue), 1, 3)
+                            (90, 'duplicate-b', \(ItemType.app.rawValue), 1, 3);
+                        INSERT INTO apps (item_id, title, bundle_id, path) VALUES
+                            (90, 'Duplicate', 'com.dup', '/d')
                         """
                 case .unreachableRelationship:
                     corruptionSQL = """
                         INSERT INTO items VALUES
-                            (90, 'nested-under-app', \(ItemType.app.rawValue), 2, 0)
+                            (90, 'nested-under-app', \(ItemType.app.rawValue), 2, 0);
+                        INSERT INTO apps (item_id, title, bundle_id, path) VALUES
+                            (90, 'Nested', 'com.nested', '/n')
                         """
                 case .orphanRow:
                     corruptionSQL = """
                         INSERT INTO items VALUES
-                            (90, 'orphan-row', \(ItemType.app.rawValue), 999, 0)
+                            (90, 'orphan-row', \(ItemType.app.rawValue), 999, 0);
+                        INSERT INTO apps (item_id, title, bundle_id, path) VALUES
+                            (90, 'Orphan', 'com.orphan', '/o')
                         """
                 }
                 precondition(

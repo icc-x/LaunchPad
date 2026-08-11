@@ -221,10 +221,11 @@ struct FolderCellTests {
         #expect(receivedTitle == nil)
     }
 
-    @Test func configure_nilGroup_usesDefaultTitle() {
+    @Test func configure_group_usesGroupTitleAsLabel() {
         let cell = makeSUT()
         let item = TestDataFactory.makePageItem(
-            id: 1, type: .group, ordering: 0, group: nil
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(title: "Folder")
         )
         cell.configure(item: item, childIcons: [])
         #expect(cell.view.accessibilityLabel() == "Folder")

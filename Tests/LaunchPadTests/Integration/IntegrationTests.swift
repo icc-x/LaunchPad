@@ -301,14 +301,14 @@ struct IntegrationTests {
     func storageManager_threeLevelNesting() throws {
         let storage = try StorageManager(dbPath: ":memory:")
 
-        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let page = PageItem.page(id: 0, uuid: UUID().uuidString, ordering: 0)
         let pageId = try storage.insertItem(page)
 
-        let group = PageItem(id: 0, uuid: UUID().uuidString, type: .group, ordering: 0, parentId: pageId, app: nil, group: GroupInfo(id: 0, title: "Utilities"))
+        let group = PageItem.group(id: 0, uuid: UUID().uuidString, ordering: 0, parentId: pageId, group: GroupInfo(id: 0, title: "Utilities"))
         let groupId = try storage.insertItem(group)
 
-        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "Calculator", bundleId: "com.test.calc", path: "/Applications/Calculator.app", storeId: nil, category: nil), group: nil)
-        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "Terminal", bundleId: "com.test.term", path: "/Applications/Terminal.app", storeId: nil, category: nil), group: nil)
+        let app1 = PageItem.app(id: 0, uuid: UUID().uuidString, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "Calculator", bundleId: "com.test.calc", path: "/Applications/Calculator.app", storeId: nil, category: nil))
+        let app2 = PageItem.app(id: 0, uuid: UUID().uuidString, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "Terminal", bundleId: "com.test.term", path: "/Applications/Terminal.app", storeId: nil, category: nil))
         try storage.insertItem(app1)
         try storage.insertItem(app2)
 
@@ -329,14 +329,14 @@ struct IntegrationTests {
     func storageManager_deleteGroup_cascadeDelete() throws {
         let storage = try StorageManager(dbPath: ":memory:")
 
-        let page = PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: 0, parentId: nil, app: nil, group: nil)
+        let page = PageItem.page(id: 0, uuid: UUID().uuidString, ordering: 0)
         let pageId = try storage.insertItem(page)
 
-        let group = PageItem(id: 0, uuid: UUID().uuidString, type: .group, ordering: 0, parentId: pageId, app: nil, group: GroupInfo(id: 0, title: "Folder"))
+        let group = PageItem.group(id: 0, uuid: UUID().uuidString, ordering: 0, parentId: pageId, group: GroupInfo(id: 0, title: "Folder"))
         let groupId = try storage.insertItem(group)
 
-        let app1 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app", storeId: nil, category: nil), group: nil)
-        let app2 = PageItem(id: 0, uuid: UUID().uuidString, type: .app, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "App2", bundleId: "com.test.app2", path: "/Applications/App2.app", storeId: nil, category: nil), group: nil)
+        let app1 = PageItem.app(id: 0, uuid: UUID().uuidString, ordering: 0, parentId: groupId, app: AppInfo(id: 0, title: "App1", bundleId: "com.test.app1", path: "/Applications/App1.app", storeId: nil, category: nil))
+        let app2 = PageItem.app(id: 0, uuid: UUID().uuidString, ordering: 1, parentId: groupId, app: AppInfo(id: 0, title: "App2", bundleId: "com.test.app2", path: "/Applications/App2.app", storeId: nil, category: nil))
         try storage.insertItem(app1)
         try storage.insertItem(app2)
 

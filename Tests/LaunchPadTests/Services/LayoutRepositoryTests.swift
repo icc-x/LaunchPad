@@ -108,26 +108,16 @@ struct LayoutRepositoryTests {
     }
 
     private func makePage(id: Int64 = 1) -> PageItem {
-        PageItem(
-            id: id,
-            uuid: "page-\(id)",
-            type: .page,
-            ordering: 0,
-            parentId: nil,
-            app: nil,
-            group: nil
-        )
+        PageItem.page(id: id, uuid: "page-\(id)", ordering: 0)
     }
 
-    private func makeFolder(group: GroupInfo?) -> PageItem {
-        PageItem(
+    private func makeFolder(group: GroupInfo? = nil) -> PageItem {
+        PageItem.group(
             id: 5,
             uuid: "folder-5",
-            type: .group,
             ordering: 2,
             parentId: 1,
-            app: nil,
-            group: group
+            group: group ?? GroupInfo(id: 5, title: "New Folder")
         )
     }
 

@@ -32,15 +32,14 @@ actor LayoutRepository: LayoutRepositoryProtocol {
     }
 
     func renameFolder(_ item: PageItem, newTitle: String) async throws {
-        var group = item.group ?? GroupInfo(id: item.id, title: newTitle)
+        let baseGroup = item.group ?? GroupInfo(id: item.id, title: newTitle)
+        var group = baseGroup
         group.title = newTitle
-        try writer.updateItem(PageItem(
+        try writer.updateItem(PageItem.group(
             id: item.id,
             uuid: item.uuid,
-            type: item.type,
             ordering: item.ordering,
             parentId: item.parentId,
-            app: item.app,
             group: group
         ))
     }

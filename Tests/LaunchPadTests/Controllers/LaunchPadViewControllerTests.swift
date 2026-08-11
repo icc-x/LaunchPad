@@ -130,15 +130,22 @@ struct LaunchPadViewControllerTests {
             }
             let children = childrenByPage.flatMap { parentID, items in
                 items.map { item in
-                    PageItem(
-                        id: item.id,
-                        uuid: item.uuid,
-                        type: item.type,
-                        ordering: item.ordering,
-                        parentId: parentID,
-                        app: item.app,
-                        group: item.group
-                    )
+                    switch item.type {
+                    case .page:
+                        return PageItem.page(id: item.id, uuid: item.uuid, ordering: item.ordering)
+                    case .app:
+                        return PageItem.app(
+                            id: item.id, uuid: item.uuid, ordering: item.ordering,
+                            parentId: parentID,
+                            app: item.app ?? TestDataFactory.makeAppInfo(id: item.id)
+                        )
+                    case .group:
+                        return PageItem.group(
+                            id: item.id, uuid: item.uuid, ordering: item.ordering,
+                            parentId: parentID,
+                            group: item.group ?? TestDataFactory.makeGroupInfo(id: item.id)
+                        )
+                    }
                 }
             }
             return PersistedLayoutSnapshot(allItems: pages + children)
@@ -2015,14 +2022,15 @@ struct LaunchPadViewControllerTests {
                 )
             )
             let id = try storage.insertItem(item)
-            return PageItem(
+            guard let app = item.app else {
+                return PageItem.page(id: id, uuid: item.uuid, ordering: item.ordering)
+            }
+            return PageItem.app(
                 id: id,
                 uuid: item.uuid,
-                type: item.type,
                 ordering: item.ordering,
                 parentId: item.parentId,
-                app: item.app,
-                group: item.group
+                app: app
             )
         }
         let sut = makeSUT(storage: storage)
@@ -2063,14 +2071,15 @@ struct LaunchPadViewControllerTests {
             app: TestDataFactory.makeAppInfo(bundleId: "com.test.delete.obsolete")
         )
         let removedID = try storage.insertItem(removedTemplate)
-        let removed = PageItem(
+        guard let removedApp = removedTemplate.app else {
+            return
+        }
+        let removed = PageItem.app(
             id: removedID,
             uuid: removedTemplate.uuid,
-            type: removedTemplate.type,
             ordering: removedTemplate.ordering,
             parentId: removedTemplate.parentId,
-            app: removedTemplate.app,
-            group: removedTemplate.group
+            app: removedApp
         )
         let sut = makeSUT(storage: storage)
         layout(sut)
@@ -2100,14 +2109,15 @@ struct LaunchPadViewControllerTests {
             app: TestDataFactory.makeAppInfo(bundleId: "com.test.delete.only")
         )
         let itemID = try storage.insertItem(item)
-        let persistedItem = PageItem(
+        guard let persistedApp = item.app else {
+            return
+        }
+        let persistedItem = PageItem.app(
             id: itemID,
             uuid: item.uuid,
-            type: item.type,
             ordering: item.ordering,
             parentId: item.parentId,
-            app: item.app,
-            group: item.group
+            app: persistedApp
         )
         let sut = makeSUT(storage: storage)
         layout(sut)

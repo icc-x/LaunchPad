@@ -12,8 +12,26 @@ enum TestDataFactory {
         app: AppInfo? = nil,
         group: GroupInfo? = nil
     ) -> PageItem {
-        PageItem(id: id, uuid: uuid, type: type, ordering: ordering,
-                 parentId: parentId, app: app, group: group)
+        switch type {
+        case .page:
+            return PageItem.page(id: id, uuid: uuid, ordering: ordering)
+        case .app:
+            return PageItem.app(
+                id: id,
+                uuid: uuid,
+                ordering: ordering,
+                parentId: parentId,
+                app: app ?? makeAppInfo()
+            )
+        case .group:
+            return PageItem.group(
+                id: id,
+                uuid: uuid,
+                ordering: ordering,
+                parentId: parentId,
+                group: group ?? makeGroupInfo()
+            )
+        }
     }
 
     static func makeAppInfo(

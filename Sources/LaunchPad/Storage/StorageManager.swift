@@ -367,10 +367,9 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
             guard let old = item.app,
                   let fresh = scannedByBundle[old.bundleId],
                   old.title != fresh.name || old.path != fresh.path else { continue }
-            let updated = PageItem(
+            let updated = PageItem.app(
                 id: item.id,
                 uuid: item.uuid,
-                type: item.type,
                 ordering: item.ordering,
                 parentId: item.parentId,
                 app: AppInfo(
@@ -380,8 +379,7 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
                     path: fresh.path,
                     storeId: old.storeId,
                     category: old.category
-                ),
-                group: item.group
+                )
             )
             _ = try attemptScanWrite(
                 database: database,
@@ -466,18 +464,23 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
     }
 
     private func makeScanPage(ordering: Int) -> PageItem {
-        PageItem(id: 0, uuid: UUID().uuidString, type: .page, ordering: ordering, parentId: nil, app: nil, group: nil)
+        PageItem.page(id: 0, uuid: UUID().uuidString, ordering: ordering)
     }
 
     private func makeScanApp(_ scanned: ScannedApp, parentID: Int64, ordering: Int) -> PageItem {
-        PageItem(
+        PageItem.app(
             id: 0,
             uuid: UUID().uuidString,
-            type: .app,
             ordering: ordering,
             parentId: parentID,
-            app: AppInfo(id: 0, title: scanned.name, bundleId: scanned.bundleId, path: scanned.path, storeId: nil, category: nil),
-            group: nil
+            app: AppInfo(
+                id: 0,
+                title: scanned.name,
+                bundleId: scanned.bundleId,
+                path: scanned.path,
+                storeId: nil,
+                category: nil
+            )
         )
     }
 
@@ -563,7 +566,7 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
         var items: [PageItem] = []
         var stepCode = sqliteDriver.step(statement, kind: kind)
         while stepCode == SQLITE_ROW {
-            items.append(decodePageItem(statement: statement))
+            items.append(try decodePageItem(statement: statement))
             stepCode = sqliteDriver.step(statement, kind: kind)
         }
         guard stepCode == SQLITE_DONE else {
@@ -1320,7 +1323,7 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
         var items: [PageItem] = []
         var stepCode = sqliteDriver.step(statement, kind: kind)
         while stepCode == SQLITE_ROW {
-            items.append(decodePageItem(statement: statement))
+            items.append(try decodePageItem(statement: statement))
             stepCode = sqliteDriver.step(statement, kind: kind)
         }
         guard stepCode == SQLITE_DONE else { throw StorageError.queryFailed }
@@ -1474,7 +1477,7 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
         return result
     }
 
-    private func decodePageItem(statement: OpaquePointer?) -> PageItem {
+    private func decodePageItem(statement: OpaquePointer?) throws -> PageItem {
         let id = sqlite3_column_int64(statement, 0)
         let uuid = sqlite3_column_text(statement, 1).map {
             String(cString: $0)
@@ -1484,10 +1487,18 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
         let parentID: Int64? = sqlite3_column_type(statement, 4) == SQLITE_NULL
             ? nil
             : sqlite3_column_int64(statement, 4)
-        let type = ItemType(rawValue: typeRaw) ?? .app
+        guard let type = ItemType(rawValue: typeRaw) else {
+            throw StorageError.invalidItem
+        }
         var app: AppInfo?
         var group: GroupInfo?
-        if type == .app {
+        switch type {
+        case .app:
+            guard sqlite3_column_type(statement, 5) != SQLITE_NULL,
+                  sqlite3_column_type(statement, 6) != SQLITE_NULL,
+                  sqlite3_column_type(statement, 7) != SQLITE_NULL else {
+                throw StorageError.invalidItem
+            }
             app = AppInfo(
                 id: id,
                 title: sqlite3_column_text(statement, 5).map {
@@ -1506,23 +1517,46 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
                     String(cString: $0)
                 }
             )
-        } else if type == .group {
+        case .group:
+            guard sqlite3_column_type(statement, 10) != SQLITE_NULL else {
+                throw StorageError.invalidItem
+            }
             group = GroupInfo(
                 id: id,
                 title: sqlite3_column_text(statement, 10).map {
                     String(cString: $0)
                 } ?? "New Folder"
             )
+        case .page:
+            break
         }
-        return PageItem(
-            id: id,
-            uuid: uuid,
-            type: type,
-            ordering: ordering,
-            parentId: parentID,
-            app: app,
-            group: group
-        )
+        switch type {
+        case .app:
+            guard let app else { throw StorageError.invalidItem }
+            return PageItem.app(
+                id: id,
+                uuid: uuid,
+                ordering: ordering,
+                parentId: parentID,
+                app: app
+            )
+        case .group:
+            guard let group else { throw StorageError.invalidItem }
+            return PageItem.group(
+                id: id,
+                uuid: uuid,
+                ordering: ordering,
+                parentId: parentID,
+                group: group
+            )
+        case .page:
+            return PageItem.page(
+                id: id,
+                uuid: uuid,
+                ordering: ordering,
+                parentId: parentID
+            )
+        }
     }
 }
 
@@ -1540,4 +1574,5 @@ public enum StorageError: Error, Equatable {
     case beginFailed
     case commitFailed
     case storageUnavailable
+    case invalidItem
 }

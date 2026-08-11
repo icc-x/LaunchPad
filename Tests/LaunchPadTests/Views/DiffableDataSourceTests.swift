@@ -13,10 +13,9 @@ struct DiffableDataSourceTests {
     // MARK: - Helpers
 
     private func makeItem(id: Int64, title: String, parentId: Int64? = nil) -> PageItem {
-        return PageItem(
+        return PageItem.app(
             id: id,
             uuid: "uuid-\(id)",
-            type: .app,
             ordering: Int(id),
             parentId: parentId,
             app: AppInfo(
@@ -26,8 +25,7 @@ struct DiffableDataSourceTests {
                 path: "/Applications/\(title).app",
                 storeId: nil,
                 category: nil
-            ),
-            group: nil
+            )
         )
     }
 
@@ -35,10 +33,9 @@ struct DiffableDataSourceTests {
         return (0..<count).map { i in
             let id = Int64(pageOffset * 100 + i + 1)
             let title = "App\(id)"
-            return PageItem(
+            return PageItem.app(
                 id: id,
                 uuid: "uuid-\(id)",
-                type: .app,
                 ordering: Int(id),
                 parentId: parentId,
                 app: AppInfo(
@@ -48,8 +45,7 @@ struct DiffableDataSourceTests {
                     path: "/Applications/\(title).app",
                     storeId: nil,
                     category: nil
-                ),
-                group: nil
+                )
             )
         }
     }
@@ -165,15 +161,13 @@ struct DiffableDataSourceTests {
         let items = (0..<70).map { i -> PageItem in
             let id = Int64(i + 1)
             let parentId = Int64(i / 35 + 1)
-            return PageItem(
+            return PageItem.app(
                 id: id,
                 uuid: "uuid-\(id)",
-                type: .app,
                 ordering: i,
                 parentId: parentId,
                 app: AppInfo(id: id, title: "App\(id)", bundleId: "com.test.app\(id)",
-                              path: "/Applications/App\(id).app", storeId: nil, category: nil),
-                group: nil
+                              path: "/Applications/App\(id).app", storeId: nil, category: nil)
             )
         }
         let maxPerPage = 35
@@ -197,15 +191,13 @@ struct DiffableDataSourceTests {
         let items = (0..<120).map { i -> PageItem in
             let id = Int64(i + 1)
             let parentId = Int64(i / 50 + 1)
-            return PageItem(
+            return PageItem.app(
                 id: id,
                 uuid: "uuid-\(id)",
-                type: .app,
                 ordering: i,
                 parentId: parentId,
                 app: AppInfo(id: id, title: "App\(id)", bundleId: "com.test.app\(id)",
-                              path: "/Applications/App\(id).app", storeId: nil, category: nil),
-                group: nil
+                              path: "/Applications/App\(id).app", storeId: nil, category: nil)
             )
         }
         let maxPerPage = 50
@@ -230,15 +222,13 @@ struct DiffableDataSourceTests {
         let items = (0..<60).map { i -> PageItem in
             let id = Int64(i + 1)
             let parentId = Int64(i / 45 + 1)
-            return PageItem(
+            return PageItem.app(
                 id: id,
                 uuid: "uuid-\(id)",
-                type: .app,
                 ordering: i,
                 parentId: parentId,
                 app: AppInfo(id: id, title: "App\(id)", bundleId: "com.test.app\(id)",
-                              path: "/Applications/App\(id).app", storeId: nil, category: nil),
-                group: nil
+                              path: "/Applications/App\(id).app", storeId: nil, category: nil)
             )
         }
         let maxPerPage = 45

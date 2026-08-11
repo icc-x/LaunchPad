@@ -27,7 +27,7 @@
 | 1 | 严格编译与发布门禁 | 已完成 | 本提交 | 三轮均发现并执行 1109 项/62 suites；严格 Debug、Release 与完整门禁通过 |
 | 2 | 可信覆盖率工具 | 已完成 | 本提交 | 六类故障注入与非空产物验证；真实运行 1109 项/62 suites，coverage_status=passed |
 | 3 | 发布打包、签名与公证流程 | 已完成 | 本提交 | 测试 7 类场景通过；dry-run 无副作用；真实签名公证留外部验收 |
-| 4 | 布局事务与 PageItem 不变量 | 待处理 | - | - |
+| 4 | 布局事务与 PageItem 不变量 | 已完成 | 本提交 | 工厂+验证器落地；1110/61 全量通过；直接构造点清零 |
 | 5 | 分页无障碍 | 待处理 | - | - |
 | 6 | 拖拽状态所有权与输入常量 | 待处理 | - | - |
 | 7 | 生命周期安全、CI 与最终验收 | 待处理 | - | - |
@@ -301,7 +301,7 @@ git commit -m "feat: add release signing workflow"
 
 ### Task 4: Atomic Layout Boundary And Valid PageItem States
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P1-9、P3-1、P3-3
 
@@ -318,15 +318,15 @@ git commit -m "feat: add release signing workflow"
 - Consumes: Codable payloads and SQLite joined item/app/group rows.
 - Produces: `PageItem.page`, `.app`, `.group`, internal throwing validation, and `StorageError.invalidItem`.
 
-- [ ] **Step 1: Mark Task 4 in progress**
+- [x] **Step 1: Mark Task 4 in progress**
 
 Update only Task 4 to `进行中`.
 
-- [ ] **Step 2: Write failing invariant tests**
+- [x] **Step 2: Write failing invariant tests**
 
 Cover three legal factories, Codable round-trip, unknown type, and every illegal type/app/group combination. Add direct SQLite fixtures for unknown type and missing/mismatched metadata, expecting `StorageError.invalidItem`.
 
-- [ ] **Step 3: Implement the invariant API**
+- [x] **Step 3: Implement the invariant API**
 
 Use this public shape:
 
@@ -347,21 +347,21 @@ public static func group(
 ) -> Self
 ```
 
-The arbitrary initializer becomes internal and throwing. Custom `init(from:)` decodes the existing seven field names and delegates to validation.
+The arbitrary initializer becomes internal and throwing. Custom `init(from:)` decodes the existing seven field names and delegates to validation. 实现说明：`page` 工厂增加 `parentId: Int64? = nil` 默认参数，供 SQLite 解码忠实还原 page 行（page 作为子项属于非法拓扑，由 LayoutDomainState 检测），同时保持计划签名兼容。
 
-- [ ] **Step 4: Make SQLite decoding strict**
+- [x] **Step 4: Make SQLite decoding strict**
 
-Change `decodePageItem` to `throws -> PageItem`; reject unknown raw types, missing required joined rows, and mismatched metadata. Both fetch loops use `try`; add `StorageError.invalidItem`.
+Change `decodePageItem` to `throws -> PageItem`; reject unknown raw types, missing required joined rows, and mismatched metadata. Both fetch loops use `try`; add `StorageError.invalidItem`. 必填列校验覆盖 app 的 title/bundle_id/path 三列。
 
-- [ ] **Step 5: Migrate all 352 construction sites**
+- [x] **Step 5: Migrate all 352 construction sites**
 
 Map `.page` to `PageItem.page`, legal app records to `.app`, and legal group records to `.group`. `TestDataFactory` supplies default valid metadata for its selected type. Invalid tests use JSON or direct SQLite, never a public bypass.
 
-- [ ] **Step 6: Remove the non-atomic dead entrypoint**
+- [x] **Step 6: Remove the non-atomic dead entrypoint**
 
 Delete `LayoutPersistence.swift` and its three tests. Verify its name and `saveLayout(` have no production/test matches.
 
-- [ ] **Step 7: Verify Task 4**
+- [x] **Step 7: Verify Task 4**
 
 ```bash
 swift test --filter 'PageItem|StorageManager|LayoutRepository|LayoutDomainState|Integration'
@@ -373,9 +373,13 @@ swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
 git diff --check
 ```
 
-- [ ] **Step 8: Complete and commit Task 4**
+- [x] **Step 8: Complete and commit Task 4**
 
-Record migration/search results, mark Task 4 `已完成`, then commit:
+验收证据（2026-08-11）：
+- `PageItem` 改为类型化工厂 + `ValidationError.invalidMetadata` 验证器；任意组合初始化器为 internal throwing；Codable 解码复用验证器（非法 JSON 六类组合全部抛错，未知 type 被拒）。
+- SQLite 解码严格化：未知 type、app 缺行/title/bundle_id/path 为 NULL、group 缺行/title 为 NULL 均抛 `StorageError.invalidItem`；`StorageManagerNullFieldsTests` 重写为拒绝语义；腐败拓扑 fixture 补全元数据行后，六个拓扑 case 均按 `LayoutDomainError` 预期拒绝且快照不变。
+- 迁移全部构造点：直接 `PageItem(` 构造仅剩 PageItem.swift 自身的存储初始化器；`LayoutPersistence` 与 `saveLayout(` 全仓库无残留；`LayoutPersistenceTests` suite 删除。
+- 全量 `swift test --disable-sandbox`：1110 tests / 61 suites 通过；严格 Debug/Release 构建、`git diff --check` 通过。
 
 ```bash
 git add Sources Tests docs/release-readiness-plan.md

@@ -1,3 +1,4 @@
+import Foundation
 import Testing
 @testable import LaunchPad
 import LaunchPadProtocols
@@ -116,8 +117,7 @@ struct PageItemTests {
     func pageItem_withApp() {
         let app = AppInfo(id: 1, title: "Safari", bundleId: "com.apple.Safari",
                           path: "/Applications/Safari.app", storeId: nil, category: nil)
-        let item = PageItem(id: 10, uuid: "uuid-10", type: .app, ordering: 0,
-                            parentId: nil, app: app, group: nil)
+        let item = PageItem.app(id: 10, uuid: "uuid-10", ordering: 0, parentId: nil, app: app)
         #expect(item.type == .app)
         #expect(item.app?.title == "Safari")
         #expect(item.group == nil)
@@ -126,8 +126,7 @@ struct PageItemTests {
     @Test("PageItem 包含 group 类型时有 group 属性")
     func pageItem_withGroup() {
         let group = GroupInfo(id: 2, title: "Favorites")
-        let item = PageItem(id: 20, uuid: "uuid-20", type: .group, ordering: 1,
-                            parentId: nil, app: nil, group: group)
+        let item = PageItem.group(id: 20, uuid: "uuid-20", ordering: 1, parentId: nil, group: group)
         #expect(item.type == .group)
         #expect(item.group?.title == "Favorites")
         #expect(item.app == nil)
@@ -135,8 +134,7 @@ struct PageItemTests {
 
     @Test("PageItem 是 page 类型时无 app 和 group")
     func pageItem_pageType() {
-        let item = PageItem(id: 1, uuid: "page-1", type: .page, ordering: 0,
-                            parentId: nil, app: nil, group: nil)
+        let item = PageItem.page(id: 1, uuid: "page-1", ordering: 0)
         #expect(item.type == .page)
         #expect(item.app == nil)
         #expect(item.group == nil)
@@ -144,10 +142,9 @@ struct PageItemTests {
 
     @Test("PageItem 遵循 Hashable — 相同 id 和 uuid 相等")
     func pageItem_hashable() {
-        let a = PageItem(id: 1, uuid: "u1", type: .app, ordering: 0,
-                         parentId: nil, app: nil, group: nil)
-        let b = PageItem(id: 1, uuid: "u1", type: .app, ordering: 0,
-                         parentId: nil, app: nil, group: nil)
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let a = PageItem.app(id: 1, uuid: "u1", ordering: 0, parentId: nil, app: app)
+        let b = PageItem.app(id: 1, uuid: "u1", ordering: 0, parentId: nil, app: app)
         #expect(a == b)
         let s: Set<PageItem> = [a, b]
         #expect(s.count == 1)
@@ -155,22 +152,83 @@ struct PageItemTests {
 
     @Test("PageItem 遵循 Identifiable")
     func pageItem_identifiable() {
-        let item = PageItem(id: 42, uuid: "u42", type: .app, ordering: 0,
-                            parentId: nil, app: nil, group: nil)
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let item = PageItem.app(id: 42, uuid: "u42", ordering: 0, parentId: nil, app: app)
         #expect(item.id == 42)
     }
 
     @Test("PageItem parentId 可选 — 顶层 item 为 nil")
     func pageItem_parentIdOptional() {
-        let item = PageItem(id: 1, uuid: "u1", type: .app, ordering: 0,
-                            parentId: nil, app: nil, group: nil)
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let item = PageItem.app(id: 1, uuid: "u1", ordering: 0, parentId: nil, app: app)
         #expect(item.parentId == nil)
     }
 
     @Test("PageItem parentId 有值 — 子 item 属于文件夹")
     func pageItem_withParentId() {
-        let item = PageItem(id: 2, uuid: "u2", type: .app, ordering: 0,
-                            parentId: 1, app: nil, group: nil)
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let item = PageItem.app(id: 2, uuid: "u2", ordering: 0, parentId: 1, app: app)
         #expect(item.parentId == 1)
+    }
+
+    // MARK: - Invariants
+
+    @Test("类型化工厂只产出合法状态")
+    func factories_produceOnlyLegalStates() {
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let group = GroupInfo(id: 2, title: "F")
+        let page = PageItem.page(id: 1, uuid: "p", ordering: 0)
+        let appItem = PageItem.app(id: 2, uuid: "a", ordering: 0, parentId: nil, app: app)
+        let groupItem = PageItem.group(id: 3, uuid: "g", ordering: 0, parentId: nil, group: group)
+        #expect(page.type == .page && page.app == nil && page.group == nil)
+        #expect(appItem.type == .app && appItem.app != nil && appItem.group == nil)
+        #expect(groupItem.type == .group && groupItem.app == nil && groupItem.group != nil)
+    }
+
+    @Test("合法 Codable round-trip 保留全部字段")
+    func codable_roundTrip() throws {
+        let app = AppInfo(id: 1, title: "A", bundleId: "com.a", path: "/a", storeId: nil, category: nil)
+        let original = PageItem.app(id: 7, uuid: "u7", ordering: 3, parentId: 2, app: app)
+        let data = try JSONEncoder().encode(original)
+        let decoded = try JSONDecoder().decode(PageItem.self, from: data)
+        #expect(decoded == original)
+    }
+
+    @Test("非法 metadata 组合全部被 JSON 解码拒绝")
+    func codable_rejectsIllegalCombinations() throws {
+        let appJSON = """
+            {"id":1,"title":"A","bundleId":"com.a","path":"/a","storeId":null,"category":null}
+            """
+        let groupJSON = """
+            {"id":2,"title":"F"}
+            """
+        let base = """
+            {"id":9,"uuid":"u","type":%d,"ordering":0,"parentId":null,"app":%@,"group":%@}
+            """
+        let cases: [(Int, String, String)] = [
+            (1, appJSON, "null"),
+            (1, "null", groupJSON),
+            (4, "null", "null"),
+            (4, "null", groupJSON),
+            (7, appJSON, "null"),
+            (7, "null", "null"),
+        ]
+        for (rawType, appValue, groupValue) in cases {
+            let json = String(format: base, rawType, appValue, groupValue)
+            let data = Data(json.utf8)
+            #expect(throws: ValidationError.self) {
+                _ = try JSONDecoder().decode(PageItem.self, from: data)
+            }
+        }
+    }
+
+    @Test("未知 type 的 JSON 被拒绝")
+    func codable_rejectsUnknownType() throws {
+        let json = """
+            {"id":9,"uuid":"u","type":99,"ordering":0,"parentId":null,"app":null,"group":null}
+            """
+        #expect(throws: (any Error).self) {
+            _ = try JSONDecoder().decode(PageItem.self, from: Data(json.utf8))
+        }
     }
 }
