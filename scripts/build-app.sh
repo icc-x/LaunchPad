@@ -6,8 +6,9 @@ set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PROJECT_DIR="$(dirname "$SCRIPT_DIR")"
-BUILD_DIR="$PROJECT_DIR/.build/release"
-APP_BUNDLE="$PROJECT_DIR/.build/LaunchPad.app"
+BUILD_OUTPUT_DIR="${LAUNCHPAD_BUILD_OUTPUT_DIR:-$PROJECT_DIR/.build}"
+BUILD_DIR="$BUILD_OUTPUT_DIR/release"
+APP_BUNDLE="$BUILD_OUTPUT_DIR/LaunchPad.app"
 
 echo "Building LaunchPadApp (release)..."
 cd "$PROJECT_DIR"

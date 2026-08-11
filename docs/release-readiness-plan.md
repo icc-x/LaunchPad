@@ -26,7 +26,7 @@
 |---|---|---|---|---|
 | 1 | 严格编译与发布门禁 | 已完成 | 本提交 | 三轮均发现并执行 1109 项/62 suites；严格 Debug、Release 与完整门禁通过 |
 | 2 | 可信覆盖率工具 | 已完成 | 本提交 | 六类故障注入与非空产物验证；真实运行 1109 项/62 suites，coverage_status=passed |
-| 3 | 发布打包、签名与公证流程 | 待处理 | - | - |
+| 3 | 发布打包、签名与公证流程 | 已完成 | 本提交 | 测试 7 类场景通过；dry-run 无副作用；真实签名公证留外部验收 |
 | 4 | 布局事务与 PageItem 不变量 | 待处理 | - | - |
 | 5 | 分页无障碍 | 待处理 | - | - |
 | 6 | 拖拽状态所有权与输入常量 | 待处理 | - | - |
@@ -227,7 +227,7 @@ git commit -m "fix: make coverage reporting trustworthy"
 
 ### Task 3: Portable Signing And Notarization Workflow
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P1-11、P2-16（发布部分）
 
@@ -241,15 +241,15 @@ git commit -m "fix: make coverage reporting trustworthy"
 - Consumes: `LAUNCHPAD_CODESIGN_IDENTITY`, `LAUNCHPAD_TEAM_ID`, `LAUNCHPAD_NOTARY_PROFILE`, and `Resources/LaunchPad.entitlements`.
 - Produces: `.build/LaunchPad.app` and `.build/LaunchPad.zip`; `--dry-run` prints commands only.
 
-- [ ] **Step 1: Mark Task 3 in progress**
+- [x] **Step 1: Mark Task 3 in progress**
 
 Update only Task 3 to `进行中`.
 
-- [ ] **Step 2: Write release workflow tests**
+- [x] **Step 2: Write release workflow tests**
 
 Cover help, unknown option, missing variables, dry-run, build failure propagation, and fake-tool success. Success order must be: build, sign, verify, archive, submit, staple, Gatekeeper assess, stapler validate. Dry-run must create no artifacts and output no value matching `SECRET_`.
 
-- [ ] **Step 3: Implement release-app.sh**
+- [x] **Step 3: Implement release-app.sh**
 
 Require the three environment variables and run this real sequence:
 
@@ -269,7 +269,7 @@ xcrun stapler validate "$APP"
 
 Route `--dry-run` through one shell-quoting printer and execute no command. Validate Team ID and write it to a non-secret release manifest. Set executable mode on build, coverage, and release entrypoints.
 
-- [ ] **Step 4: Verify Task 3**
+- [x] **Step 4: Verify Task 3**
 
 ```bash
 zsh -n scripts/release-app.sh scripts/tests/test-release-app.sh
@@ -284,9 +284,13 @@ swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
 git diff --check
 ```
 
-- [ ] **Step 5: Complete and commit Task 3**
+- [x] **Step 5: Complete and commit Task 3**
 
-Mark local implementation `已完成`, record real signing/notarization as external pending, then commit:
+验收证据（2026-08-11）：
+- `zsh scripts/tests/test-release-app.sh` 通过：--help、未知选项、缺失 LAUNCHPAD_CODESIGN_IDENTITY / LAUNCHPAD_NOTARY_PROFILE、非法 Team ID 均按预期处理；dry-run 不创建任何产物、不泄漏环境值、输出 shell 转义命令；build 失败正确传播非零；fake-tool 成功路径按 build → codesign → verify → archive → notary submit → staple → Gatekeeper assess → stapler validate 顺序执行，产物（app/zip/manifest）齐全。
+- 真实 dry-run 输出 8 步转义命令，无副作用。
+- `swift test --disable-sandbox`（1109/62 通过）、严格 Debug/Release 构建、`git diff --check` 全部通过。
+- 真实 Developer ID 签名、公证、stapling 与干净 Gatekeeper 启动保持为外部凭据环境验收（不在本地标记完成）。
 
 ```bash
 git add README.md scripts docs/release-readiness-plan.md

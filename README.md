@@ -42,7 +42,7 @@ LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、A
 | 区域覆盖率 | 94.11%（2026-07-24 历史测量，2664 区域 / 157 区域未覆盖） |
 | 函数覆盖率 | 93.62%（2026-07-24 历史测量，1098 函数 / 70 函数未覆盖） |
 | 100% 行覆盖文件 | 23 / 42 个源文件 |
-| 代码签名 | ⏳ adhoc 签名，未公证 |
+| 代码签名 | ⏳ 发布流程脚本就绪（`scripts/release-app.sh`）；真实 Developer ID 签名与公证待外部凭据环境验收 |
 | 手动功能验证 | ⏳ 0/13 执行 |
 
 > 覆盖率数字仅保留为 2026-07-24 的历史测量。可信覆盖率入口为 `./scripts/coverage.sh`：构建、测试、测试发现、profraw 合并与 `llvm-cov` 任一阶段失败都会返回非零状态，空输出或损坏数据不会被当作成功结论。历史测量不能作为发布证据，最新结果以新入口输出为准。
@@ -265,13 +265,24 @@ sut.runAnimated = { _, action in action() }  // 测试中动画完成回调被�
 # Debug 构建
 swift build
 
-# Release 构建（当前仍有 warning，warnings-as-errors 未通过）
-swift build -c release --product LaunchPadApp
+# Release 构建（warning 视为错误，纳入发布门禁）
+swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
 
 # 打包为 .app Bundle
 ./scripts/build-app.sh
 # 产物：.build/LaunchPad.app
 # 运行：open .build/LaunchPad.app
+
+# 发布签名与公证链（build → codesign → verify → archive → notary → staple → Gatekeeper）
+# 需要凭据环境注入：LAUNCHPAD_CODESIGN_IDENTITY / LAUNCHPAD_TEAM_ID / LAUNCHPAD_NOTARY_PROFILE
+LAUNCHPAD_CODESIGN_IDENTITY='Developer ID Application: <你的身份>' \
+LAUNCHPAD_TEAM_ID='<TEAMID>' \
+LAUNCHPAD_NOTARY_PROFILE='<notarytool profile>' \
+  ./scripts/release-app.sh
+
+# 先预览要执行的命令（不签名、不联网、无副作用）
+./scripts/release-app.sh --dry-run
+# 脚本自测：zsh scripts/tests/test-release-app.sh
 ```
 
 ### 测试
