@@ -196,7 +196,10 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
             settings: accessibilitySettingsProvider(),
             animation: AnimationConstants.windowExpand,
             normal: {
-                window.contentView?.layer?.transform = CATransform3DMakeScale(0.8, 0.8, 1)
+                // 缩放入场动画：model transform 保持 identity，由 CASpringAnimation 从
+                // 0.8 → 1.0 短暂覆盖。动画结束自动移除后 model 仍为 identity，
+                // 避免动画期间持久设置 0.8 导致窗口停留在 80% 缩放（历史缺陷）。
+                window.contentView?.layer?.transform = CATransform3DIdentity
                 self.runAnimated(AnimationConstants.windowExpand.duration, {
                     window.animator().alphaValue = 1
                 }, { [weak self] in
@@ -206,6 +209,8 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
                 spring.fromValue = 0.8
                 spring.toValue = 1.0
                 spring.damping = 0.75
+                spring.isRemovedOnCompletion = true
+                spring.fillMode = .removed
                 window.contentView?.layer?.add(spring, forKey: "scaleIn")
             },
             reduced: {
