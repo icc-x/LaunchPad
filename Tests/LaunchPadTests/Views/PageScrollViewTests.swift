@@ -636,4 +636,51 @@ struct PageControlTests {
     }
 
     // scrollWheel phase 测试见 PageScrollView 的 handleScrollPhase 重构（暂未启用，coverage 导出阻塞）
+
+    // MARK: - 传统滚轮（无 phase）翻页逻辑
+
+    @Test("传统滚轮：向下滚动一格翻到下一页")
+    func legacyScrollTargetPage_negativeDelta_forward() {
+        #expect(
+            PageScrollView.legacyScrollTargetPage(
+                delta: -1, currentPage: 0, totalPages: 3, pageWidth: 1440
+            ) == 1
+        )
+    }
+
+    @Test("传统滚轮：向上滚动一格翻到上一页")
+    func legacyScrollTargetPage_positiveDelta_backward() {
+        #expect(
+            PageScrollView.legacyScrollTargetPage(
+                delta: 1, currentPage: 2, totalPages: 3, pageWidth: 1440
+            ) == 1
+        )
+    }
+
+    @Test("传统滚轮：首页向上滚动不翻页（越界返回 nil）")
+    func legacyScrollTargetPage_firstPage_backward_noPage() {
+        #expect(
+            PageScrollView.legacyScrollTargetPage(
+                delta: 1, currentPage: 0, totalPages: 3, pageWidth: 1440
+            ) == nil
+        )
+    }
+
+    @Test("传统滚轮：末页向下滚动不翻页（越界返回 nil）")
+    func legacyScrollTargetPage_lastPage_forward_noPage() {
+        #expect(
+            PageScrollView.legacyScrollTargetPage(
+                delta: -1, currentPage: 2, totalPages: 3, pageWidth: 1440
+            ) == nil
+        )
+    }
+
+    @Test("传统滚轮：单页时不翻页")
+    func legacyScrollTargetPage_singlePage_noPage() {
+        #expect(
+            PageScrollView.legacyScrollTargetPage(
+                delta: -1, currentPage: 0, totalPages: 1, pageWidth: 1440
+            ) == nil
+        )
+    }
 }

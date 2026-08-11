@@ -547,10 +547,31 @@ private func expectRowMajor(
 /// Tests for PageControlView (0% → basic interaction)
 @MainActor @Suite("PageControlView") struct PageControlViewTests {
 
+    /// 记录 invalidateIntrinsicContentSize 调用，验证 totalPages 变化后布局缓存被刷新
+    /// （修复历史缺陷：页数变化后未刷新 intrinsic 宽度，导致点击区域为 0）。
+    private final class RecordingPageControlView: PageControlView {
+        var invalidateCount = 0
+        override func invalidateIntrinsicContentSize() {
+            invalidateCount += 1
+            super.invalidateIntrinsicContentSize()
+        }
+    }
+
     @Test func pageControlView_init_doesNotCrash() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
         #expect(view.onDotSelected == nil)
+    }
+
+    @Test func pageControlView_update_invalidatesIntrinsicContentSize() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 3)
+        let view = RecordingPageControlView(viewModel: viewModel)
+        #expect(view.invalidateCount == 0)
+        view.update()
+        #expect(view.invalidateCount >= 1)
+        // intrinsic 宽度反映当前页数（3 点 = 3*8 + 2*8 = 40）
+        #expect(view.intrinsicContentSize.width == 40)
     }
 
     @Test func pageControlView_update_withMultiplePages_isVisible() {

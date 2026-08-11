@@ -63,10 +63,12 @@ class PageScrollView: NSScrollView {
         // 非精确滚动：每个事件代表滚轮一格，直接翻页
         if !event.hasPreciseScrollingDeltas {
             scrollAccumulator = 0
-            let direction = delta > 0 ? -1 : 1
-            let currentPage = Int(round(contentView.bounds.origin.x / pagingPageWidth))
-            let target = min(max(currentPage + direction, 0), pagingPageCount - 1)
-            guard target != currentPage else { return }
+            guard let target = Self.legacyScrollTargetPage(
+                delta: delta,
+                currentPage: currentPageIndex,
+                totalPages: pagingPageCount,
+                pageWidth: pagingPageWidth
+            ) else { return }
             scrollToPage(target, animated: true)
             return
         }
@@ -75,13 +77,35 @@ class PageScrollView: NSScrollView {
         scrollAccumulator += delta
         let threshold = max(150, pagingPageWidth * 0.15)
         guard abs(scrollAccumulator) >= threshold else { return }
-
         let direction = scrollAccumulator > 0 ? 1 : -1
         scrollAccumulator = 0
-        let currentPage = Int(round(contentView.bounds.origin.x / pagingPageWidth))
-        let target = min(max(currentPage + direction, 0), pagingPageCount - 1)
-        guard target != currentPage else { return }
+        guard let target = Self.legacyScrollTargetPage(
+            delta: -CGFloat(direction),
+            currentPage: currentPageIndex,
+            totalPages: pagingPageCount,
+            pageWidth: pagingPageWidth
+        ) else { return }
         scrollToPage(target, animated: true)
+    }
+
+    /// 当前页码（按分页宽度取整）
+    private var currentPageIndex: Int {
+        Int(round(contentView.bounds.origin.x / max(pagingPageWidth, 1)))
+    }
+
+    /// 计算传统滚轮翻页的目标页（静态纯函数，可测）。delta 为滚动位移
+    /// （正=上一页方向，负=下一页方向）；不翻页（越界或同页）返回 nil。
+    nonisolated static func legacyScrollTargetPage(
+        delta: CGFloat,
+        currentPage: Int,
+        totalPages: Int,
+        pageWidth: CGFloat
+    ) -> Int? {
+        guard pageWidth > 0 else { return nil }
+        let direction = delta > 0 ? -1 : 1
+        let target = min(max(currentPage + direction, 0), totalPages - 1)
+        guard target != currentPage else { return nil }
+        return target
     }
 
     /// 处理单个滚动阶段的逻辑（从 scrollWheel 抽出，便于单元测试，避免依赖 NSEvent.phase 的构造）。
