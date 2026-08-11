@@ -41,7 +41,34 @@ class PageScrollView: NSScrollView {
     // MARK: - 核心分页逻辑
 
     override func scrollWheel(with event: NSEvent) {
-        _ = processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
+        // 触控板手势事件带 phase 阶段，走原分页逻辑；
+        // 传统鼠标滚轮 phase 为空，按累计位移即时翻页（垂直 deltaY 映射为横向翻页）。
+        if event.phase.isEmpty {
+            handleLegacyScrollWheel(event)
+        } else {
+            _ = processScrollPhase(event.phase, deltaX: event.scrollingDeltaX, event: event)
+        }
+    }
+
+    /// 传统鼠标滚轮（无 phase 阶段）的处理：无法感知"手势结束"，
+    /// 采用累计位移达到阈值即翻页的即时策略。
+    private func handleLegacyScrollWheel(_ event: NSEvent) {
+        guard pagingPageWidth > 0 else { return }
+        let delta = event.scrollingDeltaX != 0
+            ? event.scrollingDeltaX
+            : event.scrollingDeltaY
+        guard delta != 0 else { return }
+
+        scrollAccumulator += delta
+        let threshold = max(150, pagingPageWidth * 0.15)
+        guard abs(scrollAccumulator) >= threshold else { return }
+
+        let direction = scrollAccumulator > 0 ? 1 : -1
+        scrollAccumulator = 0
+        let currentPage = Int(round(contentView.bounds.origin.x / pagingPageWidth))
+        let target = min(max(currentPage + direction, 0), pagingPageCount - 1)
+        guard target != currentPage else { return }
+        scrollToPage(target, animated: true)
     }
 
     /// 处理单个滚动阶段的逻辑（从 scrollWheel 抽出，便于单元测试，避免依赖 NSEvent.phase 的构造）。

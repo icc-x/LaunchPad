@@ -10,7 +10,6 @@ struct LifecycleSafetyTests {
         sut.activationPolicySetter = { _ in }
         sut.appTerminator = {}
         sut.mainAsyncRunner = { $0() }
-        sut.alertRunner = { _ in .alertFirstButtonReturn }
         sut.workspaceURLOpener = { _ in }
         return sut
     }

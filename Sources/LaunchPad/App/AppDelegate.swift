@@ -63,8 +63,19 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
     var activationPolicySetter: (NSApplication.ActivationPolicy) -> Void = { NSApp.setActivationPolicy($0) }
 
-    /// 告警展示器（默认弹真实 NSAlert，测试注入为同步记录以避免 runModal 阻塞）
-    var alertRunner: (NSAlert) -> NSApplication.ModalResponse = { $0.runModal() }
+    /// 非阻塞告警展示器（默认以 sheet 挂到主窗口；测试注入为同步记录并回调完成）。
+    /// 用于热键失败等非致命提示——历史实现用 runModal 模态会话，会拦截窗口
+    /// 的 ESC/分页/滚轮等全部交互，改为 sheet 后不再阻塞。
+    var alertPresenter: (NSAlert, NSWindow, @escaping (NSApplication.ModalResponse) -> Void) -> Void = { alert, window, completion in
+        alert.beginSheetModal(for: window, completionHandler: completion)
+    }
+
+    /// 热键注册失败状态（注册失败时记录，供窗口呼出时提示，避免启动即模态弹窗）
+    private(set) var hotkeyRegistrationFailed = false
+    /// 热键失败原因是否为"与其他应用冲突"（false 表示无输入监控权限）
+    private(set) var hotkeyRegistrationConflict = false
+    /// 无权限提示仅展示一次的持久化标记
+    private static let hotkeyPermissionAlertKey = "launchpad.hotkeyPermissionAlertShown"
 
     /// 多实例检测（默认查系统运行实例，测试可注入以触发/跳过终止分支）
     var runningInstanceChecker: () -> Bool = {
@@ -342,6 +353,57 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     @objc func statusItemClicked() {
         guard let windowController else { return }
         windowController.toggle()
+        maybeShowHotkeyPermissionHint()
+    }
+
+    /// 热键注册失败时，在窗口呼出后以非阻塞 sheet 提示一次（无权限提示仅首次）。
+    private func maybeShowHotkeyPermissionHint() {
+        guard hotkeyRegistrationFailed else { return }
+        let alreadyShown = UserDefaults.standard.bool(
+            forKey: Self.hotkeyPermissionAlertKey
+        )
+        guard !alreadyShown else { return }
+        UserDefaults.standard.set(true, forKey: Self.hotkeyPermissionAlertKey)
+
+        // 等待窗口显示动画完成后再挂 sheet，避免窗口未就绪
+        mainAsyncRunner {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+                guard let self,
+                      let window = self.windowController?.window,
+                      window.isVisible else { return }
+                self.presentHotkeyFailureHint(on: window)
+            }
+        }
+    }
+
+    /// 以非阻塞 sheet 展示热键失败提示，并处理按钮回调（打开系统设置）。无副作用，便于测试。
+    internal func presentHotkeyFailureHint(on window: NSWindow) {
+        let alert = makeHotkeyFailureAlert()
+        alertPresenter(alert, window) { [weak self] response in
+            guard let self,
+                  !self.hotkeyRegistrationConflict,
+                  response == .alertFirstButtonReturn,
+                  let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") else {
+                return
+            }
+            self.workspaceURLOpener(url)
+        }
+    }
+
+    /// 构造热键失败提示 alert（无副作用，便于测试）。冲突与无权限两种原因给出不同文案。
+    internal func makeHotkeyFailureAlert() -> NSAlert {
+        let alert = NSAlert()
+        if hotkeyRegistrationConflict {
+            alert.messageText = "Option+Space 快捷键已被占用"
+            alert.informativeText = "另一个应用正在使用 Option+Space 快捷键。请关闭冲突应用或在 LaunchPad 设置中选择其他快捷键。"
+            alert.addButton(withTitle: "OK")
+        } else {
+            alert.messageText = "需要辅助功能权限"
+            alert.informativeText = "LaunchPad 需要 Input Monitoring（输入监控）权限才能响应 Option+Space 快捷键。\n\n请在「系统设置 → 隐私与安全性 → 输入监控」中启用 LaunchPad。"
+            alert.addButton(withTitle: "打开系统设置")
+            alert.addButton(withTitle: "稍后设置")
+        }
+        return alert
     }
 
     @objc func toggleLoginItem() {
@@ -375,31 +437,12 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             modifiers: .option
         ) // Option+Space
 
-        if !registered && hotkeyManager.hasConflict {
-            // 快捷键被其他应用占用，提示用户
-            mainAsyncRunner {
-                let alert = NSAlert()
-                alert.messageText = "Option+Space 快捷键已被占用"
-                alert.informativeText = "另一个应用正在使用 Option+Space 快捷键。请关闭冲突应用或在 LaunchPad 设置中选择其他快捷键。"
-                alert.addButton(withTitle: "OK")
-                _ = self.alertRunner(alert)
-            }
-        } else if !registered {
-            // 无 Input Monitoring 权限，引导用户授权
-            mainAsyncRunner {
-                let alert = NSAlert()
-                alert.messageText = "需要辅助功能权限"
-                alert.informativeText = "LaunchPad 需要 Input Monitoring（输入监控）权限才能响应 Option+Space 快捷键。\n\n请在「系统设置 → 隐私与安全性 → 输入监控」中启用 LaunchPad。"
-                alert.addButton(withTitle: "打开系统设置")
-                alert.addButton(withTitle: "稍后设置")
-                let response = self.alertRunner(alert)
-                if response == .alertFirstButtonReturn {
-                    // 打开 Input Monitoring 设置页面
-                    if let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent") {
-                        self.workspaceURLOpener(url)
-                    }
-                }
-            }
+        if !registered {
+            // 记录失败状态，由窗口呼出时以非阻塞 sheet 提示一次。
+            // 历史实现在此直接 runModal 弹模态 alert，会阻塞主线程并拦截
+            // 窗口的 ESC/分页/滚轮等全部交互（启动时窗口尚未显示，阻塞尤其明显）。
+            hotkeyRegistrationFailed = true
+            hotkeyRegistrationConflict = hotkeyManager.hasConflict
         }
 
         hotkeyManager.onKeyDown = { @Sendable [weak self] event in

@@ -134,7 +134,6 @@ struct AppDelegateTests {
         sut.appTerminator = {}
         sut.runningInstanceChecker = { false }
         sut.existingInstanceActivator = {}
-        sut.alertRunner = { _ in .alertFirstButtonReturn }
         sut.mainAsyncRunner = { $0() }
         sut.corruptionHandler = { _ in .deleteAndRescan }
         sut.loginItemStatusProvider = { .notRegistered }
@@ -691,54 +690,34 @@ struct AppDelegateTests {
 
     // MARK: - setupHotkey
 
-    @Test("setupHotkey：快捷键冲突时弹出占用提示")
+    @Test("setupHotkey：快捷键冲突时记录冲突状态")
     func setupHotkey_conflict() {
         let sut = makeDelegate()
-        let hm = makeIsolatedHotkeyManager(accessibilityTrusted: true)
-        sut.hotkeyManager = hm
-        var alertMessages: [String] = []
-        var openedURLs: [URL] = []
-        sut.alertRunner = { alert in
-            alertMessages.append(alert.messageText)
-            return .alertFirstButtonReturn
-        }
-        sut.workspaceURLOpener = { openedURLs.append($0) }
+        // accessibilityTrusted=true 但 eventTap 创建失败（tapResult=nil）→ 判定为冲突
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: true)
 
         sut.setupHotkey()
 
-        #expect(alertMessages == ["Option+Space 快捷键已被占用"])
-        #expect(openedURLs.isEmpty)
+        #expect(sut.hotkeyRegistrationFailed)
+        #expect(sut.hotkeyRegistrationConflict)
+        let alert = sut.makeHotkeyFailureAlert()
+        #expect(alert.messageText == "Option+Space 快捷键已被占用")
     }
 
-    @Test("setupHotkey：无权限时弹出授权提示并打开系统设置")
+    @Test("setupHotkey：无权限时记录失败状态且不视为冲突")
     func setupHotkey_permission() {
         let sut = makeDelegate()
         sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
-        var openedURLs: [URL] = []
-        sut.alertRunner = { _ in .alertFirstButtonReturn }
-        sut.workspaceURLOpener = { openedURLs.append($0) }
 
         sut.setupHotkey()
 
-        #expect(openedURLs == [
-            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!,
-        ])
+        #expect(sut.hotkeyRegistrationFailed)
+        #expect(!sut.hotkeyRegistrationConflict)
+        let alert = sut.makeHotkeyFailureAlert()
+        #expect(alert.messageText == "需要辅助功能权限")
     }
 
-    @Test("setupHotkey：无权限时选择稍后设置不会打开系统设置")
-    func setupHotkey_permission_secondButtonDoesNotOpenSettings() {
-        let sut = makeDelegate()
-        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
-        var openedURLs: [URL] = []
-        sut.alertRunner = { _ in .alertSecondButtonReturn }
-        sut.workspaceURLOpener = { openedURLs.append($0) }
-
-        sut.setupHotkey()
-
-        #expect(openedURLs.isEmpty)
-    }
-
-    @Test("setupHotkey：注册成功时不显示告警且不打开 URL")
+    @Test("setupHotkey：注册成功时不记录失败状态")
     func setupHotkey_successDoesNotShowAlertOrOpenURL() throws {
         let sut = makeDelegate()
         let optionalPort = CFMachPortCreate(nil, { _, _, _, _ in }, nil, nil)
@@ -747,19 +726,54 @@ struct AppDelegateTests {
             accessibilityTrusted: true,
             tapResult: port
         )
-        var alertCount = 0
         var openedURLs: [URL] = []
-        sut.alertRunner = { _ in
-            alertCount += 1
-            return .alertFirstButtonReturn
-        }
         sut.workspaceURLOpener = { openedURLs.append($0) }
 
         sut.setupHotkey()
 
-        #expect(alertCount == 0)
+        #expect(!sut.hotkeyRegistrationFailed)
         #expect(openedURLs.isEmpty)
         sut.hotkeyManager?.unregisterGlobalHotkey()
+    }
+
+    @Test("热键失败提示：选择打开系统设置时打开 Input Monitoring 设置页")
+    func presentHotkeyFailureHint_firstButton_opensSettings() {
+        let sut = makeDelegate()
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
+        sut.setupHotkey()
+        var presented: [String] = []
+        var openedURLs: [URL] = []
+        sut.alertPresenter = { alert, _, completion in
+            presented.append(alert.messageText)
+            completion(.alertFirstButtonReturn)
+        }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
+
+        sut.presentHotkeyFailureHint(on: NSWindow())
+
+        #expect(presented == ["需要辅助功能权限"])
+        #expect(openedURLs == [
+            URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_ListenEvent")!,
+        ])
+    }
+
+    @Test("热键失败提示：选择稍后设置不打开系统设置")
+    func presentHotkeyFailureHint_secondButton_doesNotOpenSettings() {
+        let sut = makeDelegate()
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
+        sut.setupHotkey()
+        var presented: [String] = []
+        var openedURLs: [URL] = []
+        sut.alertPresenter = { alert, _, completion in
+            presented.append(alert.messageText)
+            completion(.alertSecondButtonReturn)
+        }
+        sut.workspaceURLOpener = { openedURLs.append($0) }
+
+        sut.presentHotkeyFailureHint(on: NSWindow())
+
+        #expect(presented == ["需要辅助功能权限"])
+        #expect(openedURLs.isEmpty)
     }
 
     // MARK: - onToggle / onKeyDown 回调

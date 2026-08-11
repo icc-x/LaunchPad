@@ -2,6 +2,14 @@ import Foundation
 #if canImport(AppKit)
 import AppKit
 
+/// 无边框（borderless）NSPanel 默认 `canBecomeKey == false`，
+/// 会导致键盘事件（ESC 关闭、方向键导航等）永远无法到达窗口。
+/// 子类重写使面板可成为 key window（但不成为 main，应用保持不激活）。
+private final class LaunchPadPanel: NSPanel {
+    override var canBecomeKey: Bool { true }
+    override var canBecomeMain: Bool { false }
+}
+
 /// 全屏毛玻璃覆盖窗口管理器
 public class LaunchPadWindowController: NSWindowController, WindowLifecycleDelegate {
 
@@ -66,7 +74,7 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
         self.lifecycle = lifecycle
         self.viewController = viewController
 
-        let panel = NSPanel(
+        let panel = LaunchPadPanel(
             contentRect: NSScreen.main?.frame ?? .zero,
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
