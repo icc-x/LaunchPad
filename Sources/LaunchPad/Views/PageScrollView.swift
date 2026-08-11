@@ -50,8 +50,9 @@ class PageScrollView: NSScrollView {
         }
     }
 
-    /// 传统鼠标滚轮（无 phase 阶段）的处理：无法感知"手势结束"，
-    /// 采用累计位移达到阈值即翻页的即时策略。
+    /// 传统鼠标滚轮（无 phase 阶段）的处理：无法感知"手势结束"。
+    /// - 非精确滚动（传统鼠标滚轮）：一次事件即一格，直接翻页；
+    /// - 精确滚动（高精度滚轮/触控板无 phase 事件）：累计位移达到阈值后翻页。
     private func handleLegacyScrollWheel(_ event: NSEvent) {
         guard pagingPageWidth > 0 else { return }
         let delta = event.scrollingDeltaX != 0
@@ -59,6 +60,18 @@ class PageScrollView: NSScrollView {
             : event.scrollingDeltaY
         guard delta != 0 else { return }
 
+        // 非精确滚动：每个事件代表滚轮一格，直接翻页
+        if !event.hasPreciseScrollingDeltas {
+            scrollAccumulator = 0
+            let direction = delta > 0 ? -1 : 1
+            let currentPage = Int(round(contentView.bounds.origin.x / pagingPageWidth))
+            let target = min(max(currentPage + direction, 0), pagingPageCount - 1)
+            guard target != currentPage else { return }
+            scrollToPage(target, animated: true)
+            return
+        }
+
+        // 精确滚动：累计位移达到阈值后翻页
         scrollAccumulator += delta
         let threshold = max(150, pagingPageWidth * 0.15)
         guard abs(scrollAccumulator) >= threshold else { return }

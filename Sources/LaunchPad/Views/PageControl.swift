@@ -25,6 +25,9 @@ public class PageControlView: NSView {
     // MARK: - Layout
 
     public func update() {
+        // totalPages 变化后 intrinsicContentSize 随之变化，必须通知布局系统重算，
+        // 否则无宽度约束时 Auto Layout 缓存初始宽度 0，圆点看得到但点击区域为零。
+        invalidateIntrinsicContentSize()
         needsDisplay = true
         isHidden = !viewModel.isVisible
     }
