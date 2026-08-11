@@ -79,3 +79,4 @@
 2. "部分修复"或"未修复"只有在全部验收标准满足后才能移出本文。
 3. 六项发布阻断清零后，重新运行完整测试、严格 Debug/Release 构建、发布门禁、签名与公证验证，再更新总体发布结论。
 4. 真实 Apple 签名/公证、Gatekeeper 启动、GitHub 托管 runner 结果与 VoiceOver 播报不得用 dry-run、mock 或静态检查替代；发布门禁必须在可执行 `/bin/ps` 的完整环境运行。
+5. 逐项执行外部验收的完整命令与记录模板见 `docs/release-readiness-external-acceptance.md`；验收完成后按该文档"完成后回写"一节更新本文件。
