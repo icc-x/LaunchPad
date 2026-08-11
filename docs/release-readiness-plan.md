@@ -28,7 +28,7 @@
 | 2 | 可信覆盖率工具 | 已完成 | 本提交 | 六类故障注入与非空产物验证；真实运行 1109 项/62 suites，coverage_status=passed |
 | 3 | 发布打包、签名与公证流程 | 已完成 | 本提交 | 测试 7 类场景通过；dry-run 无副作用；真实签名公证留外部验收 |
 | 4 | 布局事务与 PageItem 不变量 | 已完成 | 本提交 | 工厂+验证器落地；1110/61 全量通过；直接构造点清零 |
-| 5 | 分页无障碍 | 待处理 | - | - |
+| 5 | 分页无障碍 | 已完成 | 本提交 | slider 角色+value+增减动作；六分支测试通过；1116/61 全量通过 |
 | 6 | 拖拽状态所有权与输入常量 | 待处理 | - | - |
 | 7 | 生命周期安全、CI 与最终验收 | 待处理 | - | - |
 
@@ -390,7 +390,7 @@ git commit -m "refactor: enforce valid page item states"
 
 ### Task 5: Adjustable Accessible Page Control
 
-**状态：待处理**
+**状态：已完成**
 
 **Covers:** P2-12
 
@@ -403,15 +403,15 @@ git commit -m "refactor: enforce valid page item states"
 - Consumes: existing PageControlViewModel state and `onDotSelected`.
 - Produces: slider role/value plus increment/decrement actions.
 
-- [ ] **Step 1: Mark Task 5 in progress**
+- [x] **Step 1: Mark Task 5 in progress**
 
 Update only Task 5 to `进行中`.
 
-- [ ] **Step 2: Write six failing branch tests**
+- [x] **Step 2: Write six failing branch tests**
 
 Cover zero pages, one page, middle page, first-page decrement, last-page increment, and successful actions. Assert `.slider`, integer value, `Page N of M`, view-model state and callback sequence.
 
-- [ ] **Step 3: Implement accessibility through existing selection flow**
+- [x] **Step 3: Implement accessibility through existing selection flow**
 
 ```swift
 override public func accessibilityRole() -> NSAccessibility.Role? { .slider }
@@ -424,9 +424,9 @@ override public func accessibilityValueDescription() -> String? {
 }
 ```
 
-Increment/decrement call one helper that rejects zero/unchanged values, then calls `selectDot`, `onDotSelected`, and `update()` in mouse-selection order.
+Increment/decrement call one helper that rejects zero/unchanged values, then calls `selectDot`, `onDotSelected`, and `update()` in mouse-selection order. 实现说明：AppKit 的 increment/decrement action 是 `accessibilityPerformIncrement()`/`accessibilityPerformDecrement()`（返回 Bool），helper `adjustPage(by:)` 在边界拒绝时返回 false。
 
-- [ ] **Step 4: Verify Task 5**
+- [x] **Step 4: Verify Task 5**
 
 ```bash
 swift test --filter 'PageControlView|PageControl state logic|FolderOverlayView paging'
@@ -438,9 +438,13 @@ git diff --check
 
 Keep VoiceOver manual verification external unless actually performed.
 
-- [ ] **Step 5: Complete and commit Task 5**
+- [x] **Step 5: Complete and commit Task 5**
 
-Mark Task 5 `已完成`, record VoiceOver pending, then commit:
+验收证据（2026-08-11）：
+- `PageControlView` 无障碍改造完成：role 为 `.slider`，value 为当前页+1，min/max 按页数，valueDescription 为 "Page N of M"（零页 "No pages"），increment/decrement 复用鼠标选择顺序（selectDot → onDotSelected → update()），边界与零页拒绝时返回 false。
+- 六类分支测试（零页/单页/中间/首页 decrement/末页 increment/成功动作）全部通过；原 role 测试更新为 `.slider`。
+- 全量 `swift test --disable-sandbox`：1116 tests / 61 suites 通过；严格 Debug/Release 构建、`git diff --check` 通过。
+- VoiceOver 实际播报与键盘调整体验保持为真实 UI 外部验收（未在本地标记完成）。
 
 ```bash
 git add Sources/LaunchPad/Views/PageControl.swift Tests docs/release-readiness-plan.md

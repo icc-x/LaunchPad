@@ -703,16 +703,92 @@ private func expectRowMajor(
 
     // MARK: - Accessibility
 
-    @Test func pageControlView_accessibilityRole_isGroup() {
+    @Test func pageControlView_accessibilityRole_isSlider() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
-        #expect(view.accessibilityRole() == .group)
+        #expect(view.accessibilityRole() == .slider)
     }
 
     @Test func pageControlView_accessibilityLabel_isPageIndicator() {
         let viewModel = PageControlViewModel()
         let view = PageControlView(viewModel: viewModel)
         #expect(view.accessibilityLabel() == "Page indicator")
+    }
+
+    @Test func pageControlView_accessibility_zeroPages_valueMinMaxDescription() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 0)
+        let view = PageControlView(viewModel: viewModel)
+        #expect(view.accessibilityValue() as? Int == 1)
+        #expect(view.accessibilityMinValue() as? Int == 0)
+        #expect(view.accessibilityMaxValue() as? Int == 0)
+        #expect(view.accessibilityValueDescription() == "No pages")
+    }
+
+    @Test func pageControlView_accessibility_singlePage_boundaryActionsNoop() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 1)
+        let view = PageControlView(viewModel: viewModel)
+        var callbackCount = 0
+        view.onDotSelected = { _ in callbackCount += 1 }
+        #expect(view.accessibilityValue() as? Int == 1)
+        #expect(view.accessibilityValueDescription() == "Page 1 of 1")
+        view.accessibilityPerformIncrement()
+        view.accessibilityPerformDecrement()
+        #expect(callbackCount == 0)
+        #expect(viewModel.currentPage == 0)
+    }
+
+    @Test func pageControlView_accessibility_middlePage_incrementsAndDecrements() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 5)
+        viewModel.currentPage = 2
+        let view = PageControlView(viewModel: viewModel)
+        var selectedDots: [Int] = []
+        view.onDotSelected = { dot in selectedDots.append(dot) }
+        #expect(view.accessibilityValue() as? Int == 3)
+        #expect(view.accessibilityValueDescription() == "Page 3 of 5")
+        view.accessibilityPerformIncrement()
+        #expect(viewModel.currentPage == 3)
+        #expect(selectedDots == [3])
+        view.accessibilityPerformDecrement()
+        #expect(viewModel.currentPage == 2)
+        #expect(selectedDots == [3, 2])
+    }
+
+    @Test func pageControlView_accessibility_firstPage_decrementNoop() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 5)
+        viewModel.currentPage = 0
+        let view = PageControlView(viewModel: viewModel)
+        var callbackCount = 0
+        view.onDotSelected = { _ in callbackCount += 1 }
+        view.accessibilityPerformDecrement()
+        #expect(callbackCount == 0)
+        #expect(viewModel.currentPage == 0)
+    }
+
+    @Test func pageControlView_accessibility_lastPage_incrementNoop() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 5)
+        viewModel.currentPage = 4
+        let view = PageControlView(viewModel: viewModel)
+        var callbackCount = 0
+        view.onDotSelected = { _ in callbackCount += 1 }
+        view.accessibilityPerformIncrement()
+        #expect(callbackCount == 0)
+        #expect(viewModel.currentPage == 4)
+    }
+
+    @Test func pageControlView_accessibility_action_updatesVisibility() {
+        let viewModel = PageControlViewModel()
+        viewModel.configure(totalPages: 3)
+        let view = PageControlView(viewModel: viewModel)
+        view.update()
+        #expect(!view.isHidden)
+        view.accessibilityPerformIncrement()
+        #expect(viewModel.currentPage == 1)
+        #expect(!view.isHidden)
     }
 
     // MARK: - onDotSelected callback

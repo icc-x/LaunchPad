@@ -86,11 +86,50 @@ public class PageControlView: NSView {
     // MARK: - Accessibility
 
     override public func accessibilityRole() -> NSAccessibility.Role? {
-        .group
+        .slider
     }
 
     override public func accessibilityLabel() -> String? {
         "Page indicator"
+    }
+
+    override public func accessibilityValue() -> Any? {
+        viewModel.currentPage + 1
+    }
+
+    override public func accessibilityMinValue() -> Any? {
+        viewModel.totalPages == 0 ? 0 : 1
+    }
+
+    override public func accessibilityMaxValue() -> Any? {
+        viewModel.totalPages
+    }
+
+    override public func accessibilityValueDescription() -> String? {
+        guard viewModel.totalPages > 0 else { return "No pages" }
+        return "Page \(viewModel.currentPage + 1) of \(viewModel.totalPages)"
+    }
+
+    override public func accessibilityPerformIncrement() -> Bool {
+        adjustPage(by: 1)
+    }
+
+    override public func accessibilityPerformDecrement() -> Bool {
+        adjustPage(by: -1)
+    }
+
+    /// 复用鼠标选择的调用顺序：selectDot → onDotSelected → update()。
+    /// 零页或目标页超出边界时不产生任何动作并返回 false。
+    private func adjustPage(by delta: Int) -> Bool {
+        guard viewModel.totalPages > 0 else { return false }
+        let target = viewModel.currentPage + delta
+        guard target >= 0, target < viewModel.totalPages, target != viewModel.currentPage else {
+            return false
+        }
+        viewModel.selectDot(at: target)
+        onDotSelected?(target)
+        update()
+        return true
     }
 }
 #endif
