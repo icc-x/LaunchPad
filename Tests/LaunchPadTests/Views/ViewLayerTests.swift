@@ -754,8 +754,8 @@ private func expectRowMajor(
         view.onDotSelected = { _ in callbackCount += 1 }
         #expect(view.accessibilityValue() as? Int == 1)
         #expect(view.accessibilityValueDescription() == "Page 1 of 1")
-        view.accessibilityPerformIncrement()
-        view.accessibilityPerformDecrement()
+        #expect(!view.accessibilityPerformIncrement())
+        #expect(!view.accessibilityPerformDecrement())
         #expect(callbackCount == 0)
         #expect(viewModel.currentPage == 0)
     }
@@ -769,10 +769,10 @@ private func expectRowMajor(
         view.onDotSelected = { dot in selectedDots.append(dot) }
         #expect(view.accessibilityValue() as? Int == 3)
         #expect(view.accessibilityValueDescription() == "Page 3 of 5")
-        view.accessibilityPerformIncrement()
+        #expect(view.accessibilityPerformIncrement())
         #expect(viewModel.currentPage == 3)
         #expect(selectedDots == [3])
-        view.accessibilityPerformDecrement()
+        #expect(view.accessibilityPerformDecrement())
         #expect(viewModel.currentPage == 2)
         #expect(selectedDots == [3, 2])
     }
@@ -784,7 +784,7 @@ private func expectRowMajor(
         let view = PageControlView(viewModel: viewModel)
         var callbackCount = 0
         view.onDotSelected = { _ in callbackCount += 1 }
-        view.accessibilityPerformDecrement()
+        #expect(!view.accessibilityPerformDecrement())
         #expect(callbackCount == 0)
         #expect(viewModel.currentPage == 0)
     }
@@ -796,7 +796,7 @@ private func expectRowMajor(
         let view = PageControlView(viewModel: viewModel)
         var callbackCount = 0
         view.onDotSelected = { _ in callbackCount += 1 }
-        view.accessibilityPerformIncrement()
+        #expect(!view.accessibilityPerformIncrement())
         #expect(callbackCount == 0)
         #expect(viewModel.currentPage == 4)
     }
@@ -807,7 +807,7 @@ private func expectRowMajor(
         let view = PageControlView(viewModel: viewModel)
         view.update()
         #expect(!view.isHidden)
-        view.accessibilityPerformIncrement()
+        #expect(view.accessibilityPerformIncrement())
         #expect(viewModel.currentPage == 1)
         #expect(!view.isHidden)
     }

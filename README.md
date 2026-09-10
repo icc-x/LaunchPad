@@ -365,4 +365,4 @@ LaunchPad/
 
 ## 许可
 
-本项目暂未设定开源许可证。如需使用代码，请联系作者。
+本项目采用 [MIT License](LICENSE)。

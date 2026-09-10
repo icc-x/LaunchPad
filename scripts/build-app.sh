@@ -21,6 +21,7 @@ mkdir -p "$APP_BUNDLE/Contents/Resources"
 
 cp "$BUILD_DIR/LaunchPadApp" "$APP_BUNDLE/Contents/MacOS/LaunchPadApp"
 cp "$PROJECT_DIR/Resources/Info.plist" "$APP_BUNDLE/Contents/Info.plist"
+cp "$PROJECT_DIR/Resources/AppIcon.icns" "$APP_BUNDLE/Contents/Resources/AppIcon.icns"
 echo -n "APPL????" > "$APP_BUNDLE/Contents/PkgInfo"
 
 echo "Done: $APP_BUNDLE"

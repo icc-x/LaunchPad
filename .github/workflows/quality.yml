@@ -27,7 +27,7 @@ jobs:
         run: ./scripts/check-test-quality.sh
 
       - name: Full test suite
-        run: swift test --disable-sandbox --no-parallel
+        run: swift test --disable-sandbox --no-parallel -Xswiftc -warnings-as-errors
 
       - name: Strict debug build
         run: swift build --product LaunchPadApp -Xswiftc -warnings-as-errors
