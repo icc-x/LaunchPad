@@ -118,6 +118,10 @@ public enum Schema {
         }
         guard sqlite3_column_int(checkStmt, 0) == 0 else { return }
 
+        // 空版本表不一定是全新库：更早的未版本化旧库可能已有 v1 表结构。
+        // 若直接写入 currentVersion，会跳过迁移并永久缺失 source_modified_at。
+        let baselineVersion = detectBaselineVersion(db: db)
+
         var insertStmt: OpaquePointer?
         let insertPrepareCode = sqlite3_prepare_v2(
             db,
@@ -131,7 +135,7 @@ public enum Schema {
         }
         defer { sqlite3_finalize(insertStmt) }
 
-        let bindCode = sqlite3_bind_int(insertStmt, 1, Int32(currentVersion))
+        let bindCode = sqlite3_bind_int(insertStmt, 1, baselineVersion)
         guard bindCode == SQLITE_OK else {
             throw SchemaError.versionBindFailed(bindCode)
         }
@@ -140,6 +144,39 @@ public enum Schema {
         guard insertStepCode == SQLITE_DONE else {
             throw SchemaError.versionInsertStepFailed(insertStepCode)
         }
+    }
+
+    /// 空版本表时推断基线版本：
+    /// - image_cache 已含 source_modified_at（或表尚不存在）→ 当前版本
+    /// - image_cache 存在但缺 source_modified_at → 视为 v1，交由迁移补列
+    static func detectBaselineVersion(db: OpaquePointer) -> Int32 {
+        var statement: OpaquePointer?
+        let prepareCode = sqlite3_prepare_v2(
+            db,
+            "PRAGMA table_info(image_cache)",
+            -1,
+            &statement,
+            nil
+        )
+        guard prepareCode == SQLITE_OK, let statement else {
+            return Int32(currentVersion)
+        }
+        defer { sqlite3_finalize(statement) }
+
+        var sawTable = false
+        var sawSourceModifiedAt = false
+        while sqlite3_step(statement) == SQLITE_ROW {
+            sawTable = true
+            if let name = sqlite3_column_text(statement, 1),
+               String(cString: name) == "source_modified_at" {
+                sawSourceModifiedAt = true
+                break
+            }
+        }
+        if !sawTable || sawSourceModifiedAt {
+            return Int32(currentVersion)
+        }
+        return 1
     }
 
     private static func migrateIfNeeded(db: OpaquePointer) throws {

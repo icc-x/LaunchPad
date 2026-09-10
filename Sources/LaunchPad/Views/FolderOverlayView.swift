@@ -336,6 +336,7 @@ public class FolderOverlayView: NSView {
     }
 
     public func closeFolder() {
+        dragController?.cancelDrag()
         closeFolderCompletionRunner { [weak self] in
             MainActor.assumeIsolated {
                 guard let self else { return }

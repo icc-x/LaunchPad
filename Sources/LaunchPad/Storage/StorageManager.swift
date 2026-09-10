@@ -290,7 +290,16 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
                 }
             }
         } catch let failure as ScanBatchWriteFailure {
-            throw failure
+            // 事务回滚后，error 载荷里的 successfulWriteCount 并未落库，
+            // 若原样上抛会让调用方读到虚假成功计数。
+            var rolledBack = ScanSyncResult()
+            for _ in 0..<failure.result.attemptedWriteCount {
+                rolledBack.recordFailure()
+            }
+            throw ScanBatchWriteFailure(
+                result: rolledBack,
+                primaryError: failure.primaryError
+            )
         } catch let rollbackFailure as SQLiteRollbackFailure {
             throw rollbackFailure
         } catch {

@@ -36,7 +36,10 @@ public final class WindowLifecycle {
         case .visible:
             transition(to: .closing)
             delegate?.lifecycleRequestsCloseAnimation(self)
-        case .opening, .closing, .launching:
+        case .opening:
+            // 打开动画可能因无可用屏幕等原因无法完成；允许再次 toggle 撤销，避免永久卡死。
+            transition(to: .hidden)
+        case .closing, .launching:
             break
         }
     }
@@ -46,7 +49,9 @@ public final class WindowLifecycle {
         case .visible:
             transition(to: .closing)
             delegate?.lifecycleRequestsCloseAnimation(self)
-        case .hidden, .opening, .closing, .launching:
+        case .opening:
+            transition(to: .hidden)
+        case .hidden, .closing, .launching:
             break
         }
     }
@@ -59,7 +64,7 @@ public final class WindowLifecycle {
     }
 
     public func handleFocusLost() {
-        guard state == .visible else { return }
+        guard state == .visible || state == .opening else { return }
         transition(to: .closing)
         delegate?.lifecycleRequestsCloseAnimation(self)
     }

@@ -389,6 +389,10 @@ public class LaunchPadViewController: NSViewController {
             return self.applyDropIntent(intent)
         }
 
+        gridInteractionCoordinator?.onDragSessionEnded = { [weak self] in
+            self?.updateJiggleState()
+        }
+
         scrollView.onPageChanged = { [weak self] page in
             guard let self else { return }
             pageControlViewModel.currentPage = page
@@ -688,6 +692,16 @@ public class LaunchPadViewController: NSViewController {
 
     func handleSearch(query: String) {
         currentSearchQuery = query
+        // 非空查询：同步 search 模式，覆盖鼠标点击搜索栏输入的路径。
+        // 空查询：仅当 navigator 仍持有非空 query 时退出 search。
+        // 键盘删除到最后一个字符时，navigator 会先把 mode 更新为 .search(query: "")，
+        // 此处不得再抢跑退出，否则空搜索态的 ESC/拖拽门禁会被破坏。
+        if !query.isEmpty {
+            keyboardNavigator.mode = .search(query: query)
+        } else if case .search(let existingQuery) = keyboardNavigator.mode,
+                  !existingQuery.isEmpty {
+            keyboardNavigator.mode = .idle
+        }
         synchronizeDragAvailability()
 
         if query.isEmpty {
@@ -1018,9 +1032,23 @@ public class LaunchPadViewController: NSViewController {
             handlePageChange(.forward)
         case .previousPage:
             handlePageChange(.backward)
-        case .launchSelected, .launchFirstMatch:
+        case .launchSelected:
             guard isViewLoaded else { return }
-            if let firstItem = collectionView.diffableDataSource.itemIdentifier(for: IndexPath(item: 0, section: 0)) {
+            if let selectedID = selectedItemID,
+               let selected = gridSnapshot.itemIdentifiers.first(where: {
+                   $0.id == selectedID
+               }) {
+                handleItemSelection(selected)
+            } else if let firstItem = collectionView.diffableDataSource.itemIdentifier(
+                for: IndexPath(item: 0, section: 0)
+            ) {
+                handleItemSelection(firstItem)
+            }
+        case .launchFirstMatch:
+            guard isViewLoaded else { return }
+            if let firstItem = collectionView.diffableDataSource.itemIdentifier(
+                for: IndexPath(item: 0, section: 0)
+            ) {
                 handleItemSelection(firstItem)
             }
         case .moveUp:

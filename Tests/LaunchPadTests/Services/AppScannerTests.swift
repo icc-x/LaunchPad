@@ -386,4 +386,17 @@ struct AppScannerRecursiveScanTests {
         #expect(result.apps.count == 1)
         #expect(result.apps.first?.bundleId == "com.apple.Safari")
     }
+
+    @Test("枚举中途失败时结果标记为不完整，禁止破坏性同步")
+    func recursiveScan_enumerationFailure_marksIncomplete() throws {
+        let fileSystem = MockFileSystemService()
+        fileSystem.enumerateAppBundlesError = TestError.generic
+
+        let scanner = AppScanner(fileSystemService: fileSystem)
+        let result = scanner.scanDirectories([root(firstDirectory)])
+
+        #expect(result.apps.isEmpty)
+        #expect(result.failedRootPaths == [firstDirectory.path])
+        #expect(result.isComplete == false)
+    }
 }

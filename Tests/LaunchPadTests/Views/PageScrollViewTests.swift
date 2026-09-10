@@ -278,6 +278,22 @@ struct PageScrollViewTests {
         #expect(pages == [2])
     }
 
+    @Test("scrollToPage 清空进行中的滚动累计位移")
+    func scrollToPage_resetsScrollAccumulator() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        let event = makeDummyScrollEvent()
+
+        // 模拟手势进行中累计了较大位移
+        _ = sut.processScrollPhase(.changed, deltaX: 100, event: event)
+        sut.scrollToPage(0, animated: false)
+
+        // 累计被清空后，ended 不应再按旧位移翻页
+        let forwarded = sut.processScrollPhase(.ended, deltaX: 0, event: event)
+        #expect(forwarded == false)
+        #expect(sut.contentView.bounds.origin.x == 0)
+    }
+
     @Test("无效 pageWidth 被清零且 pageCount 至少为一")
     func invalidPagingConfigurationIsSanitized() {
         let sut = PageScrollView()

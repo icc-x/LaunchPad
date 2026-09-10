@@ -104,15 +104,42 @@ struct ErrorRecoveryTests {
         #expect(result == .deleteAndRescan)
     }
 
-    @Test("目录路径作为 dbPath -> sqlite3_open 只读失败 -> deleteAndRescan")
-    func handleSQLiteCorruption_directoryPath_openFails() {
-        // sqlite3_open_v2 以只读模式打开目录会返回 SQLITE_CANTOPEN，触发 open 失败分支
-        let dirPath = (NSTemporaryDirectory() as NSString).appendingPathComponent("dir_\(UUID().uuidString)")
+    @Test("目录路径作为 dbPath 不得建议删库，避免 removeItem 删掉整个目录")
+    func handleSQLiteCorruption_directoryPath_doesNotDelete() {
+        let dirPath = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("dir_\(UUID().uuidString)")
         try? FileManager.default.createDirectory(atPath: dirPath, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(atPath: dirPath) }
 
         let result = ErrorRecovery.handleSQLiteCorruption(dbPath: dirPath)
-        #expect(result == .deleteAndRescan)
+
+        #expect(result != .deleteAndRescan)
+        #expect(FileManager.default.fileExists(atPath: dirPath))
+    }
+
+    @Test("文件存在但无法只读打开时不得删除健康库")
+    func handleSQLiteCorruption_existingFileOpenFailure_doesNotDelete() throws {
+        // 创建普通文件后收回读权限：文件存在，但 sqlite3_open_v2(READONLY) 失败。
+        // 历史实现直接 deleteAndRescan，会在锁冲突/权限抖动时误删用户布局。
+        let path = (NSTemporaryDirectory() as NSString)
+            .appendingPathComponent("lockedish_\(UUID().uuidString).db")
+        try Data("not-a-database".utf8).write(to: URL(fileURLWithPath: path))
+        try FileManager.default.setAttributes(
+            [.posixPermissions: 0o000],
+            ofItemAtPath: path
+        )
+        defer {
+            try? FileManager.default.setAttributes(
+                [.posixPermissions: 0o644],
+                ofItemAtPath: path
+            )
+            try? FileManager.default.removeItem(atPath: path)
+        }
+
+        let result = ErrorRecovery.handleSQLiteCorruption(dbPath: path)
+
+        #expect(result != .deleteAndRescan)
+        #expect(FileManager.default.fileExists(atPath: path))
     }
 
     @Test("integrity_check 返回非 ok -> deleteAndRescan")

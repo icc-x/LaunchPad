@@ -55,9 +55,14 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 数据库路径提供器（默认沿用生产路径创建逻辑，测试注入临时路径以隔离用户数据）
     lazy var databasePathProvider: () -> String = { [unowned self] in self.databasePath() }
 
-    /// 数据库删除器（默认删除生产数据库，测试注入以隔离文件系统副作用）
-    var databaseRemover: AppBootstrapper.DatabaseRemover = {
-        try FileManager.default.removeItem(atPath: $0)
+    /// 数据库删除器（默认删除生产数据库文件；拒绝目录，避免误删整个文件夹）
+    var databaseRemover: AppBootstrapper.DatabaseRemover = { path in
+        var isDirectory: ObjCBool = false
+        guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
+              !isDirectory.boolValue else {
+            return
+        }
+        try FileManager.default.removeItem(atPath: path)
     }
 
     /// 激活策略设置器（默认走 NSApp，测试注入避免无 NSApplication 实例时崩溃）
@@ -76,6 +81,45 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var hotkeyRegistrationConflict = false
     /// 无权限提示仅展示一次的持久化标记
     private static let hotkeyPermissionAlertKey = "launchpad.hotkeyPermissionAlertShown"
+    /// 延迟展示进行中：避免 0.8s 窗口内重复 toggle 挂多个 sheet
+    private var isHotkeyPermissionHintInFlight = false
+
+    /// 热键提示延迟执行器（默认 0.8s，测试可注入同步块以便确定性驱动）
+    var hotkeyHintDelayRunner: (@escaping @MainActor @Sendable () -> Void) -> Void = { block in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8, execute: block)
+    }
+
+    /// 提示展示所依赖的可见窗口（默认取 windowController；测试可注入）
+    var hotkeyPermissionHintWindowProvider: (() -> NSWindow?)?
+
+    /// 启动期存储失败的非模态提示；完成后调用 completion（默认随后终止）。
+    var storageFailurePresenter: (
+        _ message: String,
+        _ completion: @escaping @MainActor @Sendable () -> Void
+    ) -> Void = { message, completion in
+        let alert = NSAlert()
+        alert.messageText = "LaunchPad 无法启动"
+        alert.informativeText = message
+        alert.alertStyle = .critical
+        alert.addButton(withTitle: "退出")
+        // 非模态：挂到独立浮动 panel 的 sheet，避免 runModal 阻塞主 run loop。
+        let panel = NSPanel(
+            contentRect: NSRect(x: 0, y: 0, width: 420, height: 140),
+            styleMask: [.titled, .closable],
+            backing: .buffered,
+            defer: false
+        )
+        panel.title = "LaunchPad"
+        panel.level = .floating
+        panel.isReleasedWhenClosed = false
+        panel.center()
+        NSApp.activate(ignoringOtherApps: true)
+        panel.makeKeyAndOrderFront(nil)
+        alert.beginSheetModal(for: panel) { _ in
+            panel.orderOut(nil)
+            completion()
+        }
+    }
 
     /// 多实例检测（默认查系统运行实例，测试可注入以触发/跳过终止分支）
     var runningInstanceChecker: () -> Bool = {
@@ -274,7 +318,10 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             finishLaunch()
         case .failure:
             NSLog("[AppDelegate] Fatal: could not initialize database, aborting launch")
-            appTerminator()
+            let message = "无法初始化本地数据库（可能被占用或权限不足）。应用将退出，请检查磁盘与权限后重试。"
+            storageFailurePresenter(message) { [weak self] in
+                self?.appTerminator()
+            }
         }
     }
 
@@ -357,22 +404,26 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     /// 热键注册失败时，在窗口呼出后以非阻塞 sheet 提示一次（无权限提示仅首次）。
-    private func maybeShowHotkeyPermissionHint() {
+    internal func maybeShowHotkeyPermissionHint() {
         guard hotkeyRegistrationFailed else { return }
         let alreadyShown = UserDefaults.standard.bool(
             forKey: Self.hotkeyPermissionAlertKey
         )
         guard !alreadyShown else { return }
-        UserDefaults.standard.set(true, forKey: Self.hotkeyPermissionAlertKey)
+        // 0.8s 延迟窗口内重复 toggle 只允许一次调度，避免挂多个 sheet。
+        guard !isHotkeyPermissionHintInFlight else { return }
+        isHotkeyPermissionHintInFlight = true
 
-        // 等待窗口显示动画完成后再挂 sheet，避免窗口未就绪
-        mainAsyncRunner {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
-                guard let self,
-                      let window = self.windowController?.window,
-                      window.isVisible else { return }
-                self.presentHotkeyFailureHint(on: window)
-            }
+        // 等待窗口显示动画完成后再挂 sheet，避免窗口未就绪。
+        // 仅在真正展示成功后才写入 shown 标记，避免窗口未出现导致提示被永久吞掉。
+        hotkeyHintDelayRunner { [weak self] in
+            guard let self else { return }
+            self.isHotkeyPermissionHintInFlight = false
+            let window = self.hotkeyPermissionHintWindowProvider?()
+                ?? self.windowController?.window
+            guard let window, window.isVisible else { return }
+            UserDefaults.standard.set(true, forKey: Self.hotkeyPermissionAlertKey)
+            self.presentHotkeyFailureHint(on: window)
         }
     }
 
@@ -583,11 +634,17 @@ struct SystemFileSystemService: FileSystemService {
         at url: URL, maxDepth: Int,
         options: FileManager.DirectoryEnumerationOptions
     ) throws -> [URL] {
+        var enumerationError: (any Error)?
         guard let enumerator = FileManager.default.enumerator(
             at: url,
             includingPropertiesForKeys: [.isDirectoryKey],
             options: options,
-            errorHandler: nil
+            errorHandler: { _, error in
+                enumerationError = error
+                // 返回 false 中止枚举；静默截断会让调用方误判目录内容完整，
+                // 进而在同步时把“本次没扫到”的已安装应用删掉。
+                return false
+            }
         ) else { return [] }
 
         var results: [URL] = []
@@ -600,6 +657,9 @@ struct SystemFileSystemService: FileSystemService {
             }
             guard fileURL.pathExtension == "app" else { continue }
             results.append(fileURL)
+        }
+        if let enumerationError {
+            throw enumerationError
         }
         return results
     }

@@ -12,6 +12,42 @@ struct WindowLifecycleTests {
         return (lifecycle, delegate)
     }
 
+    // MARK: - opening recovery
+
+    @Test("opening 状态再次 toggle 恢复到 hidden，避免永久卡死")
+    func opening_toggle_recoversToHidden() {
+        let (sut, _) = makeSUT()
+
+        sut.handleToggle()
+        #expect(sut.state == .opening)
+
+        sut.handleToggle()
+        #expect(sut.state == .hidden)
+    }
+
+    @Test("opening 状态 ESC 恢复到 hidden")
+    func opening_esc_recoversToHidden() {
+        let (sut, _) = makeSUT()
+
+        sut.handleToggle()
+        #expect(sut.state == .opening)
+
+        sut.handleEscape()
+        #expect(sut.state == .hidden)
+    }
+
+    @Test("opening 状态失焦进入 closing")
+    func opening_focusLost_transitionsToClosing() {
+        let (sut, delegate) = makeSUT()
+
+        sut.handleToggle()
+        #expect(sut.state == .opening)
+
+        sut.handleFocusLost()
+        #expect(sut.state == .closing)
+        #expect(delegate.stateChanges.contains(.closing))
+    }
+
     // MARK: - hidden -> toggle -> opening -> visible
 
     @Test("hidden state toggle -> transitions through opening -> visible")
@@ -87,19 +123,17 @@ struct WindowLifecycleTests {
         #expect(sut.state == .hidden)
     }
 
-    // MARK: - opening -> toggle -> ignored
+    // MARK: - opening -> toggle -> recover
 
-    @Test("opening state toggle again -> ignored (debounce)")
+    @Test("opening state toggle again -> recover to hidden (avoid deadlock)")
     func opening_toggle_ignored() {
-        let (sut, delegate) = makeSUT()
+        let (sut, _) = makeSUT()
 
         sut.handleToggle()
         #expect(sut.state == .opening)
-        delegate.stateChanges.removeAll()
 
         sut.handleToggle()
-        #expect(sut.state == .opening)
-        #expect(delegate.stateChanges.isEmpty)
+        #expect(sut.state == .hidden)
     }
 
     // MARK: - visible -> focus lost -> closing -> hidden

@@ -35,6 +35,33 @@ struct LayoutProjectionTests {
         #expect(result.map { $0.map(\.id) } == [[1, 2], [3]])
     }
 
+    @Test("ordering 相等时按 id 稳定排序")
+    func equalOrdering_breaksTiesById() {
+        let page = TestDataFactory.makePageItem(id: 100, type: .page, ordering: 0)
+        let itemsByPage: [Int64: [PageItem]] = [
+            100: [
+                TestDataFactory.makePageItem(id: 30, ordering: 5),
+                TestDataFactory.makePageItem(id: 10, ordering: 5),
+                TestDataFactory.makePageItem(id: 20, ordering: 5),
+            ],
+        ]
+        let metrics = GridMetrics(
+            columns: 3, rows: 1, itemsPerPage: 3, iconSize: 64,
+            itemSize: CGSize(width: 64, height: 104), horizontalSpacing: 20,
+            verticalSpacing: 20,
+            sectionInsets: GridInsets(top: 10, left: 10, bottom: 10, right: 10),
+            pageWidth: 400
+        )
+
+        let result = LayoutProjection.project(
+            pages: [page],
+            itemsByPage: itemsByPage,
+            metrics: metrics
+        )
+
+        #expect(result.map { $0.map(\.id) } == [[10, 20, 30]])
+    }
+
     @Test("空布局仍产生一个空视觉页")
     func emptyLayoutReturnsOneEmptyPage() {
         let metrics = GridMetrics(

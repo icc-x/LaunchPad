@@ -475,6 +475,42 @@ struct HotkeyManagerTests {
         manager.handleGlobalEvent(type: .scrollWheel, event: event)
     }
 
+    @Test("tapDisabledByTimeout 会重新启用已安装的 event tap")
+    func handleGlobalEvent_tapDisabledByTimeout_reEnablesTap() throws {
+        let manager = makeIsolatedManager()
+        manager.accessibilityChecker = { true }
+        let port = try makeMachPort()
+        manager.eventTapCreator = { _, _, _ in port }
+        var enables: [Bool] = []
+        manager.eventTapEnabler = { _, enabled in enables.append(enabled) }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        enables.removeAll()
+
+        let event = try makeCGKeyEvent(keyCode: 49)
+        manager.handleGlobalEvent(type: .tapDisabledByTimeout, event: event)
+
+        #expect(enables == [true])
+        manager.unregisterGlobalHotkey()
+    }
+
+    @Test("tapDisabledByUserInput 会重新启用已安装的 event tap")
+    func handleGlobalEvent_tapDisabledByUserInput_reEnablesTap() throws {
+        let manager = makeIsolatedManager()
+        manager.accessibilityChecker = { true }
+        let port = try makeMachPort()
+        manager.eventTapCreator = { _, _, _ in port }
+        var enables: [Bool] = []
+        manager.eventTapEnabler = { _, enabled in enables.append(enabled) }
+        #expect(manager.registerGlobalHotkey(keyCode: 49, modifiers: .option))
+        enables.removeAll()
+
+        let event = try makeCGKeyEvent(keyCode: 49)
+        manager.handleGlobalEvent(type: .tapDisabledByUserInput, event: event)
+
+        #expect(enables == [true])
+        manager.unregisterGlobalHotkey()
+    }
+
     // MARK: - registerGlobalHotkey success / conflict paths
 
     @Test("registerGlobalHotkey success path installs tap, enables, and unregisters")

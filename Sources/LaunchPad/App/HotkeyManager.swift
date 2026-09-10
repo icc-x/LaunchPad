@@ -178,6 +178,12 @@ public final class HotkeyManager: HotkeyManaging {
     /// CGEventTap 回调核心逻辑（抽出便于测试，主线程执行）。
     func handleGlobalEvent(type: CGEventType, event: CGEvent) {
         switch type {
+        case .tapDisabledByTimeout, .tapDisabledByUserInput:
+            // 主线程卡顿等会导致系统禁用 tap；不恢复则全局热键永久失效。
+            if let eventTap {
+                eventTapEnabler(eventTap, true)
+            }
+
         case .flagsChanged:
             isOptionHeld = event.flags.contains(.maskAlternate)
 

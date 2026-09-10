@@ -99,6 +99,34 @@ struct CoordinatorNarrowProtocolTests {
         #expect(fake.events.contains("finish"))
     }
 
+    @Test("draggingSession ended 触发 onDragSessionEnded，供宿主清理抖动态")
+    func coordinator_endSession_notifiesHostToClearJiggle() {
+        let fake = FakeDragController()
+        let coordinator = AppGridInteractionCoordinator(
+            dragController: fake,
+            pasteboardUUIDReader: { _ in nil }
+        )
+        var endedCount = 0
+        coordinator.onDragSessionEnded = { endedCount += 1 }
+        fake.beginDrag(DragSession(
+            itemID: 1,
+            itemUUID: UUID().uuidString,
+            itemType: .app,
+            sourceKind: .topLevel,
+            sourceParentID: 10,
+            sourceVisualIndex: 0
+        ))
+
+        coordinator.collectionView(
+            NSCollectionView(),
+            draggingSession: NSDraggingSession(),
+            endedAt: .zero,
+            dragOperation: .move
+        )
+
+        #expect(endedCount == 1)
+    }
+
     @Test("isDragEnabled 关闭时驱动 fake 的 handleCancel")
     func coordinator_disableDrag_drivesFakeCancel() {
         let fake = FakeDragController()

@@ -19,9 +19,15 @@ public enum LayoutProjection {
         metrics: GridMetrics
     ) -> [[PageItem]] {
         let orderedItems = pages
-            .sorted { $0.ordering < $1.ordering }
+            .sorted {
+                if $0.ordering != $1.ordering { return $0.ordering < $1.ordering }
+                return $0.id < $1.id
+            }
             .flatMap { page in
-                (itemsByPage[page.id] ?? []).sorted { $0.ordering < $1.ordering }
+                (itemsByPage[page.id] ?? []).sorted {
+                    if $0.ordering != $1.ordering { return $0.ordering < $1.ordering }
+                    return $0.id < $1.id
+                }
             }
         return paginate(items: orderedItems, metrics: metrics)
     }

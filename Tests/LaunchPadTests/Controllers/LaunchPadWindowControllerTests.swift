@@ -191,13 +191,13 @@ struct LaunchPadWindowControllerTests {
         #expect(sut.lifecycle.state == .opening)
     }
 
-    @Test("opening 状态再次 toggle -> 被忽略（防抖）")
+    @Test("opening 状态再次 toggle -> 恢复 hidden，避免无法呼出")
     func toggle_fromOpening_isDebounced() {
         let sut = makeSUT()
         sut.controller.toggle()
         #expect(sut.lifecycle.state == .opening)
         sut.controller.toggle()
-        #expect(sut.lifecycle.state == .opening)
+        #expect(sut.lifecycle.state == .hidden)
     }
 
     @Test("hidden 状态 escape -> 无操作")
@@ -445,6 +445,42 @@ struct LaunchPadWindowControllerTests {
 
         #expect(sut.lifecycle.state == .opening)
         #expect(sut.controller.window?.isVisible == false)
+    }
+
+    @Test("target frame 缺失导致 opening 卡死时，再次 toggle 可恢复到 hidden")
+    func showWindowAnimated_targetScreenNil_secondToggleRecoversToHidden() {
+        let sut = makeSUT()
+        sut.controller.targetScreenFrameProvider = { _ in nil }
+        sut.controller.runAnimated = { _, _, _ in }
+        sut.controller.mainActorDispatcher = { operation in
+            MainActor.assumeIsolated { operation() }
+        }
+
+        sut.controller.toggle()
+        #expect(sut.lifecycle.state == .opening)
+
+        sut.controller.toggle()
+
+        #expect(sut.lifecycle.state == .hidden)
+        #expect(sut.controller.window?.isVisible == false)
+    }
+
+    @Test("opening 期间失焦会进入 closing，避免可见但非 key 的死态")
+    func resignKey_duringOpening_transitionsToClosing() {
+        let sut = makeSynchronousWindowSUT()
+        sut.controller.targetScreenFrameProvider = { _ in
+            NSRect(x: 0, y: 0, width: 100, height: 100)
+        }
+
+        sut.controller.toggle()
+        #expect(sut.lifecycle.state == .opening || sut.lifecycle.state == .visible)
+
+        NotificationCenter.default.post(
+            name: NSWindow.didResignKeyNotification,
+            object: sut.controller.window
+        )
+
+        #expect(sut.lifecycle.state == .closing || sut.lifecycle.state == .hidden)
     }
 
     @Test("窗口进入 closing 会清理活动拖拽")

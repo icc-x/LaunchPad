@@ -197,6 +197,9 @@ class PageScrollView: NSScrollView {
 
     func scrollToPage(_ page: Int, animated: Bool) {
         guard pagingPageWidth > 0 else { return }
+        // 外部跳页会打断进行中的手势；清空累计位移，避免残留 delta 影响下一次 ended。
+        scrollAccumulator = 0
+        isScrolling = false
         let clamped = min(max(page, 0), pagingPageCount - 1)
         let target = NSPoint(x: CGFloat(clamped) * pagingPageWidth, y: 0)
 

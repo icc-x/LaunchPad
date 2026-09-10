@@ -262,6 +262,35 @@ struct FolderOverlayViewTests {
         #expect(closedCalled)
     }
 
+    @Test
+    func closeFolder_cancelsActiveDragSession() {
+        let overlay = makeOverlay()
+        let dragController = DragController()
+        overlay.dragController = dragController
+        let item = TestDataFactory.makePageItem(
+            id: 1, type: .group, ordering: 0,
+            group: TestDataFactory.makeGroupInfo(id: 1, title: "Folder")
+        )
+        overlay.openFolder(item: item, childItems: [], iconCache: nil)
+        dragController.beginDrag(
+            DragSession(
+                itemID: 10,
+                itemUUID: "uuid-10",
+                itemType: .app,
+                sourceKind: .folderChild,
+                sourceParentID: 1,
+                sourceVisualIndex: 0
+            )
+        )
+        #expect(dragController.session != nil)
+
+        overlay.closeFolderCompletionRunner = { $0() }
+        overlay.closeFolder()
+
+        #expect(dragController.session == nil)
+        #expect(dragController.state == .idle)
+    }
+
     // MARK: - Callbacks
 
     @Test

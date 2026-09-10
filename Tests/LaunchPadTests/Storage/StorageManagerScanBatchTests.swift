@@ -85,8 +85,9 @@ struct StorageManagerScanBatchTests {
             Issue.record("expected ScanBatchWriteFailure")
         } catch let failure as ScanBatchWriteFailure {
             #expect(failure.result.attemptedWriteCount == 4)
-            #expect(failure.result.successfulWriteCount == 3)
-            #expect(failure.result.failedWriteCount == 1)
+            // 事务已回滚：任何“成功”计数都未落库，必须归零并全部计为失败。
+            #expect(failure.result.successfulWriteCount == 0)
+            #expect(failure.result.failedWriteCount == 4)
         }
         #expect(try storage.persistedLayoutSnapshot().allItems.isEmpty)
     }
@@ -103,8 +104,8 @@ struct StorageManagerScanBatchTests {
             _ = try storage.synchronizeInstalledApps([app("A changed", "com.test.a", "/A2.app"), app("C", "com.test.c")], initialPageCapacity: 28)
             Issue.record("expected ScanBatchWriteFailure")
         } catch let failure as ScanBatchWriteFailure {
-            #expect(failure.result.successfulWriteCount == 3)
-            #expect(failure.result.failedWriteCount == 1)
+            #expect(failure.result.successfulWriteCount == 0)
+            #expect(failure.result.failedWriteCount == failure.result.attemptedWriteCount)
         }
         #expect(try storage.persistedLayoutSnapshot() == before)
     }
@@ -130,8 +131,8 @@ struct StorageManagerScanBatchTests {
             Issue.record("expected ScanBatchWriteFailure")
         } catch let failure as ScanBatchWriteFailure {
             #expect(failure.result.attemptedWriteCount == 3)
-            #expect(failure.result.successfulWriteCount == 2)
-            #expect(failure.result.failedWriteCount == 1)
+            #expect(failure.result.successfulWriteCount == 0)
+            #expect(failure.result.failedWriteCount == 3)
         }
         #expect(try storage.persistedLayoutSnapshot() == before)
         _ = try storage.synchronizeInstalledApps([scanned[0], scanned[2]], initialPageCapacity: 3)
@@ -216,7 +217,8 @@ struct StorageManagerScanBatchTests {
             Issue.record("expected page failure")
         } catch let failure as ScanBatchWriteFailure {
             #expect(failure.result.attemptedWriteCount == 5)
-            #expect(failure.result.successfulWriteCount == 4)
+            #expect(failure.result.successfulWriteCount == 0)
+            #expect(failure.result.failedWriteCount == 5)
         }
         #expect(try pageStorage.persistedLayoutSnapshot() == pageBefore)
 
@@ -295,8 +297,8 @@ struct StorageManagerScanBatchTests {
             Issue.record("expected ScanBatchWriteFailure")
         } catch let failure as ScanBatchWriteFailure {
             #expect(failure.result.attemptedWriteCount == 4)
-            #expect(failure.result.successfulWriteCount == 3)
-            #expect(failure.result.failedWriteCount == 1)
+            #expect(failure.result.successfulWriteCount == 0)
+            #expect(failure.result.failedWriteCount == 4)
         }
         #expect(try storage.persistedLayoutSnapshot() == before)
     }

@@ -156,6 +156,10 @@ struct AppDelegateTests {
         }
         sut.storageFactory = { _ in try StorageManager(dbPath: ":memory:") }
         sut.scanBatchWriter = RecordingScanBatchWriter()
+        // 测试环境不弹真实 alert；同步完成以免挂起
+        sut.storageFailurePresenter = { _, completion in
+            MainActor.assumeIsolated { completion() }
+        }
         return sut
     }
 
@@ -420,12 +424,17 @@ struct AppDelegateTests {
         #expect(sut.fileWatcher != nil)
     }
 
-    @Test("启动失败：数据库不可用则记录致命错误并退出")
+    @Test("启动失败：数据库不可用则展示错误并退出")
     func applicationDidFinishLaunching_fatalWhenStorageUnavailable() async {
         let sut = makeDelegate()
         let terminationRecorder = CallRecorder()
+        var presentedCount = 0
         sut.storageFactory = { _ in throw NSError(domain: "db", code: 9) }
         sut.corruptionHandler = { _ in .healthy } // 非重建策略 → storage 保持 nil
+        sut.storageFailurePresenter = { _, completion in
+            presentedCount += 1
+            MainActor.assumeIsolated { completion() }
+        }
 
         await withCheckedContinuation { continuation in
             sut.appTerminator = {
@@ -446,6 +455,7 @@ struct AppDelegateTests {
 
         #expect(sut.storage == nil)
         #expect(terminationRecorder.count == 1)
+        #expect(presentedCount == 1)
         #expect(sut.lifecycle == nil)
         #expect(sut.statusItem == nil)
         #expect(sut.hotkeyManager == nil)
@@ -774,6 +784,67 @@ struct AppDelegateTests {
 
         #expect(presented == ["需要辅助功能权限"])
         #expect(openedURLs.isEmpty)
+    }
+
+    @Test("热键权限提示在延迟窗口内重复 toggle 只调度一次且只展示一次")
+    func maybeShowHotkeyPermissionHint_isReentrancyGuarded() {
+        let sut = makeDelegate()
+        sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
+        sut.setupHotkey()
+        #expect(sut.hotkeyRegistrationFailed)
+        UserDefaults.standard.set(false, forKey: "launchpad.hotkeyPermissionAlertShown")
+        defer {
+            UserDefaults.standard.set(true, forKey: "launchpad.hotkeyPermissionAlertShown")
+        }
+
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
+            styleMask: [.titled],
+            backing: .buffered,
+            defer: false
+        )
+        window.makeKeyAndOrderFront(nil)
+        #expect(window.isVisible)
+        sut.hotkeyPermissionHintWindowProvider = { window }
+
+        var pendingBlocks: [() -> Void] = []
+        sut.hotkeyHintDelayRunner = { block in
+            pendingBlocks.append { MainActor.assumeIsolated { block() } }
+        }
+        var presentedCount = 0
+        sut.alertPresenter = { _, _, completion in
+            presentedCount += 1
+            completion(.alertSecondButtonReturn)
+        }
+
+        sut.maybeShowHotkeyPermissionHint()
+        sut.maybeShowHotkeyPermissionHint()
+        sut.maybeShowHotkeyPermissionHint()
+        #expect(pendingBlocks.count == 1)
+
+        pendingBlocks.forEach { $0() }
+
+        #expect(presentedCount == 1)
+        #expect(UserDefaults.standard.bool(forKey: "launchpad.hotkeyPermissionAlertShown"))
+    }
+
+    @Test("bootstrap 失败时展示非模态错误 UI 再终止")
+    func handleBootstrapResult_failure_presentsErrorThenTerminates() {
+        let sut = makeDelegate()
+        var presentedMessages: [String] = []
+        var terminated = false
+        sut.storageFailurePresenter = { message, completion in
+            presentedMessages.append(message)
+            MainActor.assumeIsolated { completion() }
+        }
+        sut.appTerminator = { terminated = true }
+
+        sut.handleBootstrapResult(.failure(.storageUnavailable))
+
+        #expect(presentedMessages.count == 1)
+        #expect(presentedMessages[0].contains("无法"))
+        #expect(terminated)
+        #expect(sut.storage == nil)
     }
 
     // MARK: - onToggle / onKeyDown 回调

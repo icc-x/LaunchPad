@@ -246,7 +246,7 @@ public class LaunchPadWindowController: NSWindowController, WindowLifecycleDeleg
     }
 
     @objc private func windowDidResignKey(_ notification: Notification) {
-        guard lifecycle.state == .visible else { return }
+        guard lifecycle.state == .visible || lifecycle.state == .opening else { return }
         lifecycle.handleFocusLost()
     }
 

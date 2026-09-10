@@ -42,6 +42,7 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     var onSelectionChanged: ((PageItem) -> Void)?
     var onItemActivated: ((PageItem) -> Void)?
     var onDropRequested: ((DragSession, GridDropDestination) -> Bool)?
+    var onDragSessionEnded: (() -> Void)?
     var pasteboardUUIDReader: (NSPasteboard) -> String?
 
     init(
@@ -252,6 +253,7 @@ final class AppGridInteractionCoordinator: NSObject, NSCollectionViewDelegate {
     ) {
         guard dragController.session != nil else { return }
         dragController.finishDrag()
+        onDragSessionEnded?()
     }
 
     func collectionView(

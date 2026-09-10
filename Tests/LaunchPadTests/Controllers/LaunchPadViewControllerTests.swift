@@ -3579,5 +3579,76 @@ struct LaunchPadViewControllerTests {
         #expect(viewport.width.isFinite)
         #expect(viewport.height.isFinite)
     }
+
+    // MARK: - 回归：Enter 启动选中项而非固定首项
+
+    @Test("idle 态 Enter 启动当前选中项，而不是第一个图标")
+    func launchSelected_launchesHighlightedItemNotFirstItem() async {
+        var openedURLs: [URL] = []
+        let (sut, _, storage) = makeSUT(applicationOpener: { openedURLs.append($0) })
+        let apps = TestDataFactory.makeAppItems(count: 5, titlePrefix: "App")
+        await loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        let target = apps[2]
+        sut.bundleURLResolver = { _ in URL(fileURLWithPath: "/tmp/\(target.id).app") }
+        _ = sut.selectItem(id: target.id)
+
+        _ = sut.handleKeyEvent(.enter)
+
+        #expect(openedURLs.map(\.lastPathComponent) == ["\(target.id).app"])
+    }
+
+    @Test("无选中时 Enter 回退启动首个图标")
+    func launchSelected_withoutSelectionFallsBackToFirstItem() async {
+        var openedURLs: [URL] = []
+        let (sut, _, storage) = makeSUT(applicationOpener: { openedURLs.append($0) })
+        let apps = TestDataFactory.makeAppItems(count: 3, titlePrefix: "App")
+        await loadViewWithData(sut, storage: storage, apps: apps)
+        layout(sut)
+        sut.bundleURLResolver = { _ in URL(fileURLWithPath: "/tmp/first.app") }
+
+        _ = sut.handleKeyEvent(.enter)
+
+        #expect(openedURLs.map(\.lastPathComponent) == ["first.app"])
+    }
+
+    // MARK: - 回归：鼠标点击搜索栏后键盘导航模式同步
+
+    @Test("handleSearch 非空查询时 keyboardNavigator 进入 search 模式")
+    func handleSearch_nonEmpty_syncsKeyboardNavigatorMode() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+
+        sut.handleSearch(query: "Safari")
+
+        #expect(sut.keyboardNavigator.mode == .search(query: "Safari"))
+        #expect(sut.handleKeyEvent(.escape) == .clearSearch)
+    }
+
+    @Test("handleSearch 空查询不提前退出 search 模式，ESC 语义保持不变")
+    func handleSearch_empty_keepsSearchModeUntilEscape() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        // 键盘删除到最后一个字符后，navigator 已处于空搜索态
+        sut.keyboardNavigator.mode = .search(query: "")
+
+        sut.handleSearch(query: "")
+
+        #expect(sut.keyboardNavigator.mode == .search(query: ""))
+        #expect(sut.handleKeyEvent(.escape) == .clearSearch)
+    }
+
+    @Test("从有内容搜索清空时 handleSearch 退出 search 模式并恢复拖拽")
+    func handleSearch_clearingNonEmptyQuery_restoresIdleAndDrag() {
+        let (sut, _, _) = makeSUT()
+        _ = sut.view
+        sut.handleSearch(query: "Safari")
+        #expect(sut.keyboardNavigator.mode == .search(query: "Safari"))
+
+        sut.handleSearch(query: "")
+
+        #expect(sut.keyboardNavigator.mode == .idle)
+        #expect(sut.handleKeyEvent(.escape) == .closeWindow)
+    }
 }
 #endif

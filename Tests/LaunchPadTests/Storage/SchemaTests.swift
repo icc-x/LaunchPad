@@ -182,6 +182,42 @@ struct SchemaTests {
         #expect(sqlite3_column_type(statement, 0) == SQLITE_NULL)
     }
 
+    @Test("缺 schema_version 行的旧库仍按 v1 迁移，不得直接盖章为 v2")
+    func setupSchema_unversionedLegacyDB_migratesInsteadOfStampingCurrent() throws {
+        let db = try #require(openMemoryDB())
+        defer { sqlite3_close(db) }
+        // 旧库：已有 v1 表结构与数据，但没有 schema_version 行。
+        #expect(sqlite3_exec(db, Schema.createItemsTable, nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            """
+            CREATE TABLE image_cache (
+                item_id INTEGER PRIMARY KEY,
+                icon_1x BLOB,
+                icon_2x BLOB,
+                updated_at REAL
+            )
+            """,
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+        #expect(sqlite3_exec(db, Schema.createSchemaVersionTable, nil, nil, nil) == SQLITE_OK)
+        #expect(sqlite3_exec(
+            db,
+            "INSERT INTO image_cache (item_id, icon_1x, icon_2x) VALUES (1, x'0102', x'0304')",
+            nil,
+            nil,
+            nil
+        ) == SQLITE_OK)
+
+        try Schema.setupSchema(db: db)
+
+        #expect(storedVersion(db: db) == 2)
+        #expect(columnNames(table: "image_cache", db: db).contains("source_modified_at"))
+        #expect(legacyImageIsReadable(db: db))
+    }
+
     @Test("未知更高 schema 版本拒绝初始化")
     func setupSchema_rejectsUnknownHigherVersion() throws {
         let db = try #require(openMemoryDB())
