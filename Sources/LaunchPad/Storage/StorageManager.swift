@@ -414,7 +414,41 @@ public final class StorageManager: DataStoring, LayoutReading, LayoutMutating, S
         result: inout ScanSyncResult,
         firstError: inout (any Error)?
     ) throws {
-        let snapshot = try readPersistedLayoutSnapshot(database: database)
+        var snapshot = try readPersistedLayoutSnapshot(database: database)
+
+        // 1. 文件夹子项 ordering 压密（卸载中间应用后不得留下空洞）
+        for group in snapshot.allItems where group.type == .group {
+            let children = snapshot.folderChildren[group.id] ?? []
+            for (ordering, child) in children.enumerated()
+            where child.parentId != group.id || child.ordering != ordering {
+                _ = try attemptScanWrite(
+                    database: database,
+                    result: &result,
+                    firstError: &firstError,
+                    { try updateParentAndOrdering(
+                        itemID: child.id,
+                        parentID: group.id,
+                        ordering: ordering,
+                        database: database
+                    ) }
+                )
+            }
+        }
+
+        // 2. 清理空文件夹：与 apply(.deleteFolder) 的溶解语义对齐
+        for group in snapshot.allItems where group.type == .group {
+            let children = snapshot.folderChildren[group.id] ?? []
+            guard children.isEmpty else { continue }
+            _ = try attemptScanWrite(
+                database: database,
+                result: &result,
+                firstError: &firstError,
+                { try deleteLayoutItem(itemID: group.id, database: database) }
+            )
+        }
+
+        // 3. 空文件夹删除后重读，再压密 page 子项并清理空 page
+        snapshot = try readPersistedLayoutSnapshot(database: database)
         var pages = snapshot.pages
         for page in pages {
             let children = snapshot.pageChildren[page.id] ?? []

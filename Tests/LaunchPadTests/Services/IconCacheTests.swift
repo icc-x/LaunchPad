@@ -314,6 +314,30 @@ struct IconCacheTests {
         #expect(store.fetchCallCount <= diskCountAfterFirst + 1)
     }
 
+    @Test("mtime 为 nil 时内存命中不得自毁，也不得再次提取 provider")
+    func memoryCacheHit_nilModificationDate_reusesCache() async {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let path = "/Applications/NoMtime.app"
+        provider.icons[path] = makeTestImage()
+        // 首次有 mtime，写入内存缓存
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 1_000)
+        let sut = IconCache(iconProvider: provider, imageStore: store)
+
+        _ = await loadIcon(sut, itemID: 7, path: path)
+        #expect(provider.fetchCallCount == 1)
+
+        // 路径元数据不可读 → mtime 为 nil。历史实现会无条件 removeObject，
+        // 导致每次 cell 重载都在 MainActor 重取 NSWorkspace 图标。
+        provider.modificationDates.removeValue(forKey: path)
+        provider.modificationDateResult = nil
+
+        _ = await loadIcon(sut, itemID: 7, path: path)
+
+        #expect(provider.fetchCallCount == 1)
+        #expect(store.fetchCallCount <= 1)
+    }
+
     // MARK: - Memory miss + disk hit
 
     @Test("进程重启后同规格不同内容的磁盘图标会按源修改时间刷新")
@@ -423,6 +447,28 @@ struct IconCacheTests {
         #expect(provider.fetchCallCount == providerCountBefore + 1)
         // Verify disk was written
         #expect(store.stored[1] != nil)
+    }
+
+    @Test("mtime 为 nil 时命中内存缓存不得自毁，也不再调用 provider")
+    func nilModificationDate_reusesMemoryCacheWithoutProviderRefetch() async {
+        let provider = MockIconProvider()
+        let store = MockImageStore()
+        let sut = IconCache(iconProvider: provider, imageStore: store, memoryLimit: 500)
+        let path = "/Applications/NoMtime.app"
+        let image = makeTestImage()
+        provider.icons[path] = image
+        // 第一次：有 mtime，写入内存缓存
+        provider.modificationDates[path] = Date(timeIntervalSince1970: 1_000)
+        _ = await loadIcon(sut, itemID: 1, path: path)
+        let fetchesAfterFirst = provider.fetchCallCount
+
+        // 第二次：路径元数据不可用（mtime = nil），应直接复用内存缓存
+        provider.modificationDates.removeValue(forKey: path)
+        provider.modificationDateResult = nil
+        let second = await loadIcon(sut, itemID: 1, path: path)
+
+        #expect(second.size.width > 0)
+        #expect(provider.fetchCallCount == fetchesAfterFirst)
     }
 
     // MARK: - LRU eviction

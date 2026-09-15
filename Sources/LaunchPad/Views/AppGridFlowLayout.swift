@@ -123,9 +123,13 @@ public final class AppGridFlowLayout: NSCollectionViewLayout {
         let totalPages = max(collectionView.numberOfSections, 1)
         let currentPage = Int(round(collectionView.enclosingScrollView?
             .contentView.bounds.origin.x ?? 0) / max(metrics.pageWidth, 1))
+        // content offset 增大 = 向后翻页；scroll delta 正值 = 上一页。
+        // 传给 targetPage 前需换算到 scroll-delta 语义。
+        let deltaFromCurrentPage =
+            proposedContentOffset.x - CGFloat(currentPage) * metrics.pageWidth
         let target = PageScrollView.targetPage(
-            for: proposedContentOffset.x - CGFloat(currentPage) * metrics.pageWidth,
-            velocity: velocity.x,
+            for: -deltaFromCurrentPage,
+            velocity: -velocity.x,
             currentPage: currentPage,
             totalPages: totalPages,
             pageWidth: metrics.pageWidth

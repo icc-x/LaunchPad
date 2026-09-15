@@ -124,6 +124,8 @@ struct AppScanCoordinatorTests {
 
         func isExcluded(bundleId: String) -> Bool { false }
 
+        func snapshot() -> State { state.withLock { $0 } }
+
         func waitForFirstInvocation() async {
             await withCheckedContinuation { continuation in
                 let started = state.withLock { state in
@@ -290,5 +292,28 @@ struct AppScanCoordinatorTests {
         #expect(await outcomes.waitForOutcomes() == [.success, .success])
         #expect(scanner.maximumConcurrentInvocations() == 1)
         #expect(writer.snapshot().invocationCount == 2)
+    }
+
+    @Test("扫描进行中重复请求合并为一次后续扫描，避免队列堆积")
+    func concurrentRequestsCoalesceIntoSingleFollowUpScan() async {
+        let scanner = BlockingScanner(discoveryResult: AppDiscoveryResult(apps: [app()]))
+        let writer = RecordingWriter(behavior: .result(successfulResult()))
+        let coordinator = AppScanCoordinator(scanner: scanner, writer: writer)
+        // 1 次进行中 + 5 次堆积请求 → 期望总共只执行 2 次扫描
+        let outcomes = OutcomeCollector(expectedCount: 6)
+
+        coordinator.scan(roots: [], pageCapacity: 1) { outcomes.record($0) }
+        await scanner.waitForFirstInvocation()
+
+        for _ in 0..<5 {
+            coordinator.scan(roots: [], pageCapacity: 1) { outcomes.record($0) }
+        }
+        scanner.releaseFirstInvocation()
+
+        let collected = await outcomes.waitForOutcomes()
+        #expect(collected == Array(repeating: .success, count: 6))
+        #expect(scanner.snapshot().invocationCount == 2)
+        #expect(writer.snapshot().invocationCount == 2)
+        #expect(scanner.maximumConcurrentInvocations() == 1)
     }
 }

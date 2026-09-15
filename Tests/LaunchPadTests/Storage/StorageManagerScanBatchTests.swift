@@ -339,4 +339,89 @@ struct StorageManagerScanBatchTests {
         #expect(snapshot.pages[0].ordering == 0)
         #expect(snapshot.pageChildren[snapshot.pages[0].id] == [])
     }
+
+    @Test("文件夹内应用全部卸载后空文件夹被清理")
+    func incrementalScan_dissolvesEmptyFolder() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        _ = try storage.synchronizeInstalledApps([
+            app("Keep", "com.test.keep"),
+            app("InFolderA", "com.test.in.a"),
+            app("InFolderB", "com.test.in.b"),
+        ], initialPageCapacity: 28)
+
+        var snapshot = try storage.persistedLayoutSnapshot()
+        let keepID = try #require(snapshot.allItems.first {
+            $0.app?.bundleId == "com.test.keep"
+        }?.id)
+        let folderID = try storage.insertItem(TestDataFactory.makePageItem(
+            type: .group,
+            ordering: 1,
+            parentId: snapshot.pages[0].id,
+            group: TestDataFactory.makeGroupInfo(title: "Tools")
+        ))
+        for (index, bundleID) in ["com.test.in.a", "com.test.in.b"].enumerated() {
+            let appID = try #require(snapshot.allItems.first {
+                $0.app?.bundleId == bundleID
+            }?.id)
+            try storage.apply(
+                .addToFolder(itemID: appID, folderID: folderID),
+                pageCapacity: 28
+            )
+            _ = index
+        }
+
+        snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.folderChildren[folderID]?.count == 2)
+
+        // 只保留 Keep：文件夹内应用全部消失
+        _ = try storage.synchronizeInstalledApps([
+            app("Keep", "com.test.keep"),
+        ], initialPageCapacity: 28)
+
+        snapshot = try storage.persistedLayoutSnapshot()
+        #expect(snapshot.allItems.contains { $0.id == folderID } == false)
+        #expect(snapshot.allItems.contains { $0.id == keepID })
+        #expect(snapshot.pages.flatMap { snapshot.pageChildren[$0.id] ?? [] }
+            .compactMap(\.app?.bundleId) == ["com.test.keep"])
+    }
+
+    @Test("文件夹内部分应用卸载后剩余子项 ordering 压密")
+    func incrementalScan_densifiesFolderChildOrdering() throws {
+        let storage = try StorageManager(dbPath: ":memory:")
+        _ = try storage.synchronizeInstalledApps([
+            app("Keep", "com.test.keep"),
+            app("InFolderA", "com.test.in.a"),
+            app("InFolderB", "com.test.in.b"),
+            app("InFolderC", "com.test.in.c"),
+        ], initialPageCapacity: 28)
+
+        var snapshot = try storage.persistedLayoutSnapshot()
+        let folderID = try storage.insertItem(TestDataFactory.makePageItem(
+            type: .group,
+            ordering: 1,
+            parentId: snapshot.pages[0].id,
+            group: TestDataFactory.makeGroupInfo(title: "Tools")
+        ))
+        for bundleID in ["com.test.in.a", "com.test.in.b", "com.test.in.c"] {
+            let appID = try #require(snapshot.allItems.first {
+                $0.app?.bundleId == bundleID
+            }?.id)
+            try storage.apply(
+                .addToFolder(itemID: appID, folderID: folderID),
+                pageCapacity: 28
+            )
+        }
+
+        // 卸载中间的 B，A/C 应压密为 0,1
+        _ = try storage.synchronizeInstalledApps([
+            app("Keep", "com.test.keep"),
+            app("InFolderA", "com.test.in.a"),
+            app("InFolderC", "com.test.in.c"),
+        ], initialPageCapacity: 28)
+
+        snapshot = try storage.persistedLayoutSnapshot()
+        let children = try #require(snapshot.folderChildren[folderID])
+        #expect(children.map(\.app?.bundleId) == ["com.test.in.a", "com.test.in.c"])
+        #expect(children.map(\.ordering) == [0, 1])
+    }
 }

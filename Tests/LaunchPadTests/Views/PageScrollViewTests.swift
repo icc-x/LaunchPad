@@ -25,35 +25,35 @@ struct PageScrollViewTests {
         )
     }
 
-    // MARK: - Velocity-driven paging
+    // MARK: - Velocity-driven paging（正 = 上一页，负 = 下一页）
 
-    @Test("Positive velocity above threshold -> next page")
-    func positiveVelocity_aboveThreshold_nextPage() {
+    @Test("Negative velocity above threshold -> next page")
+    func negativeVelocity_aboveThreshold_nextPage() {
         let result = calc(
             offset: 0,
-            velocity: 500,
+            velocity: -500,
             currentPage: 0,
             totalPages: 3
         )
         #expect(result == 1)
     }
 
-    @Test("Negative velocity above threshold -> previous page")
-    func negativeVelocity_aboveThreshold_previousPage() {
+    @Test("Positive velocity above threshold -> previous page")
+    func positiveVelocity_aboveThreshold_previousPage() {
         let result = calc(
             offset: 0,
-            velocity: -500,
+            velocity: 500,
             currentPage: 2,
             totalPages: 3
         )
         #expect(result == 1)
     }
 
-    @Test("Positive velocity from middle page -> next page")
-    func positiveVelocity_middlePage_nextPage() {
+    @Test("Negative velocity from middle page -> next page")
+    func negativeVelocity_middlePage_nextPage() {
         let result = calc(
             offset: 0,
-            velocity: 600,
+            velocity: -600,
             currentPage: 1,
             totalPages: 5
         )
@@ -74,24 +74,24 @@ struct PageScrollViewTests {
         #expect(result == 1)
     }
 
-    @Test("Low velocity + large positive offset (exceeds half page) -> next page")
-    func lowVelocity_largePositiveOffset_nextPage() {
+    @Test("Low velocity + large positive offset (exceeds half page) -> previous page")
+    func lowVelocity_largePositiveOffset_previousPage() {
         let result = calc(
             offset: 800,
             velocity: 50,
-            currentPage: 1,
+            currentPage: 2,
             totalPages: 3,
             pageWidth: 1440
         )
-        #expect(result == 2)
+        #expect(result == 1)
     }
 
-    @Test("Low velocity + large negative offset (exceeds half page) -> previous page")
-    func lowVelocity_largeNegativeOffset_previousPage() {
+    @Test("Low velocity + large negative offset (exceeds half page) -> next page")
+    func lowVelocity_largeNegativeOffset_nextPage() {
         let result = calc(
             offset: -800,
             velocity: -50,
-            currentPage: 2,
+            currentPage: 0,
             totalPages: 3,
             pageWidth: 1440
         )
@@ -112,44 +112,44 @@ struct PageScrollViewTests {
 
     // MARK: - Edge bounce
 
-    @Test("First page + negative velocity -> bounces back to first page (no out of bounds)")
-    func firstPage_negativeVelocity_bounceBack() {
-        let result = calc(
-            offset: 0,
-            velocity: -800,
-            currentPage: 0,
-            totalPages: 3
-        )
-        #expect(result == 0)
-    }
-
-    @Test("First page + negative offset -> bounces back to first page")
-    func firstPage_negativeOffset_bounceBack() {
-        let result = calc(
-            offset: -500,
-            velocity: -50,
-            currentPage: 0,
-            totalPages: 3
-        )
-        #expect(result == 0)
-    }
-
-    @Test("Last page + positive velocity -> bounces back to last page (no out of bounds)")
-    func lastPage_positiveVelocity_bounceBack() {
+    @Test("First page + positive velocity -> stays on first page (no out of bounds)")
+    func firstPage_positiveVelocity_bounceBack() {
         let result = calc(
             offset: 0,
             velocity: 800,
+            currentPage: 0,
+            totalPages: 3
+        )
+        #expect(result == 0)
+    }
+
+    @Test("First page + positive offset -> stays on first page")
+    func firstPage_positiveOffset_bounceBack() {
+        let result = calc(
+            offset: 500,
+            velocity: 50,
+            currentPage: 0,
+            totalPages: 3
+        )
+        #expect(result == 0)
+    }
+
+    @Test("Last page + negative velocity -> stays on last page (no out of bounds)")
+    func lastPage_negativeVelocity_bounceBack() {
+        let result = calc(
+            offset: 0,
+            velocity: -800,
             currentPage: 2,
             totalPages: 3
         )
         #expect(result == 2)
     }
 
-    @Test("Last page + positive offset -> bounces back to last page")
-    func lastPage_positiveOffset_bounceBack() {
+    @Test("Last page + negative offset -> stays on last page")
+    func lastPage_negativeOffset_bounceBack() {
         let result = calc(
-            offset: 500,
-            velocity: 50,
+            offset: -500,
+            velocity: -50,
             currentPage: 2,
             totalPages: 3
         )
@@ -162,7 +162,7 @@ struct PageScrollViewTests {
     func velocity_justAboveThreshold_flips() {
         let result = calc(
             offset: 0,
-            velocity: PageScrollView.velocityThreshold + 1,
+            velocity: -(PageScrollView.velocityThreshold + 1),
             currentPage: 1,
             totalPages: 3
         )
@@ -182,10 +182,10 @@ struct PageScrollViewTests {
 
     // MARK: - Different screen widths
 
-    @Test("Narrow screen 768px + large offset -> correct calculation")
+    @Test("Narrow screen 768px + large negative offset -> correct calculation")
     func narrowScreen_largeOffset_correct() {
         let result = calc(
-            offset: 400,
+            offset: -400,
             velocity: 0,
             currentPage: 0,
             totalPages: 3,
@@ -320,7 +320,8 @@ struct PageScrollViewTests {
             var pages: [Int] = []
             sut.onPageChanged = { pages.append($0) }
             let event = makeDummyScrollEvent()
-            _ = sut.processScrollPhase(.changed, deltaX: 200, event: event)
+            // 负位移 = 下一页
+            _ = sut.processScrollPhase(.changed, deltaX: -200, event: event)
             _ = sut.processScrollPhase(phase, deltaX: 0, event: event)
 
             #expect(pages == [1])
@@ -484,6 +485,156 @@ struct PageScrollViewTests {
         // documentView 未设置 -> bounds.width ?? 0 回退路径
         let result = scrollView.processScrollPhase(.mayBegin, deltaX: 10, event: makeDummyScrollEvent())
         #expect(result == true)
+    }
+
+    // MARK: - 方向一致性：正位移 = 上一页（与边缘回弹 / legacy 注释对齐）
+
+    @Test("targetPage：正 offset 翻上一页，与 legacy/边缘回弹同向")
+    func targetPage_positiveOffset_goesToPreviousPage() {
+        // 边缘回弹：首页 + 正 deltaX → bounce；legacy：正 delta → 上一页。
+        // targetPage 必须同向，否则触控板 phase 手势与滚轮/回弹方向相反。
+        let result = PageScrollView.targetPage(
+            for: 800,
+            velocity: 50,
+            currentPage: 2,
+            totalPages: 3,
+            pageWidth: 1440
+        )
+        #expect(result == 1)
+    }
+
+    @Test("targetPage：负 offset 翻下一页")
+    func targetPage_negativeOffset_goesToNextPage() {
+        let result = PageScrollView.targetPage(
+            for: -800,
+            velocity: -50,
+            currentPage: 0,
+            totalPages: 3,
+            pageWidth: 1440
+        )
+        #expect(result == 1)
+    }
+
+    @Test("targetPage：正 velocity 翻上一页")
+    func targetPage_positiveVelocity_goesToPreviousPage() {
+        let result = PageScrollView.targetPage(
+            for: 0,
+            velocity: 500,
+            currentPage: 2,
+            totalPages: 3,
+            pageWidth: 1440
+        )
+        #expect(result == 1)
+    }
+
+    @Test("targetPage：负 velocity 翻下一页")
+    func targetPage_negativeVelocity_goesToNextPage() {
+        let result = PageScrollView.targetPage(
+            for: 0,
+            velocity: -500,
+            currentPage: 0,
+            totalPages: 3,
+            pageWidth: 1440
+        )
+        #expect(result == 1)
+    }
+
+    @Test("targetPage：首页正 offset 夹在第 0 页不越界")
+    func targetPage_positiveOffsetAtFirstPage_clampsToZero() {
+        let result = PageScrollView.targetPage(
+            for: 800,
+            velocity: 50,
+            currentPage: 0,
+            totalPages: 3,
+            pageWidth: 1440
+        )
+        #expect(result == 0)
+    }
+
+    @Test("processScrollPhase：正位移超过半页翻上一页，与 legacy 同向")
+    func processScrollPhase_positiveOffset_goesToPreviousPage() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        sut.scrollToPage(2, animated: false)
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+        let event = makeDummyScrollEvent()
+
+        _ = sut.processScrollPhase(.changed, deltaX: 200, event: event)
+        _ = sut.processScrollPhase(.ended, deltaX: 0, event: event)
+
+        #expect(pages == [1])
+    }
+
+    @Test("processScrollPhase：负位移超过半页翻下一页")
+    func processScrollPhase_negativeOffset_goesToNextPage() {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        sut.scrollToPage(0, animated: false)
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+        let event = makeDummyScrollEvent()
+
+        _ = sut.processScrollPhase(.changed, deltaX: -200, event: event)
+        _ = sut.processScrollPhase(.ended, deltaX: 0, event: event)
+
+        #expect(pages == [1])
+    }
+
+    @Test("精确 legacy：正累计位移翻上一页，与非精确路径同向")
+    func preciseLegacy_positiveAccumulator_goesToPreviousPage() throws {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+        sut.documentView = doc
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        sut.scrollToPage(2, animated: false)
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+
+        let cg = try #require(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: 0,
+            wheel2: 0,
+            wheel3: 0
+        ))
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 0)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: 200)
+        let event = try #require(NSEvent(cgEvent: cg))
+
+        sut.scrollWheel(with: event)
+
+        #expect(pages == [1])
+    }
+
+    @Test("精确 legacy：负累计位移翻下一页")
+    func preciseLegacy_negativeAccumulator_goesToNextPage() throws {
+        let sut = PageScrollView(frame: NSRect(x: 0, y: 0, width: 300, height: 200))
+        let doc = NSView(frame: NSRect(x: 0, y: 0, width: 900, height: 200))
+        sut.documentView = doc
+        sut.configurePaging(pageWidth: 300, pageCount: 3)
+        sut.scrollToPage(0, animated: false)
+        var pages: [Int] = []
+        sut.onPageChanged = { pages.append($0) }
+
+        let cg = try #require(CGEvent(
+            scrollWheelEvent2Source: nil,
+            units: .pixel,
+            wheelCount: 1,
+            wheel1: 0,
+            wheel2: 0,
+            wheel3: 0
+        ))
+        cg.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis1, value: 0)
+        cg.setIntegerValueField(.scrollWheelEventPointDeltaAxis2, value: -200)
+        let event = try #require(NSEvent(cgEvent: cg))
+
+        sut.scrollWheel(with: event)
+
+        #expect(pages == [1])
     }
 }
 

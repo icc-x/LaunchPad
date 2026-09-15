@@ -77,10 +77,11 @@ class PageScrollView: NSScrollView {
         scrollAccumulator += delta
         let threshold = max(150, pagingPageWidth * 0.15)
         guard abs(scrollAccumulator) >= threshold else { return }
-        let direction = scrollAccumulator > 0 ? 1 : -1
+        // 与 legacyScrollTargetPage / 边缘回弹同向：正位移 = 上一页
+        let signedDelta: CGFloat = scrollAccumulator > 0 ? 1 : -1
         scrollAccumulator = 0
         guard let target = Self.legacyScrollTargetPage(
-            delta: -CGFloat(direction),
+            delta: signedDelta,
             currentPage: currentPageIndex,
             totalPages: pagingPageCount,
             pageWidth: pagingPageWidth
@@ -217,7 +218,9 @@ class PageScrollView: NSScrollView {
 
     // MARK: - 纯函数（保持不变）
 
-    /// 计算目标页码（纯函数）
+    /// 计算目标页码（纯函数）。
+    /// 方向约定与 `legacyScrollTargetPage` / 边缘回弹一致：
+    /// 正 offset/velocity = 上一页，负 = 下一页。
     nonisolated public static func targetPage(
         for offset: CGFloat,
         velocity: CGFloat,
@@ -232,18 +235,18 @@ class PageScrollView: NSScrollView {
         // 高速滚动：根据方向翻页
         if abs(velocity) >= velocityThreshold {
             if velocity > 0 {
-                return clampPage(currentPage + 1, totalPages: totalPages)
-            } else {
                 return clampPage(currentPage - 1, totalPages: totalPages)
+            } else {
+                return clampPage(currentPage + 1, totalPages: totalPages)
             }
         }
 
         // 低速：根据位移判断
         if abs(offset) > halfPage {
             if offset > 0 {
-                return clampPage(currentPage + 1, totalPages: totalPages)
-            } else {
                 return clampPage(currentPage - 1, totalPages: totalPages)
+            } else {
+                return clampPage(currentPage + 1, totalPages: totalPages)
             }
         }
 

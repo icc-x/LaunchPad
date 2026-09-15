@@ -76,8 +76,14 @@ public final class IconCache: IconCaching {
             guard !Task.isCancelled else { return }
 
             if let cachedImage = memoryCache.object(forKey: cacheKey) {
-                if let currentModificationDate,
-                   modificationDates[path] == currentModificationDate {
+                // mtime 不可用时信任内存缓存：路径无权限/元数据抖动不应导致
+                // 每次 cell 重载都自毁缓存并回到 MainActor 重取系统图标。
+                if currentModificationDate == nil {
+                    guard !Task.isCancelled else { return }
+                    completion(itemId, cachedImage)
+                    return
+                }
+                if modificationDates[path] == currentModificationDate {
                     guard !Task.isCancelled else { return }
                     completion(itemId, cachedImage)
                     return
