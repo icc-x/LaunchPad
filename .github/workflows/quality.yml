@@ -14,6 +14,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Select newest Xcode
+        run: |
+          XCODE=$(python3 -c "
+          import glob, os
+          def ver(p):
+              b = os.path.basename(p)[:-4]
+              if '_' in b:
+                  return tuple(int(x) for x in b.split('_')[-1].split('.'))
+              return (0,)
+          print(max(glob.glob('/Applications/Xcode*.app'), key=ver))
+          ")
+          echo "selected $XCODE"
+          sudo xcode-select -s "$XCODE"
+          xcodebuild -version
+          swift --version
+          SWIFT_MAJOR=$(swift --version | head -1 | grep -oE 'version [0-9]+' | grep -oE '[0-9]+')
+          if [ "$SWIFT_MAJOR" -lt 6 ]; then
+            echo "::error::no Swift 6+ toolchain on runner; newest is $(xcodebuild -version | head -1)"
+            exit 1
+          fi
+
       - name: Install ripgrep
         run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
 
