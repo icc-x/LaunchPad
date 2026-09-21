@@ -49,6 +49,7 @@
 - **现状（2026-09-21）**：在 commit 9428ebe 上连续两次完整运行 `./scripts/test-release.sh`，两次均退出 0。产物 `.superpowers/sdd/release-gate.xKDRTL` 与 `.superpowers/sdd/release-gate.RpsCCX` 的 `result.status` 均为 `passed`，provenance start/end 检查均通过，每轮各含三次发现集/执行集一致性校验（`✔ Test run with 1173 tests in 65 suites passed`），无跳过、超时或残留进程。
 - **过程记录**：首轮被 host-boundary 扫描拒绝（测试直接写 `UserDefaults.standard`）→ 引入 `AppDelegate.hotkeyPermissionDefaults` 注入点并以 suite 隔离 defaults 替代（commit 9428ebe）；门禁须在代理命令沙箱外执行（沙箱阻断 SwiftPM index store 写入，触发 EBADF rename 错误）。2026-08-11 记录的 `/bin/ps` 受限问题在本轮沙箱外执行时未复现，watchdog 正常工作。
 - **后续**：门禁继续作为本地变更质量门禁；受控文件变更后在干净提交态复跑（见"更新规则"）。
+- **复跑记录（2026-09-21，定位调整后）**：在 commit 68b2a66 上复跑 `./scripts/test-release.sh` 通过（退出 0，`✔ Test run with 1173 tests in 65 suites passed`，严格 Debug/Release 构建通过，产物 `.superpowers/sdd/release-gate.lwMABG`）；五个脚本自测全部通过。附注：`/usr/bin/swift` 脚本模式在代理命令沙箱内会把 swift-frontend 的完整 argv 暴露给脚本的 `CommandLine.arguments`（实测 argc=39），导致 `test-event-parser.sh` 在沙箱内误报 usage 错误——脚本自测须与门禁一样在沙箱外执行。
 
 ## 2026-08-11 已完成并移出本清单的事项
 
@@ -75,5 +76,5 @@
 1. 修复提交必须同时更新对应事项的代码证据和验收结果。
 2. 事项只有在全部验收标准满足、或随项目定位调整关闭后，才可移出或关闭。
 3. 受控文件（Sources / Tests / scripts / Package.swift / Resources）发生变更的提交，须在干净提交态复跑发布门禁 `./scripts/test-release.sh`（门禁自身要求提交态）与脚本自测 `for t in scripts/tests/test-*.sh; do zsh "$t"; done`，确认通过。
-4. 发布门禁必须在可执行 `/bin/ps` 的完整环境运行（代理命令沙箱外执行）。
+4. 发布门禁与脚本自测必须在可执行 `/bin/ps` 的完整环境、代理命令沙箱外运行（沙箱会阻断 SwiftPM index store 写入，并干扰 `/usr/bin/swift` 脚本模式的参数传递）。
 5. 如未来恢复对外发布，从 git 历史恢复 `scripts/release-app.sh`、其自测与外部验收清单，重新建立 CI 与签名/公证链后再评估发布结论。
