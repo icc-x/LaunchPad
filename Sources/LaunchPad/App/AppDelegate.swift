@@ -83,6 +83,8 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     private static let hotkeyPermissionAlertKey = "launchpad.hotkeyPermissionAlertShown"
     /// 延迟展示进行中：避免 0.8s 窗口内重复 toggle 挂多个 sheet
     private var isHotkeyPermissionHintInFlight = false
+    /// 无权限提示标记的持久化存储（默认 standard；测试注入隔离实例避免宿主状态突变）
+    var hotkeyPermissionDefaults: UserDefaults = .standard
 
     /// 热键提示延迟执行器（默认 0.8s，测试可注入同步块以便确定性驱动）
     var hotkeyHintDelayRunner: (@escaping @MainActor @Sendable () -> Void) -> Void = { block in
@@ -406,7 +408,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
     /// 热键注册失败时，在窗口呼出后以非阻塞 sheet 提示一次（无权限提示仅首次）。
     internal func maybeShowHotkeyPermissionHint() {
         guard hotkeyRegistrationFailed else { return }
-        let alreadyShown = UserDefaults.standard.bool(
+        let alreadyShown = hotkeyPermissionDefaults.bool(
             forKey: Self.hotkeyPermissionAlertKey
         )
         guard !alreadyShown else { return }
@@ -422,7 +424,7 @@ public class AppDelegate: NSObject, NSApplicationDelegate {
             let window = self.hotkeyPermissionHintWindowProvider?()
                 ?? self.windowController?.window
             guard let window, window.isVisible else { return }
-            UserDefaults.standard.set(true, forKey: Self.hotkeyPermissionAlertKey)
+            hotkeyPermissionDefaults.set(true, forKey: Self.hotkeyPermissionAlertKey)
             self.presentHotkeyFailureHint(on: window)
         }
     }

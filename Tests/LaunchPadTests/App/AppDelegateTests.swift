@@ -792,10 +792,9 @@ struct AppDelegateTests {
         sut.hotkeyManager = makeIsolatedHotkeyManager(accessibilityTrusted: false)
         sut.setupHotkey()
         #expect(sut.hotkeyRegistrationFailed)
-        UserDefaults.standard.set(false, forKey: "launchpad.hotkeyPermissionAlertShown")
-        defer {
-            UserDefaults.standard.set(true, forKey: "launchpad.hotkeyPermissionAlertShown")
-        }
+        let defaults = UserDefaults(suiteName: "LaunchPadTests.hotkeyPermissionHint")!
+        defaults.removePersistentDomain(forName: "LaunchPadTests.hotkeyPermissionHint")
+        sut.hotkeyPermissionDefaults = defaults
 
         let window = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: 100, height: 100),
@@ -825,7 +824,7 @@ struct AppDelegateTests {
         pendingBlocks.forEach { $0() }
 
         #expect(presentedCount == 1)
-        #expect(UserDefaults.standard.bool(forKey: "launchpad.hotkeyPermissionAlertShown"))
+        #expect(defaults.bool(forKey: "launchpad.hotkeyPermissionAlertShown"))
     }
 
     @Test("bootstrap 失败时展示非模态错误 UI 再终止")
