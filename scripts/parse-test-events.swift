@@ -41,7 +41,7 @@ func parseEvents() throws {
         throw ParserError.invalidEvent(1)
     }
 
-    let lines = stream.split(whereSeparator: \Character.isNewline)
+    let lines = stream.split(whereSeparator: { $0.isNewline })
     guard !lines.isEmpty else {
         throw ParserError.emptyStream
     }
