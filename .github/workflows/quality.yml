@@ -14,6 +14,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install ripgrep
+        run: HOMEBREW_NO_AUTO_UPDATE=1 brew install ripgrep
+
       - name: Run script self-tests
         run: |
           for s in test-event-parser test-provenance-contract test-release-discovery test-coverage test-release-app test-test-quality; do
@@ -30,13 +33,41 @@ jobs:
           done
 
       - name: Static test quality scan
-        run: ./scripts/check-test-quality.sh
+        run: |
+          if ./scripts/check-test-quality.sh > /tmp/quality-scan.out 2>&1; then
+            tail -3 /tmp/quality-scan.out
+          else
+            echo "::error::static quality scan failed: $(tail -c 500 /tmp/quality-scan.out | tr '\n' ' ')"
+            cat /tmp/quality-scan.out
+            exit 1
+          fi
 
       - name: Full test suite
-        run: swift test --disable-sandbox --no-parallel -Xswiftc -warnings-as-errors
+        run: |
+          if swift test --disable-sandbox --no-parallel -Xswiftc -warnings-as-errors > /tmp/full-test.out 2>&1; then
+            tail -5 /tmp/full-test.out
+          else
+            echo "::error::full test suite failed: $(tail -c 500 /tmp/full-test.out | tr '\n' ' ')"
+            cat /tmp/full-test.out
+            exit 1
+          fi
 
       - name: Strict debug build
-        run: swift build --product LaunchPadApp -Xswiftc -warnings-as-errors
+        run: |
+          if swift build --product LaunchPadApp -Xswiftc -warnings-as-errors > /tmp/debug-build.out 2>&1; then
+            tail -3 /tmp/debug-build.out
+          else
+            echo "::error::strict debug build failed: $(tail -c 500 /tmp/debug-build.out | tr '\n' ' ')"
+            cat /tmp/debug-build.out
+            exit 1
+          fi
 
       - name: Strict release build
-        run: swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
+        run: |
+          if swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors > /tmp/release-build.out 2>&1; then
+            tail -3 /tmp/release-build.out
+          else
+            echo "::error::strict release build failed: $(tail -c 500 /tmp/release-build.out | tr '\n' ' ')"
+            cat /tmp/release-build.out
+            exit 1
+          fi
