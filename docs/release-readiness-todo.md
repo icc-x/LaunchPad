@@ -41,7 +41,7 @@
 ### P2-15 测试有效性治理未完成 — GitHub 托管 runner 结果待处理
 
 - **状态**：部分修复（本地完成；真实 runner 未执行）
-- **现状（2026-08-11）**：弱断言审计脚本 `scripts/check-test-quality.sh` 已落地（拒绝 `#expect(true)` / `Thread.sleep` / `RunLoop.current.run`），`scripts/tests/test-test-quality.sh` fixture 自测通过；性能测试已有预热后 11 次采样 median/p95；`.github/workflows/quality.yml` 在 push/PR 的 `macos-14` 与 `macos-14-xlarge` 上运行脚本自测、质量扫描、完整测试与严格 Debug/Release 构建；`.github/workflows/performance.yml` 仅手动/每周在固定 runner 运行性能基准并上传日志 artifact 保留趋势。
+- **现状（2026-08-11）**：弱断言审计脚本 `scripts/check-test-quality.sh` 已落地（拒绝 `#expect(true)` / `Thread.sleep` / `RunLoop.current.run`），`scripts/tests/test-test-quality.sh` fixture 自测通过；性能测试已有预热后 11 次采样 median/p95；`.github/workflows/quality.yml` 在 push/PR 的 `macos-26` 与 `macos-26-xlarge` 上运行脚本自测、质量扫描、完整测试与严格 Debug/Release 构建；`.github/workflows/performance.yml` 仅手动/每周在固定 runner（`macos-26-xlarge`）运行性能基准并上传日志 artifact 保留趋势。（2026-09-21：macos-14 镜像已被 GitHub 弃用，矩阵与固定 runner 迁移至 macOS 26，与本地门禁工具链同代。）
 - **代码证据**：`scripts/check-test-quality.sh`；`scripts/tests/test-test-quality.sh`；`.github/workflows/quality.yml`；`.github/workflows/performance.yml`。
 - **剩余工作（外部）**：在真实 GitHub 托管 runner 上确认 quality 工作流全绿、性能工作流在固定 runner 连续运行无偶发失败并保留趋势记录。
 - **验收标准**：静态审计规则进入 CI（已完成）；关键失败、回滚与边界分支具备行为断言（已完成）；性能基准在固定 runner 连续运行无偶发失败并保留趋势记录（待外部执行）。

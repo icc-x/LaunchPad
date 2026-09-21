@@ -108,13 +108,15 @@ spctl --assess --type execute --verbose=4 .build/LaunchPad.app
 
 ---
 
-## 验收 4：GitHub 托管 runner 结果（Intel + Apple Silicon）
+## 验收 4：GitHub 托管 runner 结果（标准与 xlarge 双 runner）
 
-**目标**：证明 CI 在 `macos-14` 与 `macos-14-xlarge` 双架构上全绿，且性能工作流在固定 runner 无偶发失败。
+**目标**：证明 CI 在 `macos-26` 与 `macos-26-xlarge` 两个矩阵 runner 上全绿，且性能工作流在固定 runner 无偶发失败。
+
+> 2026-09-21 修订：GitHub 已弃用 macos-14 镜像（其最新工具链仅 Xcode 16.2 / Swift 6.0，与本仓库要求的 Swift 6.3 / macOS 26 SDK 不兼容）。CI 镜像改为 macOS 26（与本地门禁工具链同代），性能工作流固定 runner 同步改为 `macos-26-xlarge`。
 
 **步骤**：
 1. 推送 `release-readiness` 分支到 GitHub 远端
-2. 打开 Actions 页面的 **quality** 工作流，等待两个矩阵 job（macos-14 / macos-14-xlarge）完成
+2. 打开 Actions 页面的 **quality** 工作流，等待两个矩阵 job（macos-26 / macos-26-xlarge）完成
 3. 打开 **performance** 工作流，手动触发一次（`workflow_dispatch`），等待完成并下载 performance-log artifact
 
 **记录**：
