@@ -16,12 +16,18 @@ jobs:
 
       - name: Run script self-tests
         run: |
-          zsh scripts/tests/test-event-parser.sh
-          zsh scripts/tests/test-provenance-contract.sh
-          zsh scripts/tests/test-release-discovery.sh
-          zsh scripts/tests/test-coverage.sh
-          zsh scripts/tests/test-release-app.sh
-          zsh scripts/tests/test-test-quality.sh
+          for s in test-event-parser test-provenance-contract test-release-discovery test-coverage test-release-app test-test-quality; do
+            echo "=== self-test: $s ==="
+            if zsh "scripts/tests/$s.sh" > "/tmp/$s.out" 2>&1; then
+              tail -3 "/tmp/$s.out"
+            else
+              echo "::error::self-test $s failed: $(tail -c 500 "/tmp/$s.out" | tr '\n' ' ')"
+              cat "/tmp/$s.out"
+              echo "--- toolchain ---"
+              swift --version
+              exit 1
+            fi
+          done
 
       - name: Static test quality scan
         run: ./scripts/check-test-quality.sh
