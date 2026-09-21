@@ -44,7 +44,8 @@ jobs:
 
       - name: Full test suite
         run: |
-          if swift test --disable-sandbox --no-parallel -Xswiftc -warnings-as-errors > /tmp/full-test.out 2>&1; then
+          if swift test --disable-sandbox -Xswiftc -warnings-as-errors > /tmp/full-test.out 2>&1; then
+            echo "::notice::full test suite: $(grep -E 'Test run with|Executed [0-9]+ tests' /tmp/full-test.out | tail -1 | tr '\n' ' ')"
             tail -5 /tmp/full-test.out
           else
             echo "::error::full test suite failed: $(tail -c 500 /tmp/full-test.out | tr '\n' ' ')"
