@@ -1,6 +1,8 @@
 # LaunchPad
 
 > 一个以 TDD 为硬性工程约束、通过逆向工程系统 Dock 二进制来忠实复刻 macOS 启动台的 Swift 开源项目。
+>
+> 定位：个人项目，仅在本机构建与运行，不对外分发（2026-09-21 起）；质量门禁全部本地执行。
 
 ---
 
@@ -27,7 +29,7 @@
 
 ### 工程实践：TDD + Swift 6 严格并发
 
-LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、AppKit 视图层、全局快捷键、FSEvents 监控——是验证现代 Swift 工程方法论的理想载体。本项目将 **TDD（测试驱动开发）** 和 **Swift 6 严格并发模式** 设为硬性约束，而非可选项。
+LaunchPad 足够复杂——50 个源文件、1173 项测试、SQLite 持久化、AppKit 视图层、全局快捷键、FSEvents 监控——是验证现代 Swift 工程方法论的理想载体。本项目将 **TDD（测试驱动开发）** 和 **Swift 6 严格并发模式** 设为硬性约束，而非可选项。
 
 ---
 
@@ -35,14 +37,14 @@ LaunchPad 足够复杂——44 个源文件、1086 测试、SQLite 持久化、A
 
 | 维度 | 状态 |
 |------|------|
-| 编译（debug） | 普通构建可完成；warning 清理尚未完成 |
-| 编译（release） | 普通构建可完成；warnings-as-errors 未通过 |
-| 测试 | ✅ 1109 tests，0 失败（2026-07-29） |
+| 编译（debug） | ✅ 严格构建（warnings-as-errors）通过（2026-09-21 发布门禁双跑） |
+| 编译（release） | ✅ warnings-as-errors 通过（2026-09-21 发布门禁双跑） |
+| 测试 | ✅ 1173 tests / 65 suites，0 失败（2026-09-21 发布门禁双跑） |
 | 行覆盖率 | 97.91%（2026-07-24 历史测量，42 个源文件，8144 行 / 170 行未覆盖） |
 | 区域覆盖率 | 94.11%（2026-07-24 历史测量，2664 区域 / 157 区域未覆盖） |
 | 函数覆盖率 | 93.62%（2026-07-24 历史测量，1098 函数 / 70 函数未覆盖） |
 | 100% 行覆盖文件 | 23 / 42 个源文件 |
-| 代码签名 | ⏳ 发布流程脚本就绪（`scripts/release-app.sh`）；真实 Developer ID 签名与公证待外部凭据环境验收 |
+| 打包运行 | ✅ `./scripts/build-app.sh` 产出 `.build/LaunchPad.app` 本机直接运行；不对外分发，无签名/公证需求 |
 | 手动功能验证 | ⏳ 0/13 执行 |
 
 > 覆盖率数字仅保留为 2026-07-24 的历史测量。可信覆盖率入口为 `./scripts/coverage.sh`：构建、测试、测试发现、profraw 合并与 `llvm-cov` 任一阶段失败都会返回非零状态，空输出或损坏数据不会被当作成功结论。历史测量不能作为发布证据，最新结果以新入口输出为准。
@@ -272,17 +274,6 @@ swift build -c release --product LaunchPadApp -Xswiftc -warnings-as-errors
 ./scripts/build-app.sh
 # 产物：.build/LaunchPad.app
 # 运行：open .build/LaunchPad.app
-
-# 发布签名与公证链（build → codesign → verify → archive → notary → staple → Gatekeeper）
-# 需要凭据环境注入：LAUNCHPAD_CODESIGN_IDENTITY / LAUNCHPAD_TEAM_ID / LAUNCHPAD_NOTARY_PROFILE
-LAUNCHPAD_CODESIGN_IDENTITY='Developer ID Application: <你的身份>' \
-LAUNCHPAD_TEAM_ID='<TEAMID>' \
-LAUNCHPAD_NOTARY_PROFILE='<notarytool profile>' \
-  ./scripts/release-app.sh
-
-# 先预览要执行的命令（不签名、不联网、无副作用）
-./scripts/release-app.sh --dry-run
-# 脚本自测：zsh scripts/tests/test-release-app.sh
 ```
 
 ### 测试
@@ -302,13 +293,9 @@ swift test --disable-sandbox --no-parallel
 ./scripts/check-test-quality.sh
 # 脚本自测：zsh scripts/tests/test-test-quality.sh
 
-# 全部脚本自测（CI quality 工作流与本地一致）
+# 全部脚本自测
 for t in scripts/tests/test-*.sh; do zsh "$t"; done
 ```
-
-CI 工作流（`.github/workflows/`）：
-- `quality.yml`：push/PR 在 `macos-14` 与 `macos-14-xlarge` 双 runner 上运行全部脚本自测、质量扫描、完整测试与严格 Debug/Release 构建，任一失败即红。
-- `performance.yml`：仅手动或每周定时在固定 `macos-14-xlarge` runner 上运行性能基准，日志上传为 artifact 保留趋势；不阻塞普通功能提交。
 
 ### 首次运行
 
@@ -335,7 +322,7 @@ LaunchPad/
 │   │   └── Utilities/             # AnimationRunner / GridLayoutCalculator / ErrorRecovery
 │   └── LaunchPadApp/              # 可执行入口（main.swift）
 ├── Tests/
-│   └── LaunchPadTests/            # 44 个测试文件，1109 tests
+│   └── LaunchPadTests/            # 49 个测试文件，1173 tests
 │       ├── TestHelpers/           # MockProtocols / TestDataFactory
 │       ├── App/                   # AppDelegate / WindowController 测试
 │       ├── Controllers/           # 各 Controller 测试
@@ -358,7 +345,7 @@ LaunchPad/
 | 文档 | 内容 |
 |------|------|
 | [`docs/architecture.md`](docs/architecture.md) | LaunchPad 产品架构、核心交互与技术设计 |
-| [`docs/release-readiness-todo.md`](docs/release-readiness-todo.md) | 当前发布阻断与非阻断治理事项的唯一状态清单 |
+| [`docs/release-readiness-todo.md`](docs/release-readiness-todo.md) | 质量状态与待处理事项的唯一状态清单（个人本机项目口径） |
 | [`docs/原始app技术实现参考.md`](docs/原始app技术实现参考.md) | 对系统 Dock 二进制的逆向分析，12 个技术维度的真实行为还原 |
 
 ---
