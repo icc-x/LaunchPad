@@ -2,15 +2,15 @@
 
 > 核查日期：2026-07-29
 > 范围：对 2026-07-15 发布就绪评审中的 41 项问题逐项复核当前代码、脚本与测试状态。
-> 最近更新：2026-08-11（发布就绪整改 Task 1–7 本地验收完成后回写）
+> 最近更新：2026-09-21（发布门禁连续两次通过、CI 迁移 macOS 26 后回写）
 
 ## 当前结论
 
 - 已修复：40 项（含 2026-08-11 完成的 13 项本地整改）
-- 部分修复：0 项
-- 未修复：1 项
-- 待处理（外部环境验收）：3 项（P1-11、P2-12、P2-15）+ 发布门禁连续两次运行（受受限环境阻塞）
-- 发布结论：**本地可执行门禁全部通过**。真实 Apple 签名/公证/stapling、干净 macOS Gatekeeper 启动、GitHub 托管 Intel 与 Apple Silicon runner 结果、VoiceOver 实际播报，以及 `scripts/test-release.sh` 连续两次运行完成后，才能重新评估正式发布结论。
+- 部分修复：2 项（P2-12、P2-15）
+- 未修复：1 项（P1-11）
+- 外部验收进展（2026-09-21）：发布门禁连续两次运行已通过；quality 工作流 `macos-26` job 全绿（1173 tests / 65 suites，与本地一致），`macos-26-xlarge` job 与 performance 工作流被 GitHub 账户计费问题阻塞
+- 发布结论：**本地可执行门禁全部通过且已连续两次验证**。剩余阻断：真实 Apple 签名/公证/stapling（待凭据环境）、干净 macOS Gatekeeper 启动、GitHub 托管 runner 全矩阵结果（待账户计费修复 + performance 手动触发 ×2）、VoiceOver 实际播报。全部完成后才能重新评估正式发布结论。
 
 状态定义：
 
@@ -25,7 +25,7 @@
 - **状态**：未修复（本地流程已实现；真实凭据验收未执行）
 - **现状（2026-08-11）**：仓库就绪的发布流程 `scripts/release-app.sh` 已实现并自测通过：hardened runtime 签名、entitlements 应用、严格验证、公证提交、stapling、Gatekeeper 评估、stapler 验证顺序执行；`--dry-run` 输出 shell 转义命令且无副作用；Team ID 写入非密钥 manifest；缺少必需配置或产物结构不完整时非零退出。`scripts/tests/test-release-app.sh` 覆盖 help/未知选项/缺配置/dry-run/构建失败传播/fake-tool 成功顺序。
 - **代码证据**：`scripts/release-app.sh`（8 步真实顺序）；`scripts/tests/test-release-app.sh`；`scripts/build-app.sh` 支持 `LAUNCHPAD_BUILD_OUTPUT_DIR` 注入。
-- **剩余工作（外部）**：在具备 Developer ID 凭据的安全环境注入 `LAUNCHPAD_CODESIGN_IDENTITY` / `LAUNCHPAD_TEAM_ID` / `LAUNCHPAD_NOTARY_PROFILE` 执行真实签名与公证；在干净 macOS 环境验证 Gatekeeper 启动。
+- **剩余工作（外部）**：在具备 Developer ID 凭据的安全环境注入 `LAUNCHPAD_CODESIGN_IDENTITY` / `LAUNCHPAD_TEAM_ID` / `LAUNCHPAD_NOTARY_PROFILE` 执行真实签名与公证；在干净 macOS 环境验证 Gatekeeper 启动。（2026-09-21 本机复查：钥匙串无 Developer ID 证书，唯一签名身份为 127.0.0.1 的 SSL 证书，且 `xcrun notarytool` 无已存储的公证 profile，本机不具备验收前置条件；完整命令清单见 `docs/release-readiness-external-acceptance.md` 验收 2。）
 - **验收标准**：发布产物依次通过 `codesign --verify --deep --strict --verbose=2`、`spctl --assess --type execute --verbose=4` 和 `xcrun stapler validate`；产物包含预期 entitlements，并在干净 macOS 环境通过 Gatekeeper 启动。
 
 ## 非阻断治理事项
@@ -48,10 +48,10 @@
 
 ### 发布门禁连续两次运行（`scripts/test-release.sh` ×2）
 
-- **状态**：待处理（受限环境阻塞）
-- **现状（2026-08-11）**：`test-release.sh` 的 watchdog 依赖 `/bin/ps eww -axo pid=,command=` 捕获测试进程 token；本宿主环境系统级禁止 `/bin/ps`（`operation not permitted`，关闭命令沙箱后仍被拒），门禁在进入 SwiftPM 前即退出 1。已尝试前台/后台/非沙箱三种方式均无法运行。
-- **剩余工作（外部）**：在可执行 `/bin/ps` 的完整 macOS 环境连续运行两次门禁，确认发现集与执行集一致、无跳过/超时/残留进程。
-- **验收标准**：连续两次执行 `./scripts/test-release.sh` 均退出 0，发现集与执行集完全一致（此前 Task 1 记录为 1109 项/62 suites，当前测试集为 1126 项/65 suites，需以实际输出为准）。
+- **状态**：已通过（2026-09-21，外部验收）
+- **现状（2026-09-21）**：在 commit 9428ebe 上连续两次完整运行 `./scripts/test-release.sh`，两次均退出 0。产物 `.superpowers/sdd/release-gate.xKDRTL` 与 `.superpowers/sdd/release-gate.RpsCCX` 的 `result.status` 均为 `passed`，provenance start/end 检查均通过，每轮各含三次发现集/执行集一致性校验（`✔ Test run with 1173 tests in 65 suites passed`），无跳过、超时或残留进程。发现集与执行集完全一致，实际规模 1173 项/65 suites（此前记录 1126/65，已按实际输出更新）。
+- **过程记录**：首轮被 host-boundary 扫描拒绝（测试直接写 `UserDefaults.standard`）→ 引入 `AppDelegate.hotkeyPermissionDefaults` 注入点并以 suite 隔离 defaults 替代（commit 9428ebe）；门禁须在代理命令沙箱外执行（沙箱阻断 SwiftPM index store 写入，触发 EBADF rename 错误）。2026-08-11 记录的 `/bin/ps` 受限问题在本轮沙箱外执行时未复现，watchdog 正常工作。
+- **验收标准**：连续两次执行 `./scripts/test-release.sh` 均退出 0，发现集与执行集完全一致 —— 已满足（2026-09-21）。
 
 ## 2026-08-11 已完成并移出本清单的事项
 

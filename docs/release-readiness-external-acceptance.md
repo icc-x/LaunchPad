@@ -29,7 +29,7 @@
 
 **记录**：
 - 两次退出码均为 0
-- 每轮摘要中的测试数与套件数（当前本地基线：1126 tests / 65 suites；以实际输出为准）
+- 每轮摘要中的测试数与套件数（当前本地基线：1173 tests / 65 suites，2026-09-21 门禁双跑实测；以实际输出为准）
 - 三轮发现集与执行集完全一致，无跳过/超时/残留进程/失败标记
 - 记录 artifact 目录路径（`.superpowers/sdd/release-gate.*`）与 `result.status=passed`
 
@@ -121,7 +121,7 @@ spctl --assess --type execute --verbose=4 .build/LaunchPad.app
 
 **记录**：
 - quality 两个 job 的 6 个脚本自测、质量扫描、完整测试、严格 Debug/Release 构建是否全绿
-- 每轮测试数与套件数（应与本地 1126/65 一致或按 runner 实际输出）
+- 每轮测试数与套件数（应与本地 1173/65 一致或按 runner 实际输出；2026-09-21 macos-26 job 实测一致）
 - performance artifact 中的 log 是否包含完整基准输出、无偶发失败
 
 **通过标准**：quality 全绿；performance 在固定 runner 连续两次触发无偶发失败且趋势 log 可下载。
